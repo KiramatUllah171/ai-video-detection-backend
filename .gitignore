@@ -1,0 +1,27 @@
+# .NET
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.log
+*.cache
+*.pdb
+*.dll
+*.exe
+
+# Visual Studio / VS Code
+.vscode/
+.idea/
+
+# Secrets
+appsettings.Production.json
+secrets.json
+
+# Local generated files
+uploads/
+storage/
+temp/
+reports/
+frames/
+thumbnails/
