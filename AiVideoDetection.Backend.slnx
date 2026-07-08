@@ -1,3 +1,7 @@
 <Solution>
   <Project Path="AiVideoDetection.Api/AiVideoDetection.Api.csproj" />
+  <Project Path="AiVideoDetection.Application/AiVideoDetection.Application.csproj" />
+  <Project Path="AiVideoDetection.Domain/AiVideoDetection.Domain.csproj" />
+  <Project Path="AiVideoDetection.Infrastructure/AiVideoDetection.Infrastructure.csproj" />
+  <Project Path="AiVideoDetection.Tests/AiVideoDetection.Tests.csproj" />
 </Solution>

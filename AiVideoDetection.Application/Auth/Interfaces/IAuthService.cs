@@ -1,0 +1,17 @@
+using AiVideoDetection.Application.Auth.DTOs;
+using AiVideoDetection.Application.Common;
+
+namespace AiVideoDetection.Application.Auth.Interfaces;
+
+public interface IAuthService
+{
+    Task<ApiResponse<AuthResponse>> SignupAsync(SignupRequest request, string? ipAddress, CancellationToken cancellationToken = default);
+
+    Task<ApiResponse<AuthResponse>> LoginAsync(LoginRequest request, string? ipAddress, CancellationToken cancellationToken = default);
+
+    Task<ApiResponse<AuthResponse>> RefreshAsync(RefreshTokenRequest request, string? ipAddress, CancellationToken cancellationToken = default);
+
+    Task<ApiResponse<bool>> LogoutAsync(RefreshTokenRequest request, CancellationToken cancellationToken = default);
+
+    Task<ApiResponse<CurrentUserResponse>> GetCurrentUserAsync(long userId, CancellationToken cancellationToken = default);
+}
