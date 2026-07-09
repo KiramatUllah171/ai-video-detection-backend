@@ -6,6 +6,8 @@ using AiVideoDetection.Infrastructure.Auth;
 using AiVideoDetection.Infrastructure.Data;
 using AiVideoDetection.Infrastructure.Storage;
 using AiVideoDetection.Infrastructure.Videos;
+using AiVideoDetection.Infrastructure.Videos.Ai;
+using AiVideoDetection.Infrastructure.Videos.Processing;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -18,6 +20,8 @@ namespace AiVideoDetection.Infrastructure;
 
 public static class DependencyInjection
 {
+    private static readonly NpgsqlNullNameTranslator EnumNameTranslator = new();
+
     public static IServiceCollection AddInfrastructureServices(this IServiceCollection services, IConfiguration configuration)
     {
         var connectionString = configuration.GetConnectionString("DefaultConnection")
@@ -30,19 +34,32 @@ public static class DependencyInjection
                 {
                     npgsqlOptions.MapEnum<UserRole>(
                         "user_role",
-                        nameTranslator: new NpgsqlNullNameTranslator());
+                        nameTranslator: EnumNameTranslator);
                     npgsqlOptions.MapEnum<VideoStatus>(
                         "video_status",
-                        nameTranslator: new NpgsqlNullNameTranslator());
+                        nameTranslator: EnumNameTranslator);
                     npgsqlOptions.MapEnum<JobStatus>(
                         "job_status",
-                        nameTranslator: new NpgsqlNullNameTranslator());
+                        nameTranslator: EnumNameTranslator);
+                    npgsqlOptions.MapEnum<AnalysisLabel>(
+                        "analysis_label",
+                        nameTranslator: EnumNameTranslator);
+                    npgsqlOptions.MapEnum<EvidenceType>(
+                        "evidence_type",
+                        nameTranslator: EnumNameTranslator);
+                    npgsqlOptions.MapEnum<EvidenceSeverity>(
+                        "evidence_severity",
+                        nameTranslator: EnumNameTranslator);
                     npgsqlOptions.MigrationsAssembly("AiVideoDetection.Api");
                 }));
 
         services.Configure<JwtOptions>(configuration.GetSection(JwtOptions.SectionName));
         services.Configure<VideoUploadOptions>(configuration.GetSection(VideoUploadOptions.SectionName));
+        services.Configure<VideoProcessingOptions>(configuration.GetSection(VideoProcessingOptions.SectionName));
+        services.Configure<AiServiceOptions>(configuration.GetSection(AiServiceOptions.SectionName));
+        services.Configure<ScoringOptions>(configuration.GetSection(ScoringOptions.SectionName));
         services.Configure<LocalStorageOptions>(configuration.GetSection(LocalStorageOptions.SectionName));
+        services.AddHttpClient("AiService");
 
         services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<IJwtTokenService, JwtTokenService>();
@@ -50,6 +67,18 @@ public static class DependencyInjection
         services.AddScoped<IObjectStorageService, LocalObjectStorageService>();
         services.AddScoped<IVideoService, VideoService>();
         services.AddScoped<IJobService, JobService>();
+        services.AddScoped<IAnalysisJobQueue, HangfireAnalysisJobQueue>();
+        services.AddScoped<IVideoProcessingService, VideoProcessingService>();
+        services.AddScoped<IFrameExtractionService, FrameExtractionService>();
+        services.AddScoped<IMetadataExtractionService, MetadataExtractionService>();
+        services.AddScoped<IJobLogService, JobLogService>();
+        services.AddScoped<IProcessRunner, ProcessRunner>();
+        services.AddScoped<IFfmpegToolLocator, FfmpegToolLocator>();
+        services.AddScoped<IVideoProcessingToolValidator, VideoProcessingToolValidator>();
+        services.AddScoped<IAiInferenceClient, PythonAiInferenceClient>();
+        services.AddScoped<IFinalScoringService, FinalScoringService>();
+        services.AddScoped<IEvidenceGenerationService, EvidenceGenerationService>();
+        services.AddScoped<AnalysisJobProcessor>();
 
         AddJwtAuthentication(services, configuration);
 

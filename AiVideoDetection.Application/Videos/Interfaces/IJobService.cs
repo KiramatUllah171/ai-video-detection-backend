@@ -9,4 +9,8 @@ public interface IJobService
         long videoId,
         long currentUserId,
         CancellationToken cancellationToken = default);
+
+    Task<ApiResponse<JobStatusDto>> RetryJobAsync(
+        long jobId,
+        CancellationToken cancellationToken = default);
 }

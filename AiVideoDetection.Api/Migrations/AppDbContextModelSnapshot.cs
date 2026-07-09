@@ -22,10 +22,85 @@ namespace AiVideoDetection.Api.Migrations
                 .HasAnnotation("ProductVersion", "10.0.9")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
+            NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "analysis_label", new[] { "LikelyReal", "LikelyAiGenerated", "EditedManipulated", "Suspicious", "Inconclusive" });
+            NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "evidence_severity", new[] { "Low", "Medium", "High", "Critical" });
+            NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "evidence_type", new[] { "AiFrameScore", "MetadataWarning", "ProcessingWarning", "ConfidenceNote", "SystemNote" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "job_status", new[] { "Queued", "Processing", "Completed", "Failed", "Retrying", "Cancelled" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "user_role", new[] { "User", "Admin", "Reviewer", "EnterpriseAdmin" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "video_status", new[] { "Uploaded", "Queued", "Processing", "Completed", "Failed", "Deleted" });
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
+
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.AiResult", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<decimal>("Confidence")
+                        .HasColumnType("numeric")
+                        .HasColumnName("confidence");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("NOW()");
+
+                    b.Property<decimal>("FinalScore")
+                        .HasColumnType("numeric")
+                        .HasColumnName("final_score");
+
+                    b.Property<AnalysisLabel>("Label")
+                        .HasColumnType("analysis_label")
+                        .HasColumnName("label");
+
+                    b.Property<decimal?>("MetadataScore")
+                        .HasColumnType("numeric")
+                        .HasColumnName("metadata_score");
+
+                    b.Property<long?>("ModelVersionId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("model_version_id");
+
+                    b.Property<string>("RawModelOutputJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("raw_model_output_json");
+
+                    b.Property<string>("Summary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("summary");
+
+                    b.Property<decimal?>("TemporalScore")
+                        .HasColumnType("numeric")
+                        .HasColumnName("temporal_score");
+
+                    b.Property<long>("VideoId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("video_id");
+
+                    b.Property<decimal>("VisualScore")
+                        .HasColumnType("numeric")
+                        .HasColumnName("visual_score");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Label")
+                        .HasDatabaseName("ix_ai_results_label");
+
+                    b.HasIndex("ModelVersionId")
+                        .HasDatabaseName("ix_ai_results_model_version_id");
+
+                    b.HasIndex("VideoId", "CreatedAt")
+                        .IsDescending(false, true)
+                        .HasDatabaseName("ix_ai_results_video_id_created");
+
+                    b.ToTable("ai_results", (string)null);
+                });
 
             modelBuilder.Entity("AiVideoDetection.Domain.Entities.AnalysisJob", b =>
                 {
@@ -109,6 +184,255 @@ namespace AiVideoDetection.Api.Migrations
                     b.ToTable("analysis_jobs", null, t =>
                         {
                             t.HasCheckConstraint("ck_analysis_jobs_progress", "progress >= 0 AND progress <= 100");
+                        });
+                });
+
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.EvidenceItem", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<long>("AiResultId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("ai_result_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("NOW()");
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("description");
+
+                    b.Property<decimal?>("ScoreImpact")
+                        .HasColumnType("numeric")
+                        .HasColumnName("score_impact");
+
+                    b.Property<EvidenceSeverity>("Severity")
+                        .HasColumnType("evidence_severity")
+                        .HasColumnName("severity");
+
+                    b.Property<decimal?>("TimestampSeconds")
+                        .HasColumnType("numeric")
+                        .HasColumnName("timestamp_seconds");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .HasColumnName("title");
+
+                    b.Property<EvidenceType>("Type")
+                        .HasColumnType("evidence_type")
+                        .HasColumnName("type");
+
+                    b.Property<long?>("VideoFrameId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("video_frame_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AiResultId")
+                        .HasDatabaseName("ix_evidence_items_ai_result_id");
+
+                    b.HasIndex("Severity")
+                        .HasDatabaseName("ix_evidence_items_severity");
+
+                    b.HasIndex("VideoFrameId")
+                        .HasDatabaseName("ix_evidence_items_video_frame_id");
+
+                    b.ToTable("evidence_items", (string)null);
+                });
+
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.JobLog", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("NOW()");
+
+                    b.Property<string>("DetailsJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("details_json");
+
+                    b.Property<long>("JobId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("job_id");
+
+                    b.Property<string>("Level")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("level");
+
+                    b.Property<string>("Message")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("message");
+
+                    b.Property<string>("StepName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("step_name");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("JobId", "CreatedAt")
+                        .IsDescending(false, true)
+                        .HasDatabaseName("ix_job_logs_job_id_created");
+
+                    b.ToTable("job_logs", (string)null);
+                });
+
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.MetadataResult", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("AudioCodec")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("audio_codec");
+
+                    b.Property<long?>("Bitrate")
+                        .HasColumnType("bigint")
+                        .HasColumnName("bitrate");
+
+                    b.Property<string>("Codec")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("codec");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("NOW()");
+
+                    b.Property<DateTimeOffset?>("CreationTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("creation_time");
+
+                    b.Property<decimal?>("DurationSeconds")
+                        .HasColumnType("numeric")
+                        .HasColumnName("duration_seconds");
+
+                    b.Property<string>("Encoder")
+                        .HasColumnType("text")
+                        .HasColumnName("encoder");
+
+                    b.Property<decimal?>("Fps")
+                        .HasColumnType("numeric")
+                        .HasColumnName("fps");
+
+                    b.Property<bool>("HasMissingMetadata")
+                        .HasColumnType("boolean")
+                        .HasColumnName("has_missing_metadata");
+
+                    b.Property<string>("RawJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("raw_json");
+
+                    b.Property<string>("Resolution")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("resolution");
+
+                    b.Property<long>("VideoId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("video_id");
+
+                    b.Property<string>("WarningsJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("warnings_json");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("VideoId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_metadata_results_video_id");
+
+                    b.ToTable("metadata_results", (string)null);
+                });
+
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.ModelVersion", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("NOW()");
+
+                    b.Property<string>("Description")
+                        .HasColumnType("text")
+                        .HasColumnName("description");
+
+                    b.Property<bool>("IsActive")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_active");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name");
+
+                    b.Property<string>("Version")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("IsActive")
+                        .HasDatabaseName("ix_model_versions_active");
+
+                    b.HasIndex("Version")
+                        .IsUnique()
+                        .HasDatabaseName("ux_model_versions_version");
+
+                    b.ToTable("model_versions", (string)null);
+
+                    b.HasData(
+                        new
+                        {
+                            Id = 1L,
+                            CreatedAt = new DateTimeOffset(new DateTime(2026, 7, 9, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0)),
+                            Description = "Mock deterministic AI scoring model for pipeline integration.",
+                            IsActive = true,
+                            Name = "Mock Video AI",
+                            Version = "mock-video-ai-v1"
                         });
                 });
 
@@ -318,11 +642,127 @@ namespace AiVideoDetection.Api.Migrations
                     b.ToTable("videos", (string)null);
                 });
 
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.VideoFrame", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("NOW()");
+
+                    b.Property<int>("FrameIndex")
+                        .HasColumnType("integer")
+                        .HasColumnName("frame_index");
+
+                    b.Property<string>("FrameUrl")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("frame_url");
+
+                    b.Property<int?>("Height")
+                        .HasColumnType("integer")
+                        .HasColumnName("height");
+
+                    b.Property<bool>("IsKeyframe")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("is_keyframe");
+
+                    b.Property<decimal>("TimestampSeconds")
+                        .HasColumnType("numeric")
+                        .HasColumnName("timestamp_seconds");
+
+                    b.Property<long>("VideoId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("video_id");
+
+                    b.Property<int?>("Width")
+                        .HasColumnType("integer")
+                        .HasColumnName("width");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("VideoId")
+                        .HasDatabaseName("ix_video_frames_video_id");
+
+                    b.HasIndex("VideoId", "FrameIndex")
+                        .IsUnique()
+                        .HasDatabaseName("ux_video_frames_video_id_frame_index");
+
+                    b.ToTable("video_frames", (string)null);
+                });
+
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.AiResult", b =>
+                {
+                    b.HasOne("AiVideoDetection.Domain.Entities.ModelVersion", "ModelVersion")
+                        .WithMany("AiResults")
+                        .HasForeignKey("ModelVersionId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("AiVideoDetection.Domain.Entities.Video", "Video")
+                        .WithMany("AiResults")
+                        .HasForeignKey("VideoId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("ModelVersion");
+
+                    b.Navigation("Video");
+                });
+
             modelBuilder.Entity("AiVideoDetection.Domain.Entities.AnalysisJob", b =>
                 {
                     b.HasOne("AiVideoDetection.Domain.Entities.Video", "Video")
                         .WithMany("AnalysisJobs")
                         .HasForeignKey("VideoId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Video");
+                });
+
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.EvidenceItem", b =>
+                {
+                    b.HasOne("AiVideoDetection.Domain.Entities.AiResult", "AiResult")
+                        .WithMany("EvidenceItems")
+                        .HasForeignKey("AiResultId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("AiVideoDetection.Domain.Entities.VideoFrame", "VideoFrame")
+                        .WithMany("EvidenceItems")
+                        .HasForeignKey("VideoFrameId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("AiResult");
+
+                    b.Navigation("VideoFrame");
+                });
+
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.JobLog", b =>
+                {
+                    b.HasOne("AiVideoDetection.Domain.Entities.AnalysisJob", "AnalysisJob")
+                        .WithMany("Logs")
+                        .HasForeignKey("JobId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("AnalysisJob");
+                });
+
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.MetadataResult", b =>
+                {
+                    b.HasOne("AiVideoDetection.Domain.Entities.Video", "Video")
+                        .WithOne("MetadataResult")
+                        .HasForeignKey("AiVideoDetection.Domain.Entities.MetadataResult", "VideoId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
@@ -351,6 +791,32 @@ namespace AiVideoDetection.Api.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.VideoFrame", b =>
+                {
+                    b.HasOne("AiVideoDetection.Domain.Entities.Video", "Video")
+                        .WithMany("Frames")
+                        .HasForeignKey("VideoId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Video");
+                });
+
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.AiResult", b =>
+                {
+                    b.Navigation("EvidenceItems");
+                });
+
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.AnalysisJob", b =>
+                {
+                    b.Navigation("Logs");
+                });
+
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.ModelVersion", b =>
+                {
+                    b.Navigation("AiResults");
+                });
+
             modelBuilder.Entity("AiVideoDetection.Domain.Entities.User", b =>
                 {
                     b.Navigation("RefreshTokens");
@@ -360,7 +826,18 @@ namespace AiVideoDetection.Api.Migrations
 
             modelBuilder.Entity("AiVideoDetection.Domain.Entities.Video", b =>
                 {
+                    b.Navigation("AiResults");
+
                     b.Navigation("AnalysisJobs");
+
+                    b.Navigation("Frames");
+
+                    b.Navigation("MetadataResult");
+                });
+
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.VideoFrame", b =>
+                {
+                    b.Navigation("EvidenceItems");
                 });
 #pragma warning restore 612, 618
         }

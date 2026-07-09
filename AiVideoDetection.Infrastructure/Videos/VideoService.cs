@@ -14,6 +14,7 @@ namespace AiVideoDetection.Infrastructure.Videos;
 public class VideoService(
     AppDbContext dbContext,
     IObjectStorageService objectStorageService,
+    IAnalysisJobQueue analysisJobQueue,
     IValidator<UploadVideoRequest> uploadValidator,
     ILogger<VideoService> logger) : IVideoService
 {
@@ -36,6 +37,7 @@ public class VideoService(
         var originalName = SanitizeOriginalName(file.FileName);
         var objectKey = CreateObjectKey(currentUserId, extension);
         string? uploadedObjectKey = null;
+        var databaseCommitted = false;
         var tempFilePath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}{extension}");
 
         try
@@ -100,13 +102,21 @@ public class VideoService(
                 dbContext.AnalysisJobs.Add(job);
                 await dbContext.SaveChangesAsync(cancellationToken);
                 await transaction.CommitAsync(cancellationToken);
+                databaseCommitted = true;
             }
             else
             {
                 dbContext.Videos.Add(video);
                 dbContext.AnalysisJobs.Add(job);
                 await dbContext.SaveChangesAsync(cancellationToken);
+                databaseCommitted = true;
             }
+
+            var backgroundJobId = analysisJobQueue.EnqueueAnalysisJob(job.Id);
+            logger.LogInformation(
+                "Enqueued analysis job {AnalysisJobId} as Hangfire job {BackgroundJobId}.",
+                job.Id,
+                backgroundJobId);
 
             return ApiResponse<UploadVideoResponse>.SuccessResponse(
                 new UploadVideoResponse
@@ -124,7 +134,7 @@ public class VideoService(
         }
         catch
         {
-            if (!string.IsNullOrWhiteSpace(uploadedObjectKey))
+            if (!databaseCommitted && !string.IsNullOrWhiteSpace(uploadedObjectKey))
             {
                 await objectStorageService.DeleteAsync(uploadedObjectKey, cancellationToken);
             }
@@ -232,8 +242,145 @@ public class VideoService(
                 LatestJob = video.AnalysisJobs
                     .OrderByDescending(job => job.CreatedAt)
                     .Select(MapJob)
-                    .FirstOrDefault()
+                .FirstOrDefault()
             });
+    }
+
+    public async Task<ApiResponse<MetadataResultDto>> GetMetadataAsync(
+        long videoId,
+        long currentUserId,
+        CancellationToken cancellationToken = default)
+    {
+        var metadata = await dbContext.MetadataResults
+            .AsNoTracking()
+            .Include(result => result.Video)
+            .Where(result => result.VideoId == videoId
+                && result.Video.UserId == currentUserId
+                && result.Video.DeletedAt == null
+                && result.Video.Status != VideoStatus.Deleted)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return metadata is null
+            ? ApiResponse<MetadataResultDto>.ErrorResponse("Video metadata was not found.")
+            : ApiResponse<MetadataResultDto>.SuccessResponse(new MetadataResultDto
+            {
+                VideoId = metadata.VideoId,
+                Codec = metadata.Codec,
+                AudioCodec = metadata.AudioCodec,
+                Fps = metadata.Fps,
+                Resolution = metadata.Resolution,
+                DurationSeconds = metadata.DurationSeconds,
+                Bitrate = metadata.Bitrate,
+                Encoder = metadata.Encoder,
+                CreationTime = metadata.CreationTime,
+                HasMissingMetadata = metadata.HasMissingMetadata,
+                WarningsJson = metadata.WarningsJson,
+                CreatedAt = metadata.CreatedAt
+            });
+    }
+
+    public async Task<ApiResponse<IReadOnlyList<VideoFrameDto>>> GetFramesAsync(
+        long videoId,
+        long currentUserId,
+        CancellationToken cancellationToken = default)
+    {
+        var ownsVideo = await dbContext.Videos
+            .AsNoTracking()
+            .AnyAsync(video => video.Id == videoId
+                && video.UserId == currentUserId
+                && video.DeletedAt == null
+                && video.Status != VideoStatus.Deleted,
+                cancellationToken);
+
+        if (!ownsVideo)
+        {
+            return ApiResponse<IReadOnlyList<VideoFrameDto>>.ErrorResponse("Video frames were not found.");
+        }
+
+        var frames = await dbContext.VideoFrames
+            .AsNoTracking()
+            .Where(frame => frame.VideoId == videoId)
+            .OrderBy(frame => frame.FrameIndex)
+            .Select(frame => new VideoFrameDto
+            {
+                Id = frame.Id,
+                VideoId = frame.VideoId,
+                FrameUrl = frame.FrameUrl,
+                TimestampSeconds = frame.TimestampSeconds,
+                FrameIndex = frame.FrameIndex,
+                Width = frame.Width,
+                Height = frame.Height,
+                IsKeyframe = frame.IsKeyframe,
+                CreatedAt = frame.CreatedAt
+            })
+            .ToListAsync(cancellationToken);
+
+        return ApiResponse<IReadOnlyList<VideoFrameDto>>.SuccessResponse(frames);
+    }
+
+    public async Task<ApiResponse<AnalysisResultDto>> GetAnalysisAsync(
+        long videoId,
+        long currentUserId,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await dbContext.AiResults
+            .AsNoTracking()
+            .Include(aiResult => aiResult.Video)
+            .Include(aiResult => aiResult.ModelVersion)
+            .Include(aiResult => aiResult.EvidenceItems)
+            .Where(aiResult => aiResult.VideoId == videoId
+                && aiResult.Video.UserId == currentUserId
+                && aiResult.Video.DeletedAt == null
+                && aiResult.Video.Status != VideoStatus.Deleted)
+            .OrderByDescending(aiResult => aiResult.CreatedAt)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return result is null
+            ? ApiResponse<AnalysisResultDto>.ErrorResponse("Analysis result is not available yet.")
+            : ApiResponse<AnalysisResultDto>.SuccessResponse(new AnalysisResultDto
+            {
+                VideoId = result.VideoId,
+                AiResultId = result.Id,
+                ModelVersion = result.ModelVersion?.Version,
+                VisualScore = result.VisualScore,
+                MetadataScore = result.MetadataScore,
+                TemporalScore = result.TemporalScore,
+                FinalScore = result.FinalScore,
+                Confidence = result.Confidence,
+                Label = result.Label.ToString(),
+                Summary = result.Summary,
+                CreatedAt = result.CreatedAt,
+                EvidenceItems = result.EvidenceItems
+                    .OrderByDescending(item => item.Severity)
+                    .ThenBy(item => item.Id)
+                    .Select(MapEvidence)
+                    .ToList()
+            });
+    }
+
+    public async Task<ApiResponse<IReadOnlyList<EvidenceItemDto>>> GetEvidenceAsync(
+        long videoId,
+        long currentUserId,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await dbContext.AiResults
+            .AsNoTracking()
+            .Include(aiResult => aiResult.Video)
+            .Include(aiResult => aiResult.EvidenceItems)
+            .Where(aiResult => aiResult.VideoId == videoId
+                && aiResult.Video.UserId == currentUserId
+                && aiResult.Video.DeletedAt == null
+                && aiResult.Video.Status != VideoStatus.Deleted)
+            .OrderByDescending(aiResult => aiResult.CreatedAt)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return result is null
+            ? ApiResponse<IReadOnlyList<EvidenceItemDto>>.ErrorResponse("Analysis result is not available yet.")
+            : ApiResponse<IReadOnlyList<EvidenceItemDto>>.SuccessResponse(result.EvidenceItems
+                .OrderByDescending(item => item.Severity)
+                .ThenBy(item => item.Id)
+                .Select(MapEvidence)
+                .ToList());
     }
 
     public async Task<ApiResponse<bool>> DeleteVideoAsync(
@@ -277,6 +424,21 @@ public class VideoService(
             CreatedAt = job.CreatedAt,
             StartedAt = job.StartedAt,
             CompletedAt = job.CompletedAt
+        };
+    }
+
+    private static EvidenceItemDto MapEvidence(EvidenceItem item)
+    {
+        return new EvidenceItemDto
+        {
+            Id = item.Id,
+            Type = item.Type.ToString(),
+            Severity = item.Severity.ToString(),
+            Title = item.Title,
+            Description = item.Description,
+            ScoreImpact = item.ScoreImpact,
+            TimestampSeconds = item.TimestampSeconds,
+            VideoFrameId = item.VideoFrameId
         };
     }
 

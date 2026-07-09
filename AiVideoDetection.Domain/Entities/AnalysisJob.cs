@@ -31,4 +31,6 @@ public class AnalysisJob
     public DateTimeOffset CreatedAt { get; set; }
 
     public DateTimeOffset UpdatedAt { get; set; }
+
+    public ICollection<JobLog> Logs { get; set; } = [];
 }

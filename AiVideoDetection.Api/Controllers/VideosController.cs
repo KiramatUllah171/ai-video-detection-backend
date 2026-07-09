@@ -14,6 +14,8 @@ public class VideosController(IVideoService videoService) : ControllerBase
 {
     [HttpPost("upload")]
     [Consumes("multipart/form-data")]
+    [RequestSizeLimit(524_288_000)]
+    [RequestFormLimits(MultipartBodyLengthLimit = 524_288_000)]
     [ProducesResponseType(typeof(ApiResponse<UploadVideoResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<UploadVideoResponse>), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ApiResponse<UploadVideoResponse>), StatusCodes.Status401Unauthorized)]
@@ -60,6 +62,66 @@ public class VideosController(IVideoService videoService) : ControllerBase
         }
 
         var response = await videoService.GetVideoDetailAsync(videoId, currentUserId, cancellationToken);
+        return response.Success ? Ok(response) : NotFound(response);
+    }
+
+    [HttpGet("{videoId:long}/metadata")]
+    [ProducesResponseType(typeof(ApiResponse<MetadataResultDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<MetadataResultDto>), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ApiResponse<MetadataResultDto>), StatusCodes.Status401Unauthorized)]
+    public async Task<ActionResult<ApiResponse<MetadataResultDto>>> Metadata(long videoId, CancellationToken cancellationToken)
+    {
+        if (!TryGetCurrentUserId(out var currentUserId))
+        {
+            return Unauthorized(ApiResponse<MetadataResultDto>.ErrorResponse("Unauthorized."));
+        }
+
+        var response = await videoService.GetMetadataAsync(videoId, currentUserId, cancellationToken);
+        return response.Success ? Ok(response) : NotFound(response);
+    }
+
+    [HttpGet("{videoId:long}/frames")]
+    [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<VideoFrameDto>>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<VideoFrameDto>>), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<VideoFrameDto>>), StatusCodes.Status401Unauthorized)]
+    public async Task<ActionResult<ApiResponse<IReadOnlyList<VideoFrameDto>>>> Frames(long videoId, CancellationToken cancellationToken)
+    {
+        if (!TryGetCurrentUserId(out var currentUserId))
+        {
+            return Unauthorized(ApiResponse<IReadOnlyList<VideoFrameDto>>.ErrorResponse("Unauthorized."));
+        }
+
+        var response = await videoService.GetFramesAsync(videoId, currentUserId, cancellationToken);
+        return response.Success ? Ok(response) : NotFound(response);
+    }
+
+    [HttpGet("{videoId:long}/analysis")]
+    [ProducesResponseType(typeof(ApiResponse<AnalysisResultDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<AnalysisResultDto>), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ApiResponse<AnalysisResultDto>), StatusCodes.Status401Unauthorized)]
+    public async Task<ActionResult<ApiResponse<AnalysisResultDto>>> Analysis(long videoId, CancellationToken cancellationToken)
+    {
+        if (!TryGetCurrentUserId(out var currentUserId))
+        {
+            return Unauthorized(ApiResponse<AnalysisResultDto>.ErrorResponse("Unauthorized."));
+        }
+
+        var response = await videoService.GetAnalysisAsync(videoId, currentUserId, cancellationToken);
+        return response.Success ? Ok(response) : NotFound(response);
+    }
+
+    [HttpGet("{videoId:long}/evidence")]
+    [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<EvidenceItemDto>>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<EvidenceItemDto>>), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<EvidenceItemDto>>), StatusCodes.Status401Unauthorized)]
+    public async Task<ActionResult<ApiResponse<IReadOnlyList<EvidenceItemDto>>>> Evidence(long videoId, CancellationToken cancellationToken)
+    {
+        if (!TryGetCurrentUserId(out var currentUserId))
+        {
+            return Unauthorized(ApiResponse<IReadOnlyList<EvidenceItemDto>>.ErrorResponse("Unauthorized."));
+        }
+
+        var response = await videoService.GetEvidenceAsync(videoId, currentUserId, cancellationToken);
         return response.Success ? Ok(response) : NotFound(response);
     }
 

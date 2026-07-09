@@ -23,6 +23,26 @@ public interface IVideoService
         long currentUserId,
         CancellationToken cancellationToken = default);
 
+    Task<ApiResponse<MetadataResultDto>> GetMetadataAsync(
+        long videoId,
+        long currentUserId,
+        CancellationToken cancellationToken = default);
+
+    Task<ApiResponse<IReadOnlyList<VideoFrameDto>>> GetFramesAsync(
+        long videoId,
+        long currentUserId,
+        CancellationToken cancellationToken = default);
+
+    Task<ApiResponse<AnalysisResultDto>> GetAnalysisAsync(
+        long videoId,
+        long currentUserId,
+        CancellationToken cancellationToken = default);
+
+    Task<ApiResponse<IReadOnlyList<EvidenceItemDto>>> GetEvidenceAsync(
+        long videoId,
+        long currentUserId,
+        CancellationToken cancellationToken = default);
+
     Task<ApiResponse<bool>> DeleteVideoAsync(
         long videoId,
         long currentUserId,

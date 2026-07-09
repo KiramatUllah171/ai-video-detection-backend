@@ -7,4 +7,6 @@ public interface IObjectStorageService
     Task DeleteAsync(string objectKeyOrUrl, CancellationToken cancellationToken = default);
 
     Task<string> GetReadUrlAsync(string objectKeyOrUrl, TimeSpan expiry, CancellationToken cancellationToken = default);
+
+    Task DownloadToAsync(string objectKeyOrUrl, string destinationPath, CancellationToken cancellationToken = default);
 }

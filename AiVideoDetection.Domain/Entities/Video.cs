@@ -39,4 +39,10 @@ public class Video
     public DateTimeOffset UpdatedAt { get; set; }
 
     public ICollection<AnalysisJob> AnalysisJobs { get; set; } = [];
+
+    public ICollection<VideoFrame> Frames { get; set; } = [];
+
+    public MetadataResult? MetadataResult { get; set; }
+
+    public ICollection<AiResult> AiResults { get; set; } = [];
 }

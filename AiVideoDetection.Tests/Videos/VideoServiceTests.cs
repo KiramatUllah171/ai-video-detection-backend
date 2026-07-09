@@ -22,7 +22,8 @@ public class VideoServiceTests
         dbContext.Users.Add(CreateUser(1, "owner@example.com"));
         await dbContext.SaveChangesAsync();
         var storage = new FakeObjectStorageService();
-        var service = CreateService(dbContext, storage);
+        var queue = new FakeAnalysisJobQueue();
+        var service = CreateService(dbContext, storage, queue);
 
         var response = await service.UploadAsync(CreateUploadRequest(), 1, null);
 
@@ -31,6 +32,7 @@ public class VideoServiceTests
         Assert.Equal(1, await dbContext.Videos.CountAsync());
         Assert.Equal(1, await dbContext.AnalysisJobs.CountAsync());
         Assert.Equal(1, storage.UploadCalls);
+        Assert.Equal(1, queue.EnqueueCalls);
         Assert.Equal(JobStatus.Queued, (await dbContext.AnalysisJobs.SingleAsync()).Status);
     }
 
@@ -39,7 +41,7 @@ public class VideoServiceTests
     {
         await using var dbContext = new FailingSaveAppDbContext(CreateOptions());
         var storage = new FakeObjectStorageService();
-        var service = CreateService(dbContext, storage);
+        var service = CreateService(dbContext, storage, new FakeAnalysisJobQueue());
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => service.UploadAsync(CreateUploadRequest(), 1, null));
 
@@ -62,7 +64,7 @@ public class VideoServiceTests
             Status = VideoStatus.Uploaded
         });
         await dbContext.SaveChangesAsync();
-        var service = CreateService(dbContext, new FakeObjectStorageService());
+        var service = CreateService(dbContext, new FakeObjectStorageService(), new FakeAnalysisJobQueue());
 
         var response = await service.GetVideoDetailAsync(10, 2);
 
@@ -92,7 +94,7 @@ public class VideoServiceTests
             CurrentStep = "Waiting"
         });
         await dbContext.SaveChangesAsync();
-        var service = new JobService(dbContext);
+        var service = new JobService(dbContext, new FakeAnalysisJobQueue(), new FakeJobLogService());
 
         var response = await service.GetStatusByVideoIdAsync(10, 2);
 
@@ -109,7 +111,7 @@ public class VideoServiceTests
             new Video { UserId = 2, OriginalName = "two.mp4", FileUrl = "two", FileSize = 1, Status = VideoStatus.Uploaded },
             new Video { UserId = 1, OriginalName = "deleted.mp4", FileUrl = "deleted", FileSize = 1, Status = VideoStatus.Deleted, DeletedAt = DateTimeOffset.UtcNow });
         await dbContext.SaveChangesAsync();
-        var service = CreateService(dbContext, new FakeObjectStorageService());
+        var service = CreateService(dbContext, new FakeObjectStorageService(), new FakeAnalysisJobQueue());
 
         var response = await service.GetHistoryAsync(1, 1, 20, null);
 
@@ -118,10 +120,115 @@ public class VideoServiceTests
         Assert.Equal("one.mp4", response.Data.Items[0].OriginalName);
     }
 
-    private static VideoService CreateService(AppDbContext dbContext, IObjectStorageService storage)
+    [Fact]
+    public async Task UserCannotAccessAnotherUsersAnalysis()
+    {
+        await using var dbContext = CreateDbContext();
+        dbContext.Users.AddRange(CreateUser(1, "owner@example.com"), CreateUser(2, "other@example.com"));
+        dbContext.Videos.Add(new Video
+        {
+            Id = 10,
+            UserId = 1,
+            OriginalName = "owner.mp4",
+            FileUrl = "videos/1/file.mp4",
+            FileSize = 100,
+            Status = VideoStatus.Completed,
+            AiResults =
+            [
+                new AiResult
+                {
+                    VisualScore = 0.5m,
+                    FinalScore = 0.5m,
+                    Confidence = 0.8m,
+                    Label = AnalysisLabel.Suspicious,
+                    RawModelOutputJson = "{}"
+                }
+            ]
+        });
+        await dbContext.SaveChangesAsync();
+        var service = CreateService(dbContext, new FakeObjectStorageService(), new FakeAnalysisJobQueue());
+
+        var response = await service.GetAnalysisAsync(10, 2);
+
+        Assert.False(response.Success);
+    }
+
+    [Fact]
+    public async Task NoAnalysisResultReturnsCleanError()
+    {
+        await using var dbContext = CreateDbContext();
+        dbContext.Users.Add(CreateUser(1, "owner@example.com"));
+        dbContext.Videos.Add(new Video
+        {
+            Id = 10,
+            UserId = 1,
+            OriginalName = "owner.mp4",
+            FileUrl = "videos/1/file.mp4",
+            FileSize = 100,
+            Status = VideoStatus.Completed
+        });
+        await dbContext.SaveChangesAsync();
+        var service = CreateService(dbContext, new FakeObjectStorageService(), new FakeAnalysisJobQueue());
+
+        var response = await service.GetAnalysisAsync(10, 1);
+
+        Assert.False(response.Success);
+        Assert.Contains("not available yet", response.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task OwnerCanAccessAnalysisResult()
+    {
+        await using var dbContext = CreateDbContext();
+        dbContext.Users.Add(CreateUser(1, "owner@example.com"));
+        dbContext.Videos.Add(new Video
+        {
+            Id = 10,
+            UserId = 1,
+            OriginalName = "owner.mp4",
+            FileUrl = "videos/1/file.mp4",
+            FileSize = 100,
+            Status = VideoStatus.Completed,
+            AiResults =
+            [
+                new AiResult
+                {
+                    VisualScore = 0.6m,
+                    FinalScore = 0.55m,
+                    Confidence = 0.8m,
+                    Label = AnalysisLabel.Suspicious,
+                    RawModelOutputJson = "{}",
+                    EvidenceItems =
+                    [
+                        new EvidenceItem
+                        {
+                            Type = EvidenceType.SystemNote,
+                            Severity = EvidenceSeverity.Low,
+                            Title = "Mock AI service result",
+                            Description = "Mock"
+                        }
+                    ]
+                }
+            ]
+        });
+        await dbContext.SaveChangesAsync();
+        var service = CreateService(dbContext, new FakeObjectStorageService(), new FakeAnalysisJobQueue());
+
+        var response = await service.GetAnalysisAsync(10, 1);
+
+        Assert.True(response.Success);
+        Assert.NotNull(response.Data);
+        Assert.Equal("Suspicious", response.Data.Label);
+        Assert.Single(response.Data.EvidenceItems);
+    }
+
+    private static VideoService CreateService(
+        AppDbContext dbContext,
+        IObjectStorageService storage,
+        IAnalysisJobQueue queue)
     {
         var validator = new UploadVideoRequestValidator(Options.Create(new VideoUploadOptions()));
-        return new VideoService(dbContext, storage, validator, NullLogger<VideoService>.Instance);
+        return new VideoService(dbContext, storage, queue, validator, NullLogger<VideoService>.Instance);
     }
 
     private static AppDbContext CreateDbContext()
@@ -185,6 +292,41 @@ public class VideoServiceTests
         public Task<string> GetReadUrlAsync(string objectKeyOrUrl, TimeSpan expiry, CancellationToken cancellationToken = default)
         {
             return Task.FromResult(objectKeyOrUrl);
+        }
+
+        public Task DownloadToAsync(string objectKeyOrUrl, string destinationPath, CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class FakeAnalysisJobQueue : IAnalysisJobQueue
+    {
+        public int EnqueueCalls { get; private set; }
+
+        public string EnqueueAnalysisJob(long jobId)
+        {
+            EnqueueCalls++;
+            return $"fake-{jobId}";
+        }
+
+        public string RetryAnalysisJob(long jobId)
+        {
+            return EnqueueAnalysisJob(jobId);
+        }
+    }
+
+    private sealed class FakeJobLogService : IJobLogService
+    {
+        public Task LogAsync(
+            long jobId,
+            string stepName,
+            string level,
+            string message,
+            object? details = null,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
         }
     }
 
