@@ -39,6 +39,34 @@ public class DevAnalysisDebugController(
         }
 
         var rawModelOutput = ParseJson(result.RawModelOutputJson);
+        var providerRequests = await dbContext.AiProviderRequests
+            .AsNoTracking()
+            .Where(request => request.VideoId == videoId)
+            .OrderByDescending(request => request.CreatedAt)
+            .Take(20)
+            .Select(request => new
+            {
+                request.Id,
+                request.ProviderName,
+                request.ProviderMode,
+                request.ProviderRequestId,
+                request.ProviderJobId,
+                request.Status,
+                request.RequestStartedAt,
+                request.RequestCompletedAt,
+                request.DurationMs,
+                request.HttpStatusCode,
+                request.ErrorMessage,
+                rawRequestMetadata = request.RawRequestMetadataJson == null ? null : ParseJson(request.RawRequestMetadataJson),
+                rawResponse = request.RawResponseJson == null ? null : ParseJson(request.RawResponseJson)
+            })
+            .ToListAsync(cancellationToken);
+        var quotaUsage = await dbContext.ApiUsageMonthly
+            .AsNoTracking()
+            .OrderByDescending(usage => usage.Year)
+            .ThenByDescending(usage => usage.Month)
+            .Take(12)
+            .ToListAsync(cancellationToken);
         return Ok(ApiResponse<object>.SuccessResponse(new
         {
             aiResultId = result.Id,
@@ -52,8 +80,24 @@ public class DevAnalysisDebugController(
             label = result.Label.ToString(),
             result.Summary,
             result.CreatedAt,
+            provider = result.Provider,
+            providerMode = result.ProviderMode,
+            finalDecisionSource = result.FinalDecisionSource,
+            externalProviderName = result.ExternalProviderName,
+            externalProviderStatus = result.ExternalProviderStatus,
+            externalScore = result.ExternalScore,
+            externalConfidence = result.ExternalConfidence,
+            externalLabel = result.ExternalLabel,
+            externalErrorMessage = result.ExternalErrorMessage,
+            externalRawResponse = result.ExternalRawResponseJson == null ? null : ParseJson(result.ExternalRawResponseJson),
+            localResult = result.LocalResultJson == null ? null : ParseJson(result.LocalResultJson),
+            hybridResult = result.HybridResultJson == null ? null : ParseJson(result.HybridResultJson),
+            fallbackUsed = result.FallbackUsed,
+            result.FallbackReason,
             evidenceCount = result.EvidenceItems.Count,
-            rawModelOutput
+            rawModelOutput,
+            providerRequests,
+            quotaUsage
         }));
     }
 

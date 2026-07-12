@@ -36,6 +36,38 @@ public class AnalysisResultDto
 
     public IReadOnlyList<string> Warnings { get; init; } = [];
 
+    public string Provider { get; init; } = "Local";
+
+    public string ProviderMode { get; init; } = "local";
+
+    public string FinalDecisionSource { get; init; } = "Local";
+
+    public string? ExternalProviderName { get; init; }
+
+    public string? ExternalProviderStatus { get; init; }
+
+    public decimal? ExternalScore { get; init; }
+
+    public decimal? ExternalConfidence { get; init; }
+
+    public string? ExternalLabel { get; init; }
+
+    public bool FallbackUsed { get; init; }
+
+    public string? FallbackReason { get; init; }
+
+    public IReadOnlyList<string> ProviderWarnings { get; init; } = [];
+
+    public string? LocalAnalysisSummary { get; init; }
+
+    public string? ExternalAnalysisSummary { get; init; }
+
+    public string? HybridDecisionSummary { get; init; }
+
+    public DateTimeOffset? ProviderRequestedAt { get; init; }
+
+    public DateTimeOffset? ProviderCompletedAt { get; init; }
+
     public bool ModelDisagreement { get; init; }
 
     public bool StrongFrameEvidence { get; init; }

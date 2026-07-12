@@ -410,6 +410,24 @@ public class VideoService(
                 Label = result.Label.ToString(),
                 Summary = result.Summary,
                 Warnings = GetRawStringArray(result.RawModelOutputJson, "warnings"),
+                Provider = result.Provider,
+                ProviderMode = result.ProviderMode,
+                FinalDecisionSource = result.FinalDecisionSource,
+                ExternalProviderName = result.ExternalProviderName,
+                ExternalProviderStatus = result.ExternalProviderStatus,
+                ExternalScore = result.ExternalScore,
+                ExternalConfidence = result.ExternalConfidence,
+                ExternalLabel = result.ExternalLabel,
+                FallbackUsed = result.FallbackUsed,
+                FallbackReason = result.FallbackReason,
+                ProviderWarnings = GetRawStringArray(result.RawModelOutputJson, "warnings"),
+                LocalAnalysisSummary = BuildProviderSummary("Local", result.LocalResultJson),
+                ExternalAnalysisSummary = BuildExternalSummary(result),
+                HybridDecisionSummary = result.ProviderMode.Equals("hybrid", StringComparison.OrdinalIgnoreCase)
+                    ? result.Summary
+                    : null,
+                ProviderRequestedAt = result.ExternalRequestedAt,
+                ProviderCompletedAt = result.ExternalCompletedAt,
                 ModelDisagreement = GetRawBool(result.RawModelOutputJson, "model_disagreement"),
                 StrongFrameEvidence = GetRawBool(result.RawModelOutputJson, "strong_frame_evidence"),
                 MinimumRecommendedScore = GetRawDecimal(result.RawModelOutputJson, "minimum_recommended_score"),
@@ -617,6 +635,34 @@ public class VideoService(
         {
             return null;
         }
+    }
+
+    private static string? BuildProviderSummary(string providerName, string? resultJson)
+    {
+        if (string.IsNullOrWhiteSpace(resultJson))
+        {
+            return null;
+        }
+
+        var score = GetRawDecimal(resultJson, "overall_ai_score");
+        var confidence = GetRawDecimal(resultJson, "overall_confidence");
+        var label = GetRawString(resultJson, "label_hint");
+        return $"{providerName}: {label ?? "analysis completed"}"
+            + (score is null ? string.Empty : $" ({ToPercentage(score.Value)}% AI)")
+            + (confidence is null ? string.Empty : $", {ToPercentage(confidence.Value)}% confidence");
+    }
+
+    private static string? BuildExternalSummary(AiResult result)
+    {
+        if (string.IsNullOrWhiteSpace(result.ExternalProviderName))
+        {
+            return null;
+        }
+
+        return $"{result.ExternalProviderName}: {result.ExternalProviderStatus ?? "Unknown"}"
+            + (result.ExternalLabel is null ? string.Empty : $", {result.ExternalLabel}")
+            + (result.ExternalScore is null ? string.Empty : $" ({ToPercentage(result.ExternalScore.Value)}% AI)")
+            + (result.ExternalConfidence is null ? string.Empty : $", {ToPercentage(result.ExternalConfidence.Value)}% confidence");
     }
 
     private static string CreateObjectKey(long userId, string extension)

@@ -82,6 +82,68 @@ public class PythonAiInferenceClient(
         }
     }
 
+    public async Task<AiAnalyzeFramesResponse> AnalyzeVideoAsync(
+        AiAnalyzeVideoRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var client = CreateClient();
+        var payload = new AnalyzeVideoHttpRequest(
+            request.VideoId,
+            request.JobId,
+            request.ProviderMode,
+            request.UserId,
+            request.OriginalVideoPath,
+            request.Frames
+                .Take(Math.Max(_options.MaxFramesPerRequest, 1))
+                .Select(frame => new AnalyzeFrameHttpItem(
+                    frame.FrameId,
+                    frame.FrameUrl,
+                    frame.FrameIndex,
+                    frame.TimestampSeconds,
+                    frame.ImageBase64))
+                .ToList());
+
+        try
+        {
+            using var response = await client.PostAsJsonAsync(_options.AnalyzeVideoPath, payload, JsonOptions, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorJson = await response.Content.ReadAsStringAsync(cancellationToken);
+                var errorResponse = TryDeserializeError(errorJson);
+                logger.LogWarning(
+                    "AI video service returned non-success status {StatusCode} with error {ErrorCode} for video {VideoId} job {JobId}.",
+                    response.StatusCode,
+                    errorResponse?.ErrorCode,
+                    request.VideoId,
+                    request.JobId);
+                throw new AiServiceException(
+                    errorResponse?.ErrorCode ?? "AI_VIDEO_SERVICE_UNAVAILABLE",
+                    errorResponse is null ? "AI video analysis service is currently unavailable." : SafeMessage(errorResponse.ErrorCode, errorResponse.Message));
+            }
+
+            var rawJson = await response.Content.ReadAsStringAsync(cancellationToken);
+            var serviceResponse = JsonSerializer.Deserialize<AnalyzeFramesHttpResponse>(rawJson, JsonOptions);
+            if (serviceResponse is null)
+            {
+                throw new AiServiceException("AI_SERVICE_INVALID_RESPONSE", "AI analysis service returned an invalid response.");
+            }
+
+            return serviceResponse.ToApplicationResponse(rawJson);
+        }
+        catch (TaskCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new AiServiceException("AI_SERVICE_TIMEOUT", "AI analysis service timed out. Please try again later.", exception);
+        }
+        catch (HttpRequestException exception)
+        {
+            throw new AiServiceException("AI_SERVICE_UNAVAILABLE", "AI analysis service is currently unavailable. Please try again later.", exception);
+        }
+        catch (JsonException exception)
+        {
+            throw new AiServiceException("AI_SERVICE_INVALID_RESPONSE", "AI analysis service returned an invalid response.", exception);
+        }
+    }
+
     public async Task<bool> HealthCheckAsync(CancellationToken cancellationToken = default)
     {
         try
@@ -109,6 +171,14 @@ public class PythonAiInferenceClient(
         [property: JsonPropertyName("job_id")] long JobId,
         [property: JsonPropertyName("frames")] IReadOnlyList<AnalyzeFrameHttpItem> Frames);
 
+    private sealed record AnalyzeVideoHttpRequest(
+        [property: JsonPropertyName("video_id")] long VideoId,
+        [property: JsonPropertyName("job_id")] long JobId,
+        [property: JsonPropertyName("provider_mode")] string ProviderMode,
+        [property: JsonPropertyName("user_id")] long UserId,
+        [property: JsonPropertyName("original_video_path")] string OriginalVideoPath,
+        [property: JsonPropertyName("frames")] IReadOnlyList<AnalyzeFrameHttpItem> Frames);
+
     private sealed record AnalyzeFrameHttpItem(
         [property: JsonPropertyName("frame_id")] long FrameId,
         [property: JsonPropertyName("frame_url")] string FrameUrl,
@@ -134,7 +204,15 @@ public class PythonAiInferenceClient(
         [property: JsonPropertyName("strong_frame_evidence")] bool StrongFrameEvidence,
         [property: JsonPropertyName("minimum_recommended_score")] decimal? MinimumRecommendedScore,
         [property: JsonPropertyName("ensemble_strategy")] string? EnsembleStrategy,
-        [property: JsonPropertyName("component_scores")] JsonElement? ComponentScores)
+        [property: JsonPropertyName("component_scores")] JsonElement? ComponentScores,
+        [property: JsonPropertyName("provider")] string? Provider,
+        [property: JsonPropertyName("provider_mode")] string? ProviderMode,
+        [property: JsonPropertyName("external_provider_result")] JsonElement? ExternalProviderResult,
+        [property: JsonPropertyName("fallback_used")] bool FallbackUsed,
+        [property: JsonPropertyName("fallback_reason")] string? FallbackReason,
+        [property: JsonPropertyName("local_result")] JsonElement? LocalResult,
+        [property: JsonPropertyName("bitmind_result")] JsonElement? BitMindResult,
+        [property: JsonPropertyName("final_decision_source")] string? FinalDecisionSource)
     {
         public AiAnalyzeFramesResponse ToApplicationResponse(string rawJson)
         {
@@ -169,7 +247,15 @@ public class PythonAiInferenceClient(
                 ExtractComponentScore(componentScoresJson, "frame"),
                 ExtractNestedComponentScore(componentScoresJson, "frame", "raw_frame_ai_score"),
                 ExtractNestedComponentScore(componentScoresJson, "frame", "calibrated_frame_ai_score"),
-                ExtractNestedComponentScore(componentScoresJson, "frame", "reliability", "accuracy"))
+                ExtractNestedComponentScore(componentScoresJson, "frame", "reliability", "accuracy"),
+                Provider ?? "Local",
+                ProviderMode ?? "local",
+                ExternalProviderResult?.GetRawText(),
+                FallbackUsed,
+                FallbackReason,
+                LocalResult?.GetRawText(),
+                BitMindResult?.GetRawText(),
+                FinalDecisionSource ?? "Local")
             {
                 RawJson = rawJson
             };

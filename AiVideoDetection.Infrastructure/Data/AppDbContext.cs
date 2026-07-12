@@ -33,6 +33,10 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
     public DbSet<SourceMatch> SourceMatches => Set<SourceMatch>();
 
+    public DbSet<AiProviderRequest> AiProviderRequests => Set<AiProviderRequest>();
+
+    public DbSet<ApiUsageMonthly> ApiUsageMonthly => Set<ApiUsageMonthly>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -78,6 +82,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         ConfigureEvidenceItem(modelBuilder);
         ConfigureFrameHash(modelBuilder);
         ConfigureSourceMatch(modelBuilder);
+        ConfigureAiProviderRequest(modelBuilder);
+        ConfigureApiUsageMonthly(modelBuilder);
     }
 
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
@@ -216,6 +222,35 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             if (entry.State == EntityState.Added && entry.Entity.CreatedAt == default)
             {
                 entry.Entity.CreatedAt = now;
+            }
+        }
+
+        foreach (var entry in ChangeTracker.Entries<AiProviderRequest>())
+        {
+            if (entry.State == EntityState.Added && entry.Entity.CreatedAt == default)
+            {
+                entry.Entity.CreatedAt = now;
+            }
+        }
+
+        foreach (var entry in ChangeTracker.Entries<ApiUsageMonthly>())
+        {
+            if (entry.State == EntityState.Added)
+            {
+                if (entry.Entity.CreatedAt == default)
+                {
+                    entry.Entity.CreatedAt = now;
+                }
+
+                if (entry.Entity.UpdatedAt == default)
+                {
+                    entry.Entity.UpdatedAt = now;
+                }
+            }
+            else if (entry.State == EntityState.Modified)
+            {
+                entry.Property(usage => usage.CreatedAt).IsModified = false;
+                entry.Entity.UpdatedAt = now;
             }
         }
 
@@ -732,6 +767,24 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
                 .HasColumnType("jsonb")
                 .IsRequired();
             entity.Property(result => result.Summary).HasColumnName("summary").HasMaxLength(1000);
+            entity.Property(result => result.Provider).HasColumnName("provider").HasMaxLength(100).HasDefaultValue("Local").IsRequired();
+            entity.Property(result => result.ProviderMode).HasColumnName("provider_mode").HasMaxLength(50).HasDefaultValue("local").IsRequired();
+            entity.Property(result => result.FinalDecisionSource).HasColumnName("final_decision_source").HasMaxLength(50).HasDefaultValue("Local").IsRequired();
+            entity.Property(result => result.ExternalProviderName).HasColumnName("external_provider_name").HasMaxLength(100);
+            entity.Property(result => result.ExternalProviderResultId).HasColumnName("external_provider_result_id").HasMaxLength(200);
+            entity.Property(result => result.ExternalProviderJobId).HasColumnName("external_provider_job_id").HasMaxLength(200);
+            entity.Property(result => result.ExternalProviderStatus).HasColumnName("external_provider_status").HasMaxLength(100);
+            entity.Property(result => result.ExternalScore).HasColumnName("external_score");
+            entity.Property(result => result.ExternalConfidence).HasColumnName("external_confidence");
+            entity.Property(result => result.ExternalLabel).HasColumnName("external_label").HasMaxLength(100);
+            entity.Property(result => result.ExternalRawResponseJson).HasColumnName("external_raw_response_json").HasColumnType("jsonb");
+            entity.Property(result => result.ExternalErrorMessage).HasColumnName("external_error_message");
+            entity.Property(result => result.ExternalRequestedAt).HasColumnName("external_requested_at");
+            entity.Property(result => result.ExternalCompletedAt).HasColumnName("external_completed_at");
+            entity.Property(result => result.FallbackUsed).HasColumnName("fallback_used").HasDefaultValue(false).IsRequired();
+            entity.Property(result => result.FallbackReason).HasColumnName("fallback_reason");
+            entity.Property(result => result.LocalResultJson).HasColumnName("local_result_json").HasColumnType("jsonb");
+            entity.Property(result => result.HybridResultJson).HasColumnName("hybrid_result_json").HasColumnType("jsonb");
             entity.Property(result => result.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("NOW()").IsRequired();
 
             entity.HasOne(result => result.Video)
@@ -749,6 +802,61 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
                 .HasDatabaseName("ix_ai_results_video_id_created");
             entity.HasIndex(result => result.Label).HasDatabaseName("ix_ai_results_label");
             entity.HasIndex(result => result.ModelVersionId).HasDatabaseName("ix_ai_results_model_version_id");
+            entity.HasIndex(result => result.Provider).HasDatabaseName("ix_ai_results_provider");
+        });
+    }
+
+    private static void ConfigureAiProviderRequest(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<AiProviderRequest>(entity =>
+        {
+            entity.ToTable("ai_provider_requests");
+            entity.HasKey(request => request.Id);
+            entity.Property(request => request.Id).HasColumnName("id").UseIdentityByDefaultColumn();
+            entity.Property(request => request.VideoId).HasColumnName("video_id").IsRequired();
+            entity.Property(request => request.AnalysisJobId).HasColumnName("analysis_job_id").IsRequired();
+            entity.Property(request => request.AiResultId).HasColumnName("ai_result_id");
+            entity.Property(request => request.UserId).HasColumnName("user_id").IsRequired();
+            entity.Property(request => request.ProviderName).HasColumnName("provider_name").HasMaxLength(100).IsRequired();
+            entity.Property(request => request.ProviderMode).HasColumnName("provider_mode").HasMaxLength(50).IsRequired();
+            entity.Property(request => request.ProviderRequestId).HasColumnName("provider_request_id").HasMaxLength(200);
+            entity.Property(request => request.ProviderJobId).HasColumnName("provider_job_id").HasMaxLength(200);
+            entity.Property(request => request.Status).HasColumnName("status").HasMaxLength(100).IsRequired();
+            entity.Property(request => request.RequestStartedAt).HasColumnName("request_started_at").IsRequired();
+            entity.Property(request => request.RequestCompletedAt).HasColumnName("request_completed_at");
+            entity.Property(request => request.DurationMs).HasColumnName("duration_ms");
+            entity.Property(request => request.HttpStatusCode).HasColumnName("http_status_code");
+            entity.Property(request => request.ErrorMessage).HasColumnName("error_message");
+            entity.Property(request => request.RawRequestMetadataJson).HasColumnName("raw_request_metadata_json").HasColumnType("jsonb");
+            entity.Property(request => request.RawResponseJson).HasColumnName("raw_response_json").HasColumnType("jsonb");
+            entity.Property(request => request.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("NOW()").IsRequired();
+
+            entity.HasOne(request => request.Video).WithMany().HasForeignKey(request => request.VideoId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(request => request.AnalysisJob).WithMany().HasForeignKey(request => request.AnalysisJobId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(request => request.AiResult).WithMany(result => result.ProviderRequests).HasForeignKey(request => request.AiResultId).OnDelete(DeleteBehavior.SetNull);
+            entity.HasOne(request => request.User).WithMany().HasForeignKey(request => request.UserId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasIndex(request => new { request.VideoId, request.CreatedAt }).IsDescending(false, true).HasDatabaseName("ix_ai_provider_requests_video_created");
+            entity.HasIndex(request => new { request.ProviderName, request.ProviderJobId }).HasDatabaseName("ix_ai_provider_requests_provider_job");
+        });
+    }
+
+    private static void ConfigureApiUsageMonthly(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<ApiUsageMonthly>(entity =>
+        {
+            entity.ToTable("api_usage_monthly");
+            entity.HasKey(usage => usage.Id);
+            entity.Property(usage => usage.Id).HasColumnName("id").UseIdentityByDefaultColumn();
+            entity.Property(usage => usage.ProviderName).HasColumnName("provider_name").HasMaxLength(100).IsRequired();
+            entity.Property(usage => usage.Year).HasColumnName("year").IsRequired();
+            entity.Property(usage => usage.Month).HasColumnName("month").IsRequired();
+            entity.Property(usage => usage.RequestCount).HasColumnName("request_count").HasDefaultValue(0).IsRequired();
+            entity.Property(usage => usage.SuccessCount).HasColumnName("success_count").HasDefaultValue(0).IsRequired();
+            entity.Property(usage => usage.FailedCount).HasColumnName("failed_count").HasDefaultValue(0).IsRequired();
+            entity.Property(usage => usage.QuotaLimit).HasColumnName("quota_limit").IsRequired();
+            entity.Property(usage => usage.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("NOW()").IsRequired();
+            entity.Property(usage => usage.UpdatedAt).HasColumnName("updated_at").HasDefaultValueSql("NOW()").IsRequired();
+            entity.HasIndex(usage => new { usage.ProviderName, usage.Year, usage.Month }).IsUnique().HasDatabaseName("ux_api_usage_monthly_provider_year_month");
         });
     }
 
