@@ -5,4 +5,6 @@ public sealed record EvidenceGenerationInput(
     IReadOnlyList<AiFrameAnalysisResult> FrameResults,
     IReadOnlyDictionary<long, long> FrameIdToVideoFrameId,
     IReadOnlyList<string> MetadataWarnings,
-    FinalScoringResult ScoringResult);
+    FinalScoringResult ScoringResult,
+    bool ModelDisagreement = false,
+    bool StrongFrameEvidence = false);

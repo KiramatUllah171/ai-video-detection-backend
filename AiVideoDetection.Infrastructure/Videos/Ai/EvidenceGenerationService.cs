@@ -17,6 +17,18 @@ public class EvidenceGenerationService(IOptions<ScoringOptions> options) : IEvid
         evidence.AddRange(CreateFrameEvidence(input));
         evidence.AddRange(input.MetadataWarnings.Select(CreateMetadataEvidence));
 
+        if (input.ModelDisagreement)
+        {
+            evidence.Add(new CreateEvidenceItemDto(
+                null,
+                EvidenceType.ConfidenceNote,
+                EvidenceSeverity.Medium,
+                "Detector disagreement",
+                "The video temporal detector and frame-level detector disagreed. Treat the result with caution and review the evidence.",
+                null,
+                null));
+        }
+
         if (input.ScoringResult.Confidence < 0.55m)
         {
             evidence.Add(new CreateEvidenceItemDto(
@@ -46,6 +58,7 @@ public class EvidenceGenerationService(IOptions<ScoringOptions> options) : IEvid
 
     private IEnumerable<CreateEvidenceItemDto> CreateFrameEvidence(EvidenceGenerationInput input)
     {
+        var isMock = input.ModelVersion.StartsWith("mock", StringComparison.OrdinalIgnoreCase);
         return input.FrameResults
             .Where(frame => frame.AiScore >= _options.MediumFrameScoreThreshold)
             .OrderByDescending(frame => frame.AiScore)
@@ -55,9 +68,13 @@ public class EvidenceGenerationService(IOptions<ScoringOptions> options) : IEvid
                 var severity = frame.AiScore >= _options.HighFrameScoreThreshold
                     ? EvidenceSeverity.High
                     : EvidenceSeverity.Medium;
-                var title = severity == EvidenceSeverity.High
-                    ? "High AI indicator frame"
-                    : "Moderate AI indicator frame";
+                var title = isMock
+                    ? severity == EvidenceSeverity.High
+                        ? "Mock high-score frame"
+                        : "Mock moderate-score frame"
+                    : severity == EvidenceSeverity.High
+                        ? "High AI indicator frame"
+                        : "Moderate AI indicator frame";
                 input.FrameIdToVideoFrameId.TryGetValue(frame.FrameId, out var videoFrameId);
                 return new CreateEvidenceItemDto(
                     videoFrameId == 0 ? null : videoFrameId,

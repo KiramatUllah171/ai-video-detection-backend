@@ -9,4 +9,5 @@ public sealed record FinalScoringResult(
     decimal FinalScore,
     decimal Confidence,
     AnalysisLabel Label,
-    string Summary);
+    string Summary,
+    IReadOnlyList<string> Warnings);

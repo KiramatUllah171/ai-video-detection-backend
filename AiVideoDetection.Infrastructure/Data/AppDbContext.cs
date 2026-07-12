@@ -29,6 +29,10 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
     public DbSet<EvidenceItem> EvidenceItems => Set<EvidenceItem>();
 
+    public DbSet<FrameHash> FrameHashes => Set<FrameHash>();
+
+    public DbSet<SourceMatch> SourceMatches => Set<SourceMatch>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -57,6 +61,10 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             schema: null,
             name: "evidence_severity",
             nameTranslator: EnumNameTranslator);
+        modelBuilder.HasPostgresEnum<ConfidenceLevel>(
+            schema: null,
+            name: "confidence_level",
+            nameTranslator: EnumNameTranslator);
 
         ConfigureUser(modelBuilder);
         ConfigureRefreshToken(modelBuilder);
@@ -68,6 +76,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         ConfigureModelVersion(modelBuilder);
         ConfigureAiResult(modelBuilder);
         ConfigureEvidenceItem(modelBuilder);
+        ConfigureFrameHash(modelBuilder);
+        ConfigureSourceMatch(modelBuilder);
     }
 
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
@@ -186,6 +196,22 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         }
 
         foreach (var entry in ChangeTracker.Entries<EvidenceItem>())
+        {
+            if (entry.State == EntityState.Added && entry.Entity.CreatedAt == default)
+            {
+                entry.Entity.CreatedAt = now;
+            }
+        }
+
+        foreach (var entry in ChangeTracker.Entries<FrameHash>())
+        {
+            if (entry.State == EntityState.Added && entry.Entity.CreatedAt == default)
+            {
+                entry.Entity.CreatedAt = now;
+            }
+        }
+
+        foreach (var entry in ChangeTracker.Entries<SourceMatch>())
         {
             if (entry.State == EntityState.Added && entry.Entity.CreatedAt == default)
             {
@@ -765,6 +791,102 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.HasIndex(evidence => evidence.AiResultId).HasDatabaseName("ix_evidence_items_ai_result_id");
             entity.HasIndex(evidence => evidence.VideoFrameId).HasDatabaseName("ix_evidence_items_video_frame_id");
             entity.HasIndex(evidence => evidence.Severity).HasDatabaseName("ix_evidence_items_severity");
+        });
+    }
+
+    private static void ConfigureFrameHash(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<FrameHash>(entity =>
+        {
+            entity.ToTable("frame_hashes");
+            entity.HasKey(hash => hash.Id);
+
+            entity.Property(hash => hash.Id).HasColumnName("id").UseIdentityByDefaultColumn();
+            entity.Property(hash => hash.VideoId).HasColumnName("video_id").IsRequired();
+            entity.Property(hash => hash.FrameId).HasColumnName("frame_id").IsRequired();
+            entity.Property(hash => hash.PHash).HasColumnName("phash").HasMaxLength(128);
+            entity.Property(hash => hash.DHash).HasColumnName("dhash").HasMaxLength(128);
+            entity.Property(hash => hash.AHash).HasColumnName("ahash").HasMaxLength(128);
+            entity.Property(hash => hash.HashVersion)
+                .HasColumnName("hash_version")
+                .HasMaxLength(50)
+                .HasDefaultValue("mvp-v1")
+                .IsRequired();
+            entity.Property(hash => hash.CreatedAt)
+                .HasColumnName("created_at")
+                .HasDefaultValueSql("NOW()")
+                .IsRequired();
+
+            entity.HasOne(hash => hash.Video)
+                .WithMany(video => video.FrameHashes)
+                .HasForeignKey(hash => hash.VideoId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(hash => hash.VideoFrame)
+                .WithMany(frame => frame.FrameHashes)
+                .HasForeignKey(hash => hash.FrameId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasIndex(hash => hash.VideoId).HasDatabaseName("ix_frame_hashes_video_id");
+            entity.HasIndex(hash => hash.PHash).HasDatabaseName("ix_frame_hashes_phash");
+            entity.HasIndex(hash => hash.DHash).HasDatabaseName("ix_frame_hashes_dhash");
+            entity.HasIndex(hash => hash.AHash).HasDatabaseName("ix_frame_hashes_ahash");
+            entity.HasIndex(hash => new { hash.FrameId, hash.HashVersion })
+                .IsUnique()
+                .HasDatabaseName("ux_frame_hashes_frame_id_hash_version");
+        });
+    }
+
+    private static void ConfigureSourceMatch(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<SourceMatch>(entity =>
+        {
+            entity.ToTable("source_matches", table =>
+            {
+                table.HasCheckConstraint("ck_source_matches_similarity_score", "similarity_score >= 0 AND similarity_score <= 1");
+                table.HasCheckConstraint("ck_source_matches_duration_match_score", "duration_match_score IS NULL OR (duration_match_score >= 0 AND duration_match_score <= 1)");
+                table.HasCheckConstraint("ck_source_matches_hash_match_score", "hash_match_score IS NULL OR (hash_match_score >= 0 AND hash_match_score <= 1)");
+                table.HasCheckConstraint("ck_source_matches_metadata_match_score", "metadata_match_score IS NULL OR (metadata_match_score >= 0 AND metadata_match_score <= 1)");
+                table.HasCheckConstraint("ck_source_matches_source_credibility_score", "source_credibility_score IS NULL OR (source_credibility_score >= 0 AND source_credibility_score <= 1)");
+            });
+            entity.HasKey(match => match.Id);
+
+            entity.Property(match => match.Id).HasColumnName("id").UseIdentityByDefaultColumn();
+            entity.Property(match => match.VideoId).HasColumnName("video_id").IsRequired();
+            entity.Property(match => match.Platform).HasColumnName("platform").HasMaxLength(100).IsRequired();
+            entity.Property(match => match.Url).HasColumnName("url");
+            entity.Property(match => match.Title).HasColumnName("title");
+            entity.Property(match => match.UploaderName).HasColumnName("uploader_name");
+            entity.Property(match => match.UploadDatetime).HasColumnName("upload_datetime");
+            entity.Property(match => match.SimilarityScore).HasColumnName("similarity_score").IsRequired();
+            entity.Property(match => match.DurationMatchScore).HasColumnName("duration_match_score");
+            entity.Property(match => match.HashMatchScore).HasColumnName("hash_match_score");
+            entity.Property(match => match.MetadataMatchScore).HasColumnName("metadata_match_score");
+            entity.Property(match => match.SourceCredibilityScore).HasColumnName("source_credibility_score");
+            entity.Property(match => match.Rank).HasColumnName("rank").HasDefaultValue(1).IsRequired();
+            entity.Property(match => match.Confidence)
+                .HasColumnName("confidence")
+                .HasColumnType("confidence_level")
+                .HasSentinel((ConfidenceLevel)(-1))
+                .HasDefaultValueSql("'Medium'::confidence_level")
+                .IsRequired();
+            entity.Property(match => match.DetailsJson)
+                .HasColumnName("details_json")
+                .HasColumnType("jsonb");
+            entity.Property(match => match.CreatedAt)
+                .HasColumnName("created_at")
+                .HasDefaultValueSql("NOW()")
+                .IsRequired();
+
+            entity.HasOne(match => match.Video)
+                .WithMany(video => video.SourceMatches)
+                .HasForeignKey(match => match.VideoId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasIndex(match => new { match.VideoId, match.Rank })
+                .HasDatabaseName("ix_source_matches_video_rank");
+            entity.HasIndex(match => match.UploadDatetime)
+                .HasDatabaseName("ix_source_matches_upload_datetime");
         });
     }
 }

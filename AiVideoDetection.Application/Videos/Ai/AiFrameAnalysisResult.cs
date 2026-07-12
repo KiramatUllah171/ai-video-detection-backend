@@ -5,5 +5,6 @@ public sealed record AiFrameAnalysisResult(
     int FrameIndex,
     decimal? TimestampSeconds,
     decimal AiScore,
+    decimal RealProbability,
     decimal Confidence,
     IReadOnlyList<string> Notes);

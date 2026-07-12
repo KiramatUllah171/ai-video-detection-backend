@@ -10,7 +10,9 @@ namespace AiVideoDetection.Api.Controllers;
 [ApiController]
 [Authorize]
 [Route("api/videos")]
-public class VideosController(IVideoService videoService) : ControllerBase
+public class VideosController(
+    IVideoService videoService,
+    IInternalVideoMatchingService internalVideoMatchingService) : ControllerBase
 {
     [HttpPost("upload")]
     [Consumes("multipart/form-data")]
@@ -110,6 +112,21 @@ public class VideosController(IVideoService videoService) : ControllerBase
         return response.Success ? Ok(response) : NotFound(response);
     }
 
+    [HttpPost("{videoId:long}/reanalyze")]
+    [ProducesResponseType(typeof(ApiResponse<UploadVideoResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<UploadVideoResponse>), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ApiResponse<UploadVideoResponse>), StatusCodes.Status401Unauthorized)]
+    public async Task<ActionResult<ApiResponse<UploadVideoResponse>>> Reanalyze(long videoId, CancellationToken cancellationToken)
+    {
+        if (!TryGetCurrentUserId(out var currentUserId))
+        {
+            return Unauthorized(ApiResponse<UploadVideoResponse>.ErrorResponse("Unauthorized."));
+        }
+
+        var response = await videoService.ReanalyzeAsync(videoId, currentUserId, cancellationToken);
+        return response.Success ? Ok(response) : NotFound(response);
+    }
+
     [HttpGet("{videoId:long}/evidence")]
     [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<EvidenceItemDto>>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<EvidenceItemDto>>), StatusCodes.Status404NotFound)]
@@ -122,6 +139,23 @@ public class VideosController(IVideoService videoService) : ControllerBase
         }
 
         var response = await videoService.GetEvidenceAsync(videoId, currentUserId, cancellationToken);
+        return response.Success ? Ok(response) : NotFound(response);
+    }
+
+    [HttpGet("{videoId:long}/origin-matches")]
+    [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<SourceMatchDto>>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<SourceMatchDto>>), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<SourceMatchDto>>), StatusCodes.Status401Unauthorized)]
+    public async Task<ActionResult<ApiResponse<IReadOnlyList<SourceMatchDto>>>> OriginMatches(
+        long videoId,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetCurrentUserId(out var currentUserId))
+        {
+            return Unauthorized(ApiResponse<IReadOnlyList<SourceMatchDto>>.ErrorResponse("Unauthorized."));
+        }
+
+        var response = await internalVideoMatchingService.GetMatchesAsync(videoId, currentUserId, cancellationToken);
         return response.Success ? Ok(response) : NotFound(response);
     }
 

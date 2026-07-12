@@ -45,4 +45,8 @@ public class Video
     public MetadataResult? MetadataResult { get; set; }
 
     public ICollection<AiResult> AiResults { get; set; } = [];
+
+    public ICollection<FrameHash> FrameHashes { get; set; } = [];
+
+    public ICollection<SourceMatch> SourceMatches { get; set; } = [];
 }

@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text.Json;
 using AiVideoDetection.Application.Common;
 using AiVideoDetection.Application.Videos.DTOs;
 using AiVideoDetection.Application.Videos.Interfaces;
@@ -246,6 +247,59 @@ public class VideoService(
             });
     }
 
+    public async Task<ApiResponse<UploadVideoResponse>> ReanalyzeAsync(
+        long videoId,
+        long currentUserId,
+        CancellationToken cancellationToken = default)
+    {
+        var video = await dbContext.Videos
+            .FirstOrDefaultAsync(existingVideo => existingVideo.Id == videoId
+                && existingVideo.UserId == currentUserId
+                && existingVideo.DeletedAt == null
+                && existingVideo.Status != VideoStatus.Deleted,
+                cancellationToken);
+
+        if (video is null)
+        {
+            return ApiResponse<UploadVideoResponse>.ErrorResponse("Video was not found.");
+        }
+
+        var job = new AnalysisJob
+        {
+            VideoId = video.Id,
+            Status = JobStatus.Queued,
+            Progress = 0,
+            CurrentStep = "Waiting for reanalysis worker",
+            RetryCount = 0,
+            MaxRetryCount = 3
+        };
+
+        video.Status = VideoStatus.Queued;
+        dbContext.AnalysisJobs.Add(job);
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        var backgroundJobId = analysisJobQueue.EnqueueAnalysisJob(job.Id);
+        logger.LogInformation(
+            "Queued reanalysis job {AnalysisJobId} as Hangfire job {BackgroundJobId} for video {VideoId}.",
+            job.Id,
+            backgroundJobId,
+            video.Id);
+
+        return ApiResponse<UploadVideoResponse>.SuccessResponse(
+            new UploadVideoResponse
+            {
+                VideoId = video.Id,
+                JobId = job.Id,
+                Status = video.Status.ToString(),
+                JobStatus = job.Status.ToString(),
+                OriginalName = video.OriginalName,
+                FileSize = video.FileSize,
+                ContentType = video.ContentType ?? string.Empty,
+                Message = "Video queued for reanalysis."
+            },
+            "Video queued for reanalysis.");
+    }
+
     public async Task<ApiResponse<MetadataResultDto>> GetMetadataAsync(
         long videoId,
         long currentUserId,
@@ -341,7 +395,13 @@ public class VideoService(
             {
                 VideoId = result.VideoId,
                 AiResultId = result.Id,
+                ModelId = GetRawString(result.RawModelOutputJson, "model_id") ?? result.ModelVersion?.Version,
                 ModelVersion = result.ModelVersion?.Version,
+                ModelCapability = GetRawString(result.RawModelOutputJson, "model_capability"),
+                IsMock = GetRawBool(result.RawModelOutputJson, "is_mock"),
+                AiGeneratedProbability = ToPercentage(result.FinalScore),
+                LikelyRealProbability = ToPercentage(1m - result.FinalScore),
+                ConfidencePercentage = ToPercentage(result.Confidence),
                 VisualScore = result.VisualScore,
                 MetadataScore = result.MetadataScore,
                 TemporalScore = result.TemporalScore,
@@ -349,6 +409,12 @@ public class VideoService(
                 Confidence = result.Confidence,
                 Label = result.Label.ToString(),
                 Summary = result.Summary,
+                Warnings = GetRawStringArray(result.RawModelOutputJson, "warnings"),
+                ModelDisagreement = GetRawBool(result.RawModelOutputJson, "model_disagreement"),
+                StrongFrameEvidence = GetRawBool(result.RawModelOutputJson, "strong_frame_evidence"),
+                MinimumRecommendedScore = GetRawDecimal(result.RawModelOutputJson, "minimum_recommended_score"),
+                EnsembleStrategy = GetRawString(result.RawModelOutputJson, "ensemble_strategy"),
+                ComponentScoresJson = GetRawJson(result.RawModelOutputJson, "component_scores"),
                 CreatedAt = result.CreatedAt,
                 EvidenceItems = result.EvidenceItems
                     .OrderByDescending(item => item.Severity)
@@ -440,6 +506,117 @@ public class VideoService(
             TimestampSeconds = item.TimestampSeconds,
             VideoFrameId = item.VideoFrameId
         };
+    }
+
+    private static decimal ToPercentage(decimal value)
+    {
+        return Math.Round(Math.Clamp(value, 0m, 1m) * 100m, 2);
+    }
+
+    private static string? GetRawString(string? rawJson, string propertyName)
+    {
+        if (string.IsNullOrWhiteSpace(rawJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(rawJson);
+            return document.RootElement.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.String
+                ? value.GetString()
+                : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool GetRawBool(string? rawJson, string propertyName)
+    {
+        if (string.IsNullOrWhiteSpace(rawJson))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(rawJson);
+            return document.RootElement.TryGetProperty(propertyName, out var value)
+                && value.ValueKind is JsonValueKind.True or JsonValueKind.False
+                && value.GetBoolean();
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static IReadOnlyList<string> GetRawStringArray(string? rawJson, string propertyName)
+    {
+        if (string.IsNullOrWhiteSpace(rawJson))
+        {
+            return [];
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(rawJson);
+            if (!document.RootElement.TryGetProperty(propertyName, out var value) || value.ValueKind != JsonValueKind.Array)
+            {
+                return [];
+            }
+
+            return value.EnumerateArray()
+                .Where(item => item.ValueKind == JsonValueKind.String)
+                .Select(item => item.GetString()!)
+                .ToList();
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    private static decimal? GetRawDecimal(string? rawJson, string propertyName)
+    {
+        if (string.IsNullOrWhiteSpace(rawJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(rawJson);
+            return document.RootElement.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.Number
+                ? value.GetDecimal()
+                : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string? GetRawJson(string? rawJson, string propertyName)
+    {
+        if (string.IsNullOrWhiteSpace(rawJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(rawJson);
+            return document.RootElement.TryGetProperty(propertyName, out var value)
+                ? value.GetRawText()
+                : null;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static string CreateObjectKey(long userId, string extension)

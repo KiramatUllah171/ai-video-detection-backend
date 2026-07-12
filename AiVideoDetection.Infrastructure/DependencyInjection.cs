@@ -7,6 +7,7 @@ using AiVideoDetection.Infrastructure.Data;
 using AiVideoDetection.Infrastructure.Storage;
 using AiVideoDetection.Infrastructure.Videos;
 using AiVideoDetection.Infrastructure.Videos.Ai;
+using AiVideoDetection.Infrastructure.Videos.Matching;
 using AiVideoDetection.Infrastructure.Videos.Processing;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
@@ -50,6 +51,9 @@ public static class DependencyInjection
                     npgsqlOptions.MapEnum<EvidenceSeverity>(
                         "evidence_severity",
                         nameTranslator: EnumNameTranslator);
+                    npgsqlOptions.MapEnum<ConfidenceLevel>(
+                        "confidence_level",
+                        nameTranslator: EnumNameTranslator);
                     npgsqlOptions.MigrationsAssembly("AiVideoDetection.Api");
                 }));
 
@@ -58,6 +62,7 @@ public static class DependencyInjection
         services.Configure<VideoProcessingOptions>(configuration.GetSection(VideoProcessingOptions.SectionName));
         services.Configure<AiServiceOptions>(configuration.GetSection(AiServiceOptions.SectionName));
         services.Configure<ScoringOptions>(configuration.GetSection(ScoringOptions.SectionName));
+        services.Configure<InternalMatchingOptions>(configuration.GetSection(InternalMatchingOptions.SectionName));
         services.Configure<LocalStorageOptions>(configuration.GetSection(LocalStorageOptions.SectionName));
         services.AddHttpClient("AiService");
 
@@ -78,6 +83,10 @@ public static class DependencyInjection
         services.AddScoped<IAiInferenceClient, PythonAiInferenceClient>();
         services.AddScoped<IFinalScoringService, FinalScoringService>();
         services.AddScoped<IEvidenceGenerationService, EvidenceGenerationService>();
+        services.AddScoped<IPerceptualHashProvider, PlaceholderPerceptualHashProvider>();
+        services.AddScoped<IHammingDistanceService, HammingDistanceService>();
+        services.AddScoped<IFrameHashService, FrameHashService>();
+        services.AddScoped<IInternalVideoMatchingService, InternalVideoMatchingService>();
         services.AddScoped<AnalysisJobProcessor>();
 
         AddJwtAuthentication(services, configuration);

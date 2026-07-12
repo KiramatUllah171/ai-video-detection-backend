@@ -23,4 +23,6 @@ public class VideoFrame
     public DateTimeOffset CreatedAt { get; set; }
 
     public ICollection<EvidenceItem> EvidenceItems { get; set; } = [];
+
+    public ICollection<FrameHash> FrameHashes { get; set; } = [];
 }

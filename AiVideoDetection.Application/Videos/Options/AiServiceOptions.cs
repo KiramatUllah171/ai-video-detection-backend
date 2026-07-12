@@ -13,4 +13,6 @@ public class AiServiceOptions
     public int TimeoutSeconds { get; set; } = 60;
 
     public int MaxFramesPerRequest { get; set; } = 30;
+
+    public string FrameSamplingStrategy { get; set; } = "uniform";
 }

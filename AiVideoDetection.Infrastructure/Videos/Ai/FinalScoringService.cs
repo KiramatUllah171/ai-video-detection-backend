@@ -15,15 +15,32 @@ public class FinalScoringService(IOptions<ScoringOptions> options) : IFinalScori
         var visualScore = Clamp(input.VisualScore);
         var metadataScore = CalculateMetadataScore(input.MetadataWarnings);
         decimal? temporalScore = input.TemporalScore is null ? null : Clamp(input.TemporalScore.Value);
+        var videoScore = input.VideoComponentScore is null ? temporalScore : Clamp(input.VideoComponentScore.Value);
+        var frameCalibratedScore = input.FrameCalibratedScore is null ? visualScore : Clamp(input.FrameCalibratedScore.Value);
+        var frameRawScore = input.FrameRawScore is null ? frameCalibratedScore : Clamp(input.FrameRawScore.Value);
 
-        var finalScore = temporalScore is null
-            ? WeightedAverage(
-                [(visualScore, _options.VisualWeight), (metadataScore, _options.MetadataWeight)])
+        var detectorScore = videoScore is null
+            ? visualScore
             : WeightedAverage(
-                [(visualScore, _options.VisualWeight), (metadataScore, _options.MetadataWeight), (temporalScore.Value, _options.TemporalWeight)]);
+                [(videoScore.Value, _options.VideoDetectorMaxWeight), (frameCalibratedScore, _options.FrameDetectorMaxWeight)]);
+        var finalScore = WeightedAverage([(detectorScore, _options.VisualWeight), (metadataScore, _options.MetadataWeight)]);
 
-        var confidence = CalculateConfidence(input.AiConfidence, input.MetadataWarnings.Count, input.FrameCount);
-        var label = CalculateLabel(finalScore, confidence);
+        var modelDisagreement = input.ModelDisagreement
+            || (videoScore is not null && Math.Abs(videoScore.Value - frameRawScore) >= _options.ModelDisagreementThreshold);
+        var strongFrameEvidence = input.StrongFrameEvidence
+            || frameRawScore >= _options.StrongRawFrameThreshold
+            || frameCalibratedScore >= _options.StrongCalibratedFrameThreshold;
+        var confidence = CalculateConfidence(input.AiConfidence, input.MetadataWarnings.Count, input.FrameCount, modelDisagreement);
+        var decision = CalculateLabel(
+            finalScore,
+            confidence,
+            modelDisagreement,
+            videoScore,
+            frameRawScore,
+            frameCalibratedScore,
+            strongFrameEvidence,
+            input.MetadataWarnings,
+            input.DetectorReliabilityScore);
 
         return new FinalScoringResult(
             visualScore,
@@ -31,8 +48,9 @@ public class FinalScoringService(IOptions<ScoringOptions> options) : IFinalScori
             temporalScore,
             Math.Round(finalScore, 3),
             Math.Round(confidence, 3),
-            label,
-            "This result is probability-based and generated using the current AI service output and available metadata signals. This is not a guarantee of authenticity or origin.");
+            decision.Label,
+            "This result is probability-based and generated using the current AI service output and available metadata signals. This is not a guarantee of authenticity or origin.",
+            decision.Warnings);
     }
 
     private decimal CalculateMetadataScore(IReadOnlyList<string> warnings)
@@ -56,7 +74,7 @@ public class FinalScoringService(IOptions<ScoringOptions> options) : IFinalScori
         return Math.Min(score, 0.80m);
     }
 
-    private decimal CalculateConfidence(decimal aiConfidence, int metadataWarningCount, int frameCount)
+    private decimal CalculateConfidence(decimal aiConfidence, int metadataWarningCount, int frameCount, bool modelDisagreement)
     {
         var confidence = Clamp(aiConfidence);
         if (frameCount < 3)
@@ -69,28 +87,106 @@ public class FinalScoringService(IOptions<ScoringOptions> options) : IFinalScori
         }
 
         confidence -= Math.Min(metadataWarningCount * 0.03m, 0.15m);
+        if (modelDisagreement)
+        {
+            confidence -= 0.10m;
+        }
+
         return Clamp(confidence);
     }
 
-    private AnalysisLabel CalculateLabel(decimal finalScore, decimal confidence)
+    private DecisionResult CalculateLabel(
+        decimal finalScore,
+        decimal confidence,
+        bool modelDisagreement,
+        decimal? videoScore,
+        decimal frameRawScore,
+        decimal frameCalibratedScore,
+        bool strongFrameEvidence,
+        IReadOnlyList<string> metadataWarnings,
+        decimal? detectorReliabilityScore)
     {
-        if (finalScore >= _options.LikelyAiThreshold && confidence >= _options.MinimumConfidenceForStrongLabel)
+        var warnings = new List<string>();
+        var metadataSuspicious = metadataWarnings.Count > 0;
+        var detectorReliabilityEstablished = detectorReliabilityScore is not null;
+        var detectorReliabilityAllowsSingleSignal = !detectorReliabilityEstablished
+            || detectorReliabilityScore >= _options.MinimumDetectorReliabilityForSingleDetectorSuspicious;
+        var bothDetectorsHigh = videoScore >= 0.60m && frameCalibratedScore >= _options.StrongCalibratedFrameThreshold;
+        var frameHighVideoLow = videoScore is < 0.50m
+            && (frameCalibratedScore >= _options.StrongCalibratedFrameThreshold || frameRawScore >= 0.80m);
+        var videoHighFrameLow = videoScore >= 0.65m && frameCalibratedScore < 0.50m;
+
+        if (frameHighVideoLow)
         {
-            return AnalysisLabel.LikelyAiGenerated;
+            warnings.Add("Frame detector found AI-like visual signals, but temporal video model did not confirm.");
+            if (strongFrameEvidence
+                && _options.AllowSingleDetectorSuspicious
+                && detectorReliabilityAllowsSingleSignal
+                && confidence >= 0.50m
+                && frameRawScore >= _options.StrongRawFrameThreshold)
+            {
+                return new DecisionResult(AnalysisLabel.Suspicious, warnings);
+            }
+
+            return new DecisionResult(AnalysisLabel.Inconclusive, warnings);
+        }
+
+        if (videoHighFrameLow)
+        {
+            warnings.Add("Temporal detector found suspicious sequence-level signals, but frame detector did not confirm.");
+            return new DecisionResult(AnalysisLabel.Suspicious, warnings);
+        }
+
+        if (finalScore >= _options.LikelyAiThreshold
+            && confidence >= Math.Max(_options.MinimumConfidenceForStrongLabel, 0.65m)
+            && (!_options.RequireAgreementForLikelyAi
+                || videoScore is null
+                || bothDetectorsHigh
+                || (strongFrameEvidence && detectorReliabilityScore >= 0.75m)))
+        {
+            return new DecisionResult(AnalysisLabel.LikelyAiGenerated, warnings);
+        }
+
+        if (modelDisagreement)
+        {
+            warnings.Add("Model components disagree; treat result with caution.");
+        }
+
+        if (strongFrameEvidence || modelDisagreement || metadataSuspicious)
+        {
+            if (finalScore >= _options.SuspiciousThreshold
+                || (strongFrameEvidence && _options.AllowSingleDetectorSuspicious && detectorReliabilityAllowsSingleSignal && confidence >= 0.50m))
+            {
+                return new DecisionResult(AnalysisLabel.Suspicious, warnings);
+            }
+
+            return new DecisionResult(AnalysisLabel.Inconclusive, warnings);
         }
 
         if (finalScore >= _options.SuspiciousThreshold)
         {
-            return AnalysisLabel.Suspicious;
+            return new DecisionResult(AnalysisLabel.Suspicious, warnings);
         }
 
         if (finalScore >= _options.InconclusiveThreshold)
         {
-            return AnalysisLabel.Inconclusive;
+            return new DecisionResult(AnalysisLabel.Inconclusive, warnings);
         }
 
-        return AnalysisLabel.LikelyReal;
+        if (confidence < 0.45m && finalScore >= 0.20m)
+        {
+            return new DecisionResult(AnalysisLabel.Inconclusive, warnings);
+        }
+
+        if (finalScore < 0.30m && !modelDisagreement && !strongFrameEvidence && !metadataSuspicious && confidence >= 0.60m)
+        {
+            return new DecisionResult(AnalysisLabel.LikelyReal, warnings);
+        }
+
+        return new DecisionResult(AnalysisLabel.Inconclusive, warnings);
     }
+
+    private sealed record DecisionResult(AnalysisLabel Label, IReadOnlyList<string> Warnings);
 
     private static decimal WeightedAverage(IReadOnlyList<(decimal Score, decimal Weight)> weightedScores)
     {

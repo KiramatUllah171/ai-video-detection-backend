@@ -1,6 +1,9 @@
+using AiVideoDetection.Application.Common;
 using AiVideoDetection.Application.Videos.Interfaces;
+using AiVideoDetection.Application.Videos.DTOs;
 using AiVideoDetection.Application.Videos.Options;
 using AiVideoDetection.Application.Videos.Ai;
+using AiVideoDetection.Application.Videos.Matching;
 using AiVideoDetection.Application.Videos.Processing;
 using AiVideoDetection.Domain.Entities;
 using AiVideoDetection.Domain.Enums;
@@ -32,7 +35,7 @@ public class VideoProcessingServiceTests
         Assert.Equal(JobStatus.Completed, savedJob.Status);
         Assert.Equal(100, savedJob.Progress);
         Assert.Equal(VideoStatus.Completed, savedJob.Video.Status);
-        Assert.Contains("AI analysis completed", savedJob.CurrentStep);
+        Assert.Contains("Analysis completed", savedJob.CurrentStep);
         Assert.True(metadata.SawProcessingStatus);
         Assert.Equal(3, storage.UploadCalls);
         Assert.Equal(1, await dbContext.MetadataResults.CountAsync());
@@ -160,8 +163,12 @@ public class VideoProcessingServiceTests
             aiClient ?? new FakeAiInferenceClient(),
             new FakeFinalScoringService(),
             new FakeEvidenceGenerationService(),
+            new FakeFrameHashService(),
+            new FakeInternalVideoMatchingService(),
             new JobLogService(dbContext),
             Options.Create(new VideoProcessingOptions { WorkingRootPath = workRoot }),
+            Options.Create(new InternalMatchingOptions { Enabled = true, FailJobOnMatchingError = false }),
+            Options.Create(new AiServiceOptions { MaxFramesPerRequest = 30 }),
             NullLogger<VideoProcessingService>.Instance);
     }
 
@@ -311,8 +318,12 @@ public class VideoProcessingServiceTests
             return Task.FromResult(new AiAnalyzeFramesResponse(
                 request.VideoId,
                 request.JobId,
+                "mock-deterministic-frame-hash",
                 "mock-video-ai-v1",
+                "mock",
+                true,
                 0.62m,
+                0.38m,
                 0.78m,
                 "Suspicious",
                 request.Frames.Select(frame => new AiFrameAnalysisResult(
@@ -320,9 +331,11 @@ public class VideoProcessingServiceTests
                     frame.FrameIndex,
                     frame.TimestampSeconds,
                     0.64m,
+                    0.36m,
                     0.81m,
                     ["Mock score generated from deterministic frame identifier hash."])).ToList(),
-                ["This is a mock AI response for pipeline integration only."]));
+                ["This is a mock AI response for pipeline integration only."],
+                ["Mock model was used. This is not real AI detection."]));
         }
 
         public Task<bool> HealthCheckAsync(CancellationToken cancellationToken = default)
@@ -357,7 +370,8 @@ public class VideoProcessingServiceTests
                 0.55m,
                 input.AiConfidence,
                 AnalysisLabel.Suspicious,
-                "This result is probability-based and generated using the current AI service output and available metadata signals. This is not a guarantee of authenticity or origin.");
+                "This result is probability-based and generated using the current AI service output and available metadata signals. This is not a guarantee of authenticity or origin.",
+                []);
         }
     }
 
@@ -376,6 +390,36 @@ public class VideoProcessingServiceTests
                     null,
                     null)
             ];
+        }
+    }
+
+    private sealed class FakeFrameHashService : IFrameHashService
+    {
+        public Task<IReadOnlyList<FrameHashResult>> GenerateHashesForVideoAsync(long videoId, CancellationToken cancellationToken = default)
+        {
+            IReadOnlyList<FrameHashResult> results =
+            [
+                new FrameHashResult(1, videoId, "0000000000000000", "1111111111111111", "2222222222222222", "mvp-v1")
+            ];
+            return Task.FromResult(results);
+        }
+
+        public Task<FrameHashResult> GenerateHashForFrameAsync(VideoFrame frame, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(new FrameHashResult(frame.Id, frame.VideoId, "0000000000000000", "1111111111111111", "2222222222222222", "mvp-v1"));
+        }
+    }
+
+    private sealed class FakeInternalVideoMatchingService : IInternalVideoMatchingService
+    {
+        public Task<IReadOnlyList<InternalVideoMatchResult>> MatchVideoAsync(long videoId, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<IReadOnlyList<InternalVideoMatchResult>>([]);
+        }
+
+        public Task<ApiResponse<IReadOnlyList<SourceMatchDto>>> GetMatchesAsync(long videoId, long currentUserId, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(ApiResponse<IReadOnlyList<SourceMatchDto>>.SuccessResponse([]));
         }
     }
 }

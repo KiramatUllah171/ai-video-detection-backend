@@ -21,13 +21,19 @@ public class VideoProcessingService(
     IAiInferenceClient aiInferenceClient,
     IFinalScoringService finalScoringService,
     IEvidenceGenerationService evidenceGenerationService,
+    IFrameHashService frameHashService,
+    IInternalVideoMatchingService internalVideoMatchingService,
     IJobLogService jobLogService,
     IOptions<VideoProcessingOptions> options,
+    IOptions<InternalMatchingOptions> internalMatchingOptions,
+    IOptions<AiServiceOptions> aiServiceOptions,
     ILogger<VideoProcessingService> logger) : IVideoProcessingService
 {
-    private const string CompletedStep = "AI analysis completed";
+    private const string CompletedStep = "Analysis completed";
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private readonly VideoProcessingOptions _options = options.Value;
+    private readonly InternalMatchingOptions _internalMatchingOptions = internalMatchingOptions.Value;
+    private readonly AiServiceOptions _aiServiceOptions = aiServiceOptions.Value;
 
     public async Task ProcessAnalysisJobAsync(long jobId, CancellationToken cancellationToken = default)
     {
@@ -116,16 +122,20 @@ public class VideoProcessingService(
                 frameCount = frames.Count
             }, cancellationToken);
 
-            await UpdateProgressAsync(job, 80, "Running AI frame analysis", cancellationToken);
+            await UpdateProgressAsync(job, 78, "Preparing frames for AI analysis", cancellationToken);
             await jobLogService.LogAsync(job.Id, "AiAnalysisStarted", "Information", "AI frame analysis started.", null, cancellationToken);
             var savedFrames = await dbContext.VideoFrames
                 .Where(frame => frame.VideoId == job.VideoId)
                 .OrderBy(frame => frame.FrameIndex)
                 .ToListAsync(cancellationToken);
-            var aiResponse = await AnalyzeFramesAsync(job, savedFrames, cancellationToken);
+            var aiResponse = await AnalyzeFramesAsync(job, savedFrames, workDirectory, cancellationToken);
+            await UpdateProgressAsync(job, 82, "Running AI detection model", cancellationToken);
             await jobLogService.LogAsync(job.Id, "AiAnalysisCompleted", "Information", "AI frame analysis completed.", new
             {
+                aiResponse.ModelId,
                 aiResponse.ModelVersion,
+                aiResponse.ModelCapability,
+                aiResponse.IsMock,
                 aiResponse.OverallAiScore,
                 aiResponse.OverallConfidence
             }, cancellationToken);
@@ -135,13 +145,28 @@ public class VideoProcessingService(
                 .Where(result => result.VideoId == job.VideoId)
                 .Select(result => result.WarningsJson)
                 .FirstOrDefaultAsync(cancellationToken));
+            var allowMinimumRecommendation = !(aiResponse.ModelDisagreement
+                && aiResponse.VideoComponentScore is < 0.50m
+                && aiResponse.MinimumRecommendedScore is null);
+            var visualScore = aiResponse.MinimumRecommendedScore is null || !allowMinimumRecommendation
+                ? aiResponse.OverallAiScore
+                : Math.Max(aiResponse.OverallAiScore, aiResponse.MinimumRecommendedScore.Value);
             var scoringResult = finalScoringService.Calculate(new FinalScoringInput(
-                aiResponse.OverallAiScore,
+                visualScore,
                 aiResponse.OverallConfidence,
                 metadataWarnings,
                 savedFrames.Count,
-                TemporalScore: null,
-                aiResponse.LabelHint));
+                aiResponse.VideoComponentScore,
+                aiResponse.LabelHint,
+                aiResponse.ModelDisagreement,
+                aiResponse.VideoComponentScore,
+                aiResponse.FrameRawScore,
+                aiResponse.FrameCalibratedScore ?? aiResponse.FrameComponentScore,
+                aiResponse.StrongFrameEvidence,
+                null,
+                null,
+                aiResponse.FrameReliabilityScore));
+            await UpdateProgressAsync(job, 88, "Calculating authenticity score", cancellationToken);
             await jobLogService.LogAsync(job.Id, "ScoringCompleted", "Information", "Final scoring completed.", new
             {
                 scoringResult.FinalScore,
@@ -150,17 +175,22 @@ public class VideoProcessingService(
             }, cancellationToken);
 
             var aiResult = await SaveAiResultAsync(job.VideoId, aiResponse, scoringResult, cancellationToken);
+            await UpdateProgressAsync(job, 92, "Generating evidence", cancellationToken);
             var evidenceItems = evidenceGenerationService.GenerateEvidence(new EvidenceGenerationInput(
                 aiResponse.ModelVersion,
                 aiResponse.Frames,
                 savedFrames.ToDictionary(frame => frame.Id, frame => frame.Id),
                 metadataWarnings,
-                scoringResult));
+                scoringResult,
+                aiResponse.ModelDisagreement,
+                aiResponse.StrongFrameEvidence));
             await ReplaceEvidenceItemsAsync(aiResult, evidenceItems, cancellationToken);
             await jobLogService.LogAsync(job.Id, "EvidenceGenerated", "Information", "Evidence items generated.", new
             {
                 evidenceCount = evidenceItems.Count
             }, cancellationToken);
+
+            await RunInternalMatchingAsync(job, cancellationToken);
 
             job.Status = JobStatus.Completed;
             job.Progress = 100;
@@ -183,7 +213,21 @@ public class VideoProcessingService(
         catch (AiServiceException exception)
         {
             logger.LogError(exception, "AI analysis failed for analysis job {JobId} with {ErrorCode}.", job.Id, exception.ErrorCode);
-            await MarkFailedAsync(job, "AiAnalysisFailed", exception.ErrorCode, exception.SafeMessage, cancellationToken);
+            if (exception.ErrorCode == "REAL_MODEL_NOT_CONFIGURED")
+            {
+                await MarkFailedAsync(
+                    job,
+                    "AiAnalysisFailed",
+                    exception.ErrorCode,
+                    "AI detection model is not configured. Configure a model or enable mock mode for development.",
+                    cancellationToken);
+                job.CurrentStep = "AI model is not configured";
+                await dbContext.SaveChangesAsync(cancellationToken);
+            }
+            else
+            {
+                await MarkFailedAsync(job, "AiAnalysisFailed", exception.ErrorCode, exception.SafeMessage, cancellationToken);
+            }
             throw;
         }
         catch (Exception exception)
@@ -198,9 +242,62 @@ public class VideoProcessingService(
         }
     }
 
+    private async Task RunInternalMatchingAsync(AnalysisJob job, CancellationToken cancellationToken)
+    {
+        if (!_internalMatchingOptions.Enabled)
+        {
+            return;
+        }
+
+        try
+        {
+            await UpdateProgressAsync(job, 92, "Generating frame hashes", cancellationToken);
+            await jobLogService.LogAsync(job.Id, "FrameHashGenerationStarted", "Information", "Frame hash generation started.", null, cancellationToken);
+            var hashes = await frameHashService.GenerateHashesForVideoAsync(job.VideoId, cancellationToken);
+            await jobLogService.LogAsync(job.Id, "FrameHashGenerationCompleted", "Information", "Frame hash generation completed.", new
+            {
+                hashCount = hashes.Count
+            }, cancellationToken);
+
+            await UpdateProgressAsync(job, 96, "Checking internal video matches", cancellationToken);
+            await jobLogService.LogAsync(job.Id, "InternalMatchingStarted", "Information", "Internal video matching started.", null, cancellationToken);
+            var matches = await internalVideoMatchingService.MatchVideoAsync(job.VideoId, cancellationToken);
+            await jobLogService.LogAsync(
+                job.Id,
+                matches.Count == 0 ? "InternalMatchingNoMatches" : "InternalMatchingCompleted",
+                "Information",
+                matches.Count == 0 ? "No internal video matches found." : "Internal video matching completed.",
+                new { matchCount = matches.Count },
+                cancellationToken);
+        }
+        catch (Exception exception) when (!_internalMatchingOptions.FailJobOnMatchingError)
+        {
+            logger.LogWarning(exception, "Internal matching failed for analysis job {JobId}, but the job will continue.", job.Id);
+            await jobLogService.LogAsync(
+                job.Id,
+                "InternalMatchingFailed",
+                "Warning",
+                "Internal matching could not be completed. Core AI analysis was completed.",
+                new { errorCode = "INTERNAL_MATCHING_FAILED" },
+                cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            logger.LogError(exception, "Internal matching failed for analysis job {JobId}.", job.Id);
+            await MarkFailedAsync(
+                job,
+                "InternalMatchingFailed",
+                "INTERNAL_MATCHING_FAILED",
+                "Internal video matching failed.",
+                cancellationToken);
+            throw;
+        }
+    }
+
     private async Task<AiAnalyzeFramesResponse> AnalyzeFramesAsync(
         AnalysisJob job,
         IReadOnlyList<VideoFrame> frames,
+        string workDirectory,
         CancellationToken cancellationToken)
     {
         if (frames.Count == 0)
@@ -208,16 +305,73 @@ public class VideoProcessingService(
             throw new AiServiceException("AI_ANALYSIS_FAILED", "AI analysis could not be completed because no frames were available.");
         }
 
-        var request = new AiAnalyzeFramesRequest(
-            job.VideoId,
-            job.Id,
-            frames.Select(frame => new AiAnalyzeFrameItem(
+        var selectedFrames = SelectFramesForAi(frames, Math.Max(1, _aiServiceOptions.MaxFramesPerRequest));
+        var aiFrameDirectory = Path.Combine(workDirectory, "ai-frames");
+        Directory.CreateDirectory(aiFrameDirectory);
+        var requestFrames = new List<AiAnalyzeFrameItem>(selectedFrames.Count);
+
+        foreach (var frame in selectedFrames)
+        {
+            var extension = Path.GetExtension(frame.FrameUrl);
+            var destination = Path.Combine(aiFrameDirectory, $"frame_{frame.Id}{extension}");
+            await objectStorageService.DownloadToAsync(frame.FrameUrl, destination, cancellationToken);
+            var bytes = await File.ReadAllBytesAsync(destination, cancellationToken);
+            requestFrames.Add(new AiAnalyzeFrameItem(
                 frame.Id,
                 frame.FrameUrl,
                 frame.FrameIndex,
-                frame.TimestampSeconds)).ToList());
+                frame.TimestampSeconds,
+                Convert.ToBase64String(bytes)));
+        }
+
+        logger.LogInformation(
+            "Sending {FrameCount} frames to AI service for video {VideoId} job {JobId}. Frame ids: {FrameIds}. Image payload present: {HasImages}.",
+            requestFrames.Count,
+            job.VideoId,
+            job.Id,
+            requestFrames.Take(5).Select(frame => frame.FrameId).ToArray(),
+            requestFrames.Take(5).Select(frame => !string.IsNullOrWhiteSpace(frame.ImageBase64)).ToArray());
+
+        var request = new AiAnalyzeFramesRequest(
+            job.VideoId,
+            job.Id,
+            requestFrames);
 
         return await aiInferenceClient.AnalyzeFramesAsync(request, cancellationToken);
+    }
+
+    private List<VideoFrame> SelectFramesForAi(IReadOnlyList<VideoFrame> frames, int maxFrames)
+    {
+        var ordered = frames
+            .OrderBy(frame => frame.TimestampSeconds)
+            .ThenBy(frame => frame.FrameIndex)
+            .ToList();
+
+        if (!string.Equals(_aiServiceOptions.FrameSamplingStrategy, "uniform", StringComparison.OrdinalIgnoreCase)
+            || ordered.Count <= maxFrames)
+        {
+            return ordered.Take(maxFrames).ToList();
+        }
+
+        if (maxFrames == 1)
+        {
+            return [ordered[ordered.Count / 2]];
+        }
+
+        var selected = new List<VideoFrame>(maxFrames);
+        var usedIndexes = new HashSet<int>();
+        var step = (ordered.Count - 1) / (decimal)(maxFrames - 1);
+        for (var index = 0; index < maxFrames; index++)
+        {
+            var sourceIndex = (int)Math.Round(index * step, MidpointRounding.AwayFromZero);
+            sourceIndex = Math.Clamp(sourceIndex, 0, ordered.Count - 1);
+            if (usedIndexes.Add(sourceIndex))
+            {
+                selected.Add(ordered[sourceIndex]);
+            }
+        }
+
+        return selected;
     }
 
     private async Task<AiResult> SaveAiResultAsync(
@@ -227,13 +381,7 @@ public class VideoProcessingService(
         CancellationToken cancellationToken)
     {
         var modelVersion = await GetOrCreateModelVersionAsync(aiResponse.ModelVersion, cancellationToken);
-        var aiResult = await dbContext.AiResults
-            .Include(result => result.EvidenceItems)
-            .Where(result => result.VideoId == videoId && result.ModelVersionId == modelVersion.Id)
-            .OrderByDescending(result => result.CreatedAt)
-            .FirstOrDefaultAsync(cancellationToken);
-
-        aiResult ??= new AiResult
+        var aiResult = new AiResult
         {
             VideoId = videoId,
             ModelVersionId = modelVersion.Id
@@ -245,18 +393,79 @@ public class VideoProcessingService(
         aiResult.FinalScore = scoringResult.FinalScore;
         aiResult.Confidence = scoringResult.Confidence;
         aiResult.Label = scoringResult.Label;
-        aiResult.Summary = scoringResult.Summary;
-        aiResult.RawModelOutputJson = string.IsNullOrWhiteSpace(aiResponse.RawJson)
-            ? JsonSerializer.Serialize(aiResponse, SerializerOptions)
-            : aiResponse.RawJson;
+        aiResult.Summary = BuildSummary(scoringResult.Summary, aiResponse, scoringResult.Warnings);
+        aiResult.RawModelOutputJson = EnrichRawModelOutput(aiResponse, scoringResult);
 
-        if (aiResult.Id == 0)
-        {
-            dbContext.AiResults.Add(aiResult);
-        }
+        dbContext.AiResults.Add(aiResult);
 
         await dbContext.SaveChangesAsync(cancellationToken);
         return aiResult;
+    }
+
+    private static string EnrichRawModelOutput(AiAnalyzeFramesResponse aiResponse, FinalScoringResult scoringResult)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(string.IsNullOrWhiteSpace(aiResponse.RawJson)
+                ? JsonSerializer.Serialize(aiResponse, SerializerOptions)
+                : aiResponse.RawJson);
+            var root = document.RootElement.Clone();
+            var payload = JsonSerializer.Deserialize<Dictionary<string, object?>>(root.GetRawText(), SerializerOptions) ?? [];
+            var debug = payload.TryGetValue("debug", out var existingDebug) && existingDebug is JsonElement debugElement && debugElement.ValueKind == JsonValueKind.Object
+                ? JsonSerializer.Deserialize<Dictionary<string, object?>>(debugElement.GetRawText(), SerializerOptions) ?? []
+                : [];
+            var scoring = debug.TryGetValue("scoring", out var existingScoring) && existingScoring is JsonElement scoringElement && scoringElement.ValueKind == JsonValueKind.Object
+                ? JsonSerializer.Deserialize<Dictionary<string, object?>>(scoringElement.GetRawText(), SerializerOptions) ?? []
+                : [];
+
+            scoring["backend_final_score_after_weights"] = scoringResult.FinalScore;
+            scoring["backend_confidence_after_adjustments"] = scoringResult.Confidence;
+            scoring["backend_label"] = scoringResult.Label.ToString();
+            scoring["backend_decision_warnings"] = scoringResult.Warnings;
+            debug["scoring"] = scoring;
+            if (scoringResult.Warnings.Count > 0)
+            {
+                var warnings = payload.TryGetValue("warnings", out var existingWarnings)
+                    && existingWarnings is JsonElement warningsElement
+                    && warningsElement.ValueKind == JsonValueKind.Array
+                    ? warningsElement.EnumerateArray()
+                        .Where(item => item.ValueKind == JsonValueKind.String)
+                        .Select(item => item.GetString()!)
+                        .ToList()
+                    : [];
+                warnings.AddRange(scoringResult.Warnings);
+                payload["warnings"] = warnings.Distinct().ToList();
+            }
+            payload["debug"] = debug;
+            return JsonSerializer.Serialize(payload, SerializerOptions);
+        }
+        catch
+        {
+            return string.IsNullOrWhiteSpace(aiResponse.RawJson)
+                ? JsonSerializer.Serialize(aiResponse, SerializerOptions)
+                : aiResponse.RawJson;
+        }
+    }
+
+    private static string BuildSummary(
+        string baseSummary,
+        AiAnalyzeFramesResponse aiResponse,
+        IReadOnlyList<string> decisionWarnings)
+    {
+        var notes = new List<string> { baseSummary };
+        if (aiResponse.IsMock)
+        {
+            notes.Add("Development mock model was used. This is not real AI detection.");
+        }
+
+        if (string.Equals(aiResponse.ModelCapability, "frame_image", StringComparison.OrdinalIgnoreCase))
+        {
+            notes.Add("Frame-level model used; temporal video consistency detection is limited.");
+        }
+
+        notes.AddRange(aiResponse.Warnings);
+        notes.AddRange(decisionWarnings);
+        return Truncate(string.Join(" ", notes.Distinct()), 1000) ?? baseSummary;
     }
 
     private async Task<ModelVersion> GetOrCreateModelVersionAsync(string version, CancellationToken cancellationToken)

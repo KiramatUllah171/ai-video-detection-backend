@@ -16,7 +16,7 @@ public class EvidenceGenerationServiceTests
     [Fact]
     public void HighFrameScoreCreatesHighEvidence()
     {
-        var evidence = _service.GenerateEvidence(CreateInput([new AiFrameAnalysisResult(1, 1, 1, 0.90m, 0.80m, [])]));
+        var evidence = _service.GenerateEvidence(CreateInput([Frame(1, 1, 1, 0.90m)]));
 
         Assert.Contains(evidence, item => item.Type == EvidenceType.AiFrameScore && item.Severity == EvidenceSeverity.High);
     }
@@ -24,7 +24,7 @@ public class EvidenceGenerationServiceTests
     [Fact]
     public void MediumFrameScoreCreatesMediumEvidence()
     {
-        var evidence = _service.GenerateEvidence(CreateInput([new AiFrameAnalysisResult(1, 1, 1, 0.60m, 0.80m, [])]));
+        var evidence = _service.GenerateEvidence(CreateInput([Frame(1, 1, 1, 0.60m)]));
 
         Assert.Contains(evidence, item => item.Type == EvidenceType.AiFrameScore && item.Severity == EvidenceSeverity.Medium);
     }
@@ -50,23 +50,40 @@ public class EvidenceGenerationServiceTests
     {
         var evidence = _service.GenerateEvidence(CreateInput(
         [
-            new AiFrameAnalysisResult(1, 1, 1, 0.90m, 0.80m, []),
-            new AiFrameAnalysisResult(2, 2, 2, 0.88m, 0.80m, []),
-            new AiFrameAnalysisResult(3, 3, 3, 0.86m, 0.80m, [])
+            Frame(1, 1, 1, 0.90m),
+            Frame(2, 2, 2, 0.88m),
+            Frame(3, 3, 3, 0.86m)
         ]));
 
         Assert.Equal(2, evidence.Count(item => item.Type == EvidenceType.AiFrameScore));
     }
 
+    [Fact]
+    public void DetectorDisagreementCreatesEvidenceItem()
+    {
+        var evidence = _service.GenerateEvidence(CreateInput(
+            [Frame(1, 1, 1, 0.90m)],
+            modelDisagreement: true));
+
+        Assert.Contains(evidence, item => item.Title == "Detector disagreement");
+    }
+
     private static EvidenceGenerationInput CreateInput(
         IReadOnlyList<AiFrameAnalysisResult> frames,
-        IReadOnlyList<string>? warnings = null)
+        IReadOnlyList<string>? warnings = null,
+        bool modelDisagreement = false)
     {
         return new EvidenceGenerationInput(
             "mock-video-ai-v1",
             frames,
             frames.ToDictionary(frame => frame.FrameId, frame => frame.FrameId),
             warnings ?? [],
-            new FinalScoringResult(0.6m, 0.2m, null, 0.5m, 0.8m, AnalysisLabel.Suspicious, "summary"));
+            new FinalScoringResult(0.6m, 0.2m, null, 0.5m, 0.8m, AnalysisLabel.Suspicious, "summary", []),
+            modelDisagreement);
+    }
+
+    private static AiFrameAnalysisResult Frame(long frameId, int frameIndex, decimal timestamp, decimal aiScore)
+    {
+        return new AiFrameAnalysisResult(frameId, frameIndex, timestamp, aiScore, 1m - aiScore, 0.80m, []);
     }
 }

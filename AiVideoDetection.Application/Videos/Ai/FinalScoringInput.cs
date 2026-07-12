@@ -6,4 +6,12 @@ public sealed record FinalScoringInput(
     IReadOnlyList<string> MetadataWarnings,
     int FrameCount,
     decimal? TemporalScore,
-    string? LabelHint);
+    string? LabelHint,
+    bool ModelDisagreement = false,
+    decimal? VideoComponentScore = null,
+    decimal? FrameRawScore = null,
+    decimal? FrameCalibratedScore = null,
+    bool StrongFrameEvidence = false,
+    decimal? VideoConfidence = null,
+    decimal? FrameConfidence = null,
+    decimal? DetectorReliabilityScore = null);

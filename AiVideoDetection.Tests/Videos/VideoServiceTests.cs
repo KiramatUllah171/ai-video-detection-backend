@@ -222,6 +222,88 @@ public class VideoServiceTests
         Assert.Single(response.Data.EvidenceItems);
     }
 
+    [Fact]
+    public async Task GetAnalysisReturnsLatestAiResult()
+    {
+        await using var dbContext = CreateDbContext();
+        dbContext.Users.Add(CreateUser(1, "owner@example.com"));
+        dbContext.Videos.Add(new Video
+        {
+            Id = 10,
+            UserId = 1,
+            OriginalName = "owner.mp4",
+            FileUrl = "videos/1/file.mp4",
+            FileSize = 100,
+            Status = VideoStatus.Completed,
+            AiResults =
+            [
+                new AiResult
+                {
+                    VisualScore = 0.80m,
+                    FinalScore = 0.80m,
+                    Confidence = 0.80m,
+                    Label = AnalysisLabel.LikelyAiGenerated,
+                    RawModelOutputJson = "{}",
+                    CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-10)
+                },
+                new AiResult
+                {
+                    VisualScore = 0.20m,
+                    FinalScore = 0.20m,
+                    Confidence = 0.90m,
+                    Label = AnalysisLabel.LikelyReal,
+                    RawModelOutputJson = "{}",
+                    CreatedAt = DateTimeOffset.UtcNow
+                }
+            ]
+        });
+        await dbContext.SaveChangesAsync();
+        var service = CreateService(dbContext, new FakeObjectStorageService(), new FakeAnalysisJobQueue());
+
+        var response = await service.GetAnalysisAsync(10, 1);
+
+        Assert.True(response.Success);
+        Assert.Equal("LikelyReal", response.Data!.Label);
+        Assert.Equal(0.20m, response.Data.FinalScore);
+    }
+
+    [Fact]
+    public async Task ReanalyzeQueuesNewJobWithoutDeletingOldResult()
+    {
+        await using var dbContext = CreateDbContext();
+        dbContext.Users.Add(CreateUser(1, "owner@example.com"));
+        dbContext.Videos.Add(new Video
+        {
+            Id = 10,
+            UserId = 1,
+            OriginalName = "owner.mp4",
+            FileUrl = "videos/1/file.mp4",
+            FileSize = 100,
+            Status = VideoStatus.Completed,
+            AiResults =
+            [
+                new AiResult
+                {
+                    VisualScore = 0.60m,
+                    FinalScore = 0.55m,
+                    Confidence = 0.80m,
+                    Label = AnalysisLabel.Suspicious,
+                    RawModelOutputJson = "{}"
+                }
+            ]
+        });
+        await dbContext.SaveChangesAsync();
+        var queue = new FakeAnalysisJobQueue();
+        var service = CreateService(dbContext, new FakeObjectStorageService(), queue);
+
+        var response = await service.ReanalyzeAsync(10, 1);
+
+        Assert.True(response.Success);
+        Assert.Equal(1, queue.EnqueueCalls);
+        Assert.Equal(1, await dbContext.AiResults.CountAsync());
+        Assert.Equal(1, await dbContext.AnalysisJobs.CountAsync());
+    }
+
     private static VideoService CreateService(
         AppDbContext dbContext,
         IObjectStorageService storage,
