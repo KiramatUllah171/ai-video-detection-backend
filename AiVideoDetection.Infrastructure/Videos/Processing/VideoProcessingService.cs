@@ -128,7 +128,7 @@ public class VideoProcessingService(
                 .Where(frame => frame.VideoId == job.VideoId)
                 .OrderBy(frame => frame.FrameIndex)
                 .ToListAsync(cancellationToken);
-            var aiResponse = await AnalyzeFramesAsync(job, savedFrames, workDirectory, cancellationToken);
+            var aiResponse = await AnalyzeAsync(job, savedFrames, workDirectory, sourcePath, cancellationToken);
             await UpdateProgressAsync(job, 82, "Running AI detection model", cancellationToken);
             await jobLogService.LogAsync(job.Id, "AiAnalysisCompleted", "Information", "AI frame analysis completed.", new
             {
@@ -151,21 +151,23 @@ public class VideoProcessingService(
             var visualScore = aiResponse.MinimumRecommendedScore is null || !allowMinimumRecommendation
                 ? aiResponse.OverallAiScore
                 : Math.Max(aiResponse.OverallAiScore, aiResponse.MinimumRecommendedScore.Value);
-            var scoringResult = finalScoringService.Calculate(new FinalScoringInput(
-                visualScore,
-                aiResponse.OverallConfidence,
-                metadataWarnings,
-                savedFrames.Count,
-                aiResponse.VideoComponentScore,
-                aiResponse.LabelHint,
-                aiResponse.ModelDisagreement,
-                aiResponse.VideoComponentScore,
-                aiResponse.FrameRawScore,
-                aiResponse.FrameCalibratedScore ?? aiResponse.FrameComponentScore,
-                aiResponse.StrongFrameEvidence,
-                null,
-                null,
-                aiResponse.FrameReliabilityScore));
+            var scoringResult = IsPureBitMindResult(aiResponse)
+                ? CreateBitMindScoringResult(aiResponse)
+                : finalScoringService.Calculate(new FinalScoringInput(
+                    visualScore,
+                    aiResponse.OverallConfidence,
+                    metadataWarnings,
+                    savedFrames.Count,
+                    aiResponse.VideoComponentScore,
+                    aiResponse.LabelHint,
+                    aiResponse.ModelDisagreement,
+                    aiResponse.VideoComponentScore,
+                    aiResponse.FrameRawScore,
+                    aiResponse.FrameCalibratedScore ?? aiResponse.FrameComponentScore,
+                    aiResponse.StrongFrameEvidence,
+                    null,
+                    null,
+                    aiResponse.FrameReliabilityScore));
             await UpdateProgressAsync(job, 88, "Calculating authenticity score", cancellationToken);
             await jobLogService.LogAsync(job.Id, "ScoringCompleted", "Information", "Final scoring completed.", new
             {
@@ -294,10 +296,11 @@ public class VideoProcessingService(
         }
     }
 
-    private async Task<AiAnalyzeFramesResponse> AnalyzeFramesAsync(
+    private async Task<AiAnalyzeFramesResponse> AnalyzeAsync(
         AnalysisJob job,
         IReadOnlyList<VideoFrame> frames,
         string workDirectory,
+        string sourcePath,
         CancellationToken cancellationToken)
     {
         if (frames.Count == 0)
@@ -332,12 +335,88 @@ public class VideoProcessingService(
             requestFrames.Take(5).Select(frame => frame.FrameId).ToArray(),
             requestFrames.Take(5).Select(frame => !string.IsNullOrWhiteSpace(frame.ImageBase64)).ToArray());
 
-        var request = new AiAnalyzeFramesRequest(
+        var providerMode = await ResolveProviderModeAsync(job, cancellationToken);
+        var useVideoEndpoint = !string.Equals(providerMode, "local", StringComparison.OrdinalIgnoreCase);
+        logger.LogInformation(
+            "Resolved AI provider mode {ProviderMode} for video {VideoId} job {JobId}; selected endpoint {Endpoint}.",
+            providerMode,
             job.VideoId,
             job.Id,
-            requestFrames);
+            useVideoEndpoint ? _aiServiceOptions.AnalyzeVideoPath : _aiServiceOptions.AnalyzeFramesPath);
+        if (useVideoEndpoint)
+        {
+            return await aiInferenceClient.AnalyzeVideoAsync(
+                new AiAnalyzeVideoRequest(
+                    job.VideoId,
+                    job.Id,
+                    job.Video.UserId,
+                    providerMode,
+                    sourcePath,
+                    requestFrames),
+                cancellationToken);
+        }
 
-        return await aiInferenceClient.AnalyzeFramesAsync(request, cancellationToken);
+        var request = new AiAnalyzeFramesRequest(job.VideoId, job.Id, requestFrames);
+        var response = await aiInferenceClient.AnalyzeFramesAsync(request, cancellationToken);
+        return response with { Provider = "Local", ProviderMode = "local", FinalDecisionSource = "Local" };
+    }
+
+    private async Task<string> ResolveProviderModeAsync(AnalysisJob job, CancellationToken cancellationToken)
+    {
+        var configuredMode = NormalizeProviderMode(_aiServiceOptions.ProviderMode);
+        logger.LogInformation(
+            "Resolving AI provider mode for job {JobId}: configured={ConfiguredMode}, bitmindEnabled={BitMindEnabled}, externalPolicy={ExternalPolicy}, localFallback={LocalFallback}.",
+            job.Id,
+            configuredMode,
+            _aiServiceOptions.BitMindEnabled,
+            _aiServiceOptions.ExternalProviderPolicy,
+            _aiServiceOptions.LocalFallbackEnabled);
+        if (configuredMode == "local"
+            || !_aiServiceOptions.BitMindEnabled
+            || string.Equals(_aiServiceOptions.ExternalProviderPolicy, "Disabled", StringComparison.OrdinalIgnoreCase))
+        {
+            return "local";
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var usage = await GetOrCreateUsageAsync("BitMind", now.Year, now.Month, cancellationToken);
+        if (usage.RequestCount >= usage.QuotaLimit)
+        {
+            await jobLogService.LogAsync(
+                job.Id,
+                "ExternalProviderSkipped",
+                "Warning",
+                "BitMind monthly quota reached. Local analysis will be used.",
+                new { provider = "BitMind", usage.RequestCount, usage.QuotaLimit },
+                cancellationToken);
+            return "local";
+        }
+
+        usage.RequestCount++;
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return configuredMode;
+    }
+
+    private async Task<ApiUsageMonthly> GetOrCreateUsageAsync(string providerName, int year, int month, CancellationToken cancellationToken)
+    {
+        var usage = await dbContext.ApiUsageMonthly
+            .FirstOrDefaultAsync(existing => existing.ProviderName == providerName && existing.Year == year && existing.Month == month, cancellationToken);
+        if (usage is not null)
+        {
+            usage.QuotaLimit = _aiServiceOptions.BitMindMonthlyQuota;
+            return usage;
+        }
+
+        usage = new ApiUsageMonthly
+        {
+            ProviderName = providerName,
+            Year = year,
+            Month = month,
+            QuotaLimit = _aiServiceOptions.BitMindMonthlyQuota
+        };
+        dbContext.ApiUsageMonthly.Add(usage);
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return usage;
     }
 
     private List<VideoFrame> SelectFramesForAi(IReadOnlyList<VideoFrame> frames, int maxFrames)
@@ -395,11 +474,189 @@ public class VideoProcessingService(
         aiResult.Label = scoringResult.Label;
         aiResult.Summary = BuildSummary(scoringResult.Summary, aiResponse, scoringResult.Warnings);
         aiResult.RawModelOutputJson = EnrichRawModelOutput(aiResponse, scoringResult);
+        aiResult.Provider = aiResponse.Provider;
+        aiResult.ProviderMode = aiResponse.ProviderMode;
+        aiResult.FinalDecisionSource = aiResponse.FinalDecisionSource;
+        aiResult.FallbackUsed = aiResponse.FallbackUsed;
+        aiResult.FallbackReason = aiResponse.FallbackReason;
+        aiResult.LocalResultJson = aiResponse.LocalResultJson;
+        aiResult.HybridResultJson = aiResponse.BitMindResultJson is null
+            ? null
+            : JsonSerializer.Serialize(new { local = ParseJson(aiResponse.LocalResultJson), bitmind = ParseJson(aiResponse.BitMindResultJson) }, SerializerOptions);
+        ApplyExternalProviderResult(aiResult, aiResponse.ExternalProviderResultJson);
 
         dbContext.AiResults.Add(aiResult);
 
         await dbContext.SaveChangesAsync(cancellationToken);
+        await SaveProviderRequestAsync(videoId, aiResult, aiResponse, cancellationToken);
         return aiResult;
+    }
+
+    private static bool IsPureBitMindResult(AiAnalyzeFramesResponse aiResponse)
+    {
+        return string.Equals(aiResponse.ProviderMode, "bitmind", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(aiResponse.FinalDecisionSource, "BitMind", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(aiResponse.Provider, "BitMind", StringComparison.OrdinalIgnoreCase)
+            && !aiResponse.FallbackUsed;
+    }
+
+    private static FinalScoringResult CreateBitMindScoringResult(AiAnalyzeFramesResponse aiResponse)
+    {
+        var score = Math.Clamp(aiResponse.OverallAiScore, 0m, 1m);
+        var confidence = Math.Clamp(aiResponse.OverallConfidence, 0m, 1m);
+        var label = NormalizeExternalLabel(aiResponse.LabelHint, score, confidence);
+        return new FinalScoringResult(
+            score,
+            null,
+            null,
+            Math.Round(score, 3),
+            Math.Round(confidence, 3),
+            label,
+            "BitMind external verification was used as the final decision source. Metadata is shown separately and was not used to overwrite the BitMind score.",
+            []);
+    }
+
+    private static AnalysisLabel NormalizeExternalLabel(string? labelHint, decimal score, decimal confidence)
+    {
+        return labelHint?.Replace(" ", string.Empty, StringComparison.Ordinal).ToLowerInvariant() switch
+        {
+            "likelyaigenerated" => AnalysisLabel.LikelyAiGenerated,
+            "likelyreal" => AnalysisLabel.LikelyReal,
+            "suspicious" => AnalysisLabel.Suspicious,
+            "inconclusive" => AnalysisLabel.Inconclusive,
+            _ when score >= 0.75m && confidence >= 0.60m => AnalysisLabel.LikelyAiGenerated,
+            _ when score <= 0.25m && confidence >= 0.60m => AnalysisLabel.LikelyReal,
+            _ when score >= 0.50m => AnalysisLabel.Suspicious,
+            _ => AnalysisLabel.Inconclusive
+        };
+    }
+
+    private async Task SaveProviderRequestAsync(
+        long videoId,
+        AiResult aiResult,
+        AiAnalyzeFramesResponse aiResponse,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(aiResult.ExternalProviderName))
+        {
+            return;
+        }
+
+        var video = await dbContext.Videos.AsNoTracking().FirstAsync(existing => existing.Id == videoId, cancellationToken);
+        var latestJobId = aiResponse.JobId;
+        dbContext.AiProviderRequests.Add(new AiProviderRequest
+        {
+            VideoId = videoId,
+            AnalysisJobId = latestJobId,
+            AiResultId = aiResult.Id,
+            UserId = video.UserId,
+            ProviderName = aiResult.ExternalProviderName,
+            ProviderMode = aiResult.ProviderMode,
+            ProviderRequestId = aiResult.ExternalProviderResultId,
+            ProviderJobId = aiResult.ExternalProviderJobId,
+            Status = aiResult.ExternalProviderStatus ?? "Unknown",
+            RequestStartedAt = aiResult.ExternalRequestedAt ?? aiResult.CreatedAt,
+            RequestCompletedAt = aiResult.ExternalCompletedAt,
+            DurationMs = aiResult.ExternalRequestedAt is not null && aiResult.ExternalCompletedAt is not null
+                ? (long)(aiResult.ExternalCompletedAt.Value - aiResult.ExternalRequestedAt.Value).TotalMilliseconds
+                : null,
+            ErrorMessage = aiResult.ExternalErrorMessage,
+            RawRequestMetadataJson = BuildProviderRequestMetadata(aiResponse),
+            RawResponseJson = aiResult.ExternalRawResponseJson
+        });
+
+        var usage = await dbContext.ApiUsageMonthly
+            .FirstOrDefaultAsync(existing => existing.ProviderName == aiResult.ExternalProviderName
+                && existing.Year == aiResult.CreatedAt.Year
+                && existing.Month == aiResult.CreatedAt.Month, cancellationToken);
+        if (usage is not null)
+        {
+            if (string.Equals(aiResult.ExternalProviderStatus, "Completed", StringComparison.OrdinalIgnoreCase))
+            {
+                usage.SuccessCount++;
+            }
+            else if (string.Equals(aiResult.ExternalProviderStatus, "Skipped", StringComparison.OrdinalIgnoreCase))
+            {
+                usage.RequestCount = Math.Max(0, usage.RequestCount - 1);
+            }
+            else
+            {
+                usage.FailedCount++;
+            }
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    private static string BuildProviderRequestMetadata(AiAnalyzeFramesResponse aiResponse)
+    {
+        var metadata = new Dictionary<string, object?>
+        {
+            ["provider_mode"] = aiResponse.ProviderMode,
+            ["final_decision_source"] = aiResponse.FinalDecisionSource
+        };
+
+        if (!string.IsNullOrWhiteSpace(aiResponse.ExternalProviderResultJson))
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(aiResponse.ExternalProviderResultJson);
+                foreach (var propertyName in new[]
+                {
+                    "original_file_size_bytes",
+                    "bitmind_file_size_bytes",
+                    "compression_used",
+                    "compression_attempts",
+                    "compression_error",
+                    "analysis_copy_path",
+                    "provider_sent_file_name",
+                    "provider_decision_band"
+                })
+                {
+                    if (document.RootElement.TryGetProperty(propertyName, out var value))
+                    {
+                        metadata[propertyName] = value.ValueKind switch
+                        {
+                            JsonValueKind.String => value.GetString(),
+                            JsonValueKind.Number when value.TryGetInt64(out var longValue) => longValue,
+                            JsonValueKind.Number => value.GetDecimal(),
+                            JsonValueKind.True => true,
+                            JsonValueKind.False => false,
+                            JsonValueKind.Null => null,
+                            _ => value.GetRawText()
+                        };
+                    }
+                }
+            }
+            catch
+            {
+                metadata["provider_metadata_parse_error"] = true;
+            }
+        }
+
+        return JsonSerializer.Serialize(metadata, SerializerOptions);
+    }
+
+    private static void ApplyExternalProviderResult(AiResult aiResult, string? externalProviderResultJson)
+    {
+        if (string.IsNullOrWhiteSpace(externalProviderResultJson))
+        {
+            return;
+        }
+
+        using var document = JsonDocument.Parse(externalProviderResultJson);
+        var root = document.RootElement;
+        aiResult.ExternalProviderName = GetString(root, "provider_name");
+        aiResult.ExternalProviderResultId = GetString(root, "provider_request_id");
+        aiResult.ExternalProviderJobId = GetString(root, "provider_job_id");
+        aiResult.ExternalProviderStatus = GetString(root, "provider_status");
+        aiResult.ExternalLabel = GetString(root, "provider_label");
+        aiResult.ExternalScore = GetDecimal(root, "provider_score");
+        aiResult.ExternalConfidence = GetDecimal(root, "provider_confidence");
+        aiResult.ExternalRawResponseJson = root.TryGetProperty("provider_raw_response", out var raw) ? raw.GetRawText() : externalProviderResultJson;
+        aiResult.ExternalErrorMessage = GetString(root, "provider_error_message");
+        aiResult.ExternalRequestedAt = GetDate(root, "provider_started_at");
+        aiResult.ExternalCompletedAt = GetDate(root, "provider_completed_at");
     }
 
     private static string EnrichRawModelOutput(AiAnalyzeFramesResponse aiResponse, FinalScoringResult scoringResult)
@@ -709,6 +966,57 @@ public class VideoProcessingService(
     private static string? Truncate(string? value, int maxLength)
     {
         return value is null || value.Length <= maxLength ? value : value[..maxLength];
+    }
+
+    private static string NormalizeProviderMode(string? providerMode)
+    {
+        return providerMode?.Trim().ToLowerInvariant() switch
+        {
+            "bitmind" => "bitmind",
+            "hybrid" => "hybrid",
+            _ => "local"
+        };
+    }
+
+    private static object? ParseJson(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return document.RootElement.Clone();
+        }
+        catch
+        {
+            return json;
+        }
+    }
+
+    private static string? GetString(JsonElement element, string propertyName)
+    {
+        return element.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+    }
+
+    private static decimal? GetDecimal(JsonElement element, string propertyName)
+    {
+        return element.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.Number
+            ? value.GetDecimal()
+            : null;
+    }
+
+    private static DateTimeOffset? GetDate(JsonElement element, string propertyName)
+    {
+        return element.TryGetProperty(propertyName, out var value)
+            && value.ValueKind == JsonValueKind.String
+            && DateTimeOffset.TryParse(value.GetString(), out var date)
+            ? date
+            : null;
     }
 
     private static void TryDeleteDirectory(string path)

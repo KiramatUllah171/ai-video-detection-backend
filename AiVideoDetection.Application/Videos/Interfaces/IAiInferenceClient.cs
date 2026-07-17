@@ -8,5 +8,9 @@ public interface IAiInferenceClient
         AiAnalyzeFramesRequest request,
         CancellationToken cancellationToken = default);
 
+    Task<AiAnalyzeFramesResponse> AnalyzeVideoAsync(
+        AiAnalyzeVideoRequest request,
+        CancellationToken cancellationToken = default);
+
     Task<bool> HealthCheckAsync(CancellationToken cancellationToken = default);
 }

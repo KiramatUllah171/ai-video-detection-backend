@@ -69,6 +69,48 @@ public class PythonAiInferenceClientTests
         Assert.Equal("AI_SERVICE_INVALID_RESPONSE", exception.ErrorCode);
     }
 
+    [Fact]
+    public async Task AnalyzeVideoParsesProviderFields()
+    {
+        var client = CreateClient(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = JsonContent("""
+            {
+              "video_id": 123,
+              "job_id": 456,
+              "model_id": "bitmind-subnet-34",
+              "model_version": "bitmind-oracle-v1-sn34",
+              "model_capability": "external_video",
+              "is_mock": false,
+              "overall_ai_score": 0.88,
+              "real_probability": 0.12,
+              "overall_confidence": 0.91,
+              "label_hint": "LikelyAiGenerated",
+              "frames": [],
+              "notes": ["external"],
+              "warnings": ["privacy"],
+              "provider": "BitMind",
+              "provider_mode": "bitmind",
+              "final_decision_source": "BitMind",
+              "external_provider_result": {
+                "provider_name": "BitMind",
+                "provider_status": "Completed",
+                "provider_score": 0.88,
+                "provider_confidence": 0.91
+              }
+            }
+            """)
+        });
+
+        var response = await client.AnalyzeVideoAsync(new AiAnalyzeVideoRequest(123, 456, 7, "bitmind", "source.mp4", []));
+
+        Assert.Equal("BitMind", response.Provider);
+        Assert.Equal("bitmind", response.ProviderMode);
+        Assert.Equal("BitMind", response.FinalDecisionSource);
+        Assert.Contains("provider_status", response.ExternalProviderResultJson);
+        Assert.Contains("Completed", response.ExternalProviderResultJson);
+    }
+
     private static PythonAiInferenceClient CreateClient(HttpResponseMessage response)
     {
         return new PythonAiInferenceClient(

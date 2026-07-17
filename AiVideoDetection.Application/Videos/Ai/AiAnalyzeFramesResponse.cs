@@ -23,7 +23,15 @@ public sealed record AiAnalyzeFramesResponse(
     decimal? FrameComponentScore = null,
     decimal? FrameRawScore = null,
     decimal? FrameCalibratedScore = null,
-    decimal? FrameReliabilityScore = null)
+    decimal? FrameReliabilityScore = null,
+    string Provider = "Local",
+    string ProviderMode = "local",
+    string? ExternalProviderResultJson = null,
+    bool FallbackUsed = false,
+    string? FallbackReason = null,
+    string? LocalResultJson = null,
+    string? BitMindResultJson = null,
+    string FinalDecisionSource = "Local")
 {
     public string RawJson { get; init; } = "{}";
 }

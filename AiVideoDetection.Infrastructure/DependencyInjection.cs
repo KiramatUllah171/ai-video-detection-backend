@@ -61,6 +61,22 @@ public static class DependencyInjection
         services.Configure<VideoUploadOptions>(configuration.GetSection(VideoUploadOptions.SectionName));
         services.Configure<VideoProcessingOptions>(configuration.GetSection(VideoProcessingOptions.SectionName));
         services.Configure<AiServiceOptions>(configuration.GetSection(AiServiceOptions.SectionName));
+        services.PostConfigure<AiServiceOptions>(options =>
+        {
+            options.ProviderMode = Environment.GetEnvironmentVariable("AI_PROVIDER")
+                ?? Environment.GetEnvironmentVariable("PROVIDER_MODE")
+                ?? options.ProviderMode;
+            options.BitMindEnabled = bool.TryParse(Environment.GetEnvironmentVariable("BITMIND_ENABLED"), out var bitMindEnabled)
+                ? bitMindEnabled
+                : options.BitMindEnabled;
+            options.BitMindMonthlyQuota = int.TryParse(Environment.GetEnvironmentVariable("BITMIND_MONTHLY_QUOTA"), out var quota)
+                ? quota
+                : options.BitMindMonthlyQuota;
+            options.LocalFallbackEnabled = bool.TryParse(Environment.GetEnvironmentVariable("LOCAL_FALLBACK_ENABLED"), out var fallbackEnabled)
+                ? fallbackEnabled
+                : options.LocalFallbackEnabled;
+            options.ExternalProviderPolicy = Environment.GetEnvironmentVariable("EXTERNAL_PROVIDER_POLICY") ?? options.ExternalProviderPolicy;
+        });
         services.Configure<ScoringOptions>(configuration.GetSection(ScoringOptions.SectionName));
         services.Configure<InternalMatchingOptions>(configuration.GetSection(InternalMatchingOptions.SectionName));
         services.Configure<LocalStorageOptions>(configuration.GetSection(LocalStorageOptions.SectionName));

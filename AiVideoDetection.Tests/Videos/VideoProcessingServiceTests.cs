@@ -147,13 +147,86 @@ public class VideoProcessingServiceTests
         Assert.Equal("AI_SERVICE_UNAVAILABLE", savedJob.ErrorCode);
     }
 
+    [Fact]
+    public async Task BitMindModeSavesExternalScoreAndFinalDecisionFromConfidence()
+    {
+        await using var dbContext = CreateDbContext();
+        var job = await SeedQueuedJobAsync(dbContext);
+        var service = CreateService(
+            dbContext,
+            new FakeObjectStorageService(),
+            new FakeMetadataExtractionService(),
+            new FakeFrameExtractionService(),
+            CreateWorkRoot(),
+            new FakeBitMindAiInferenceClient(),
+            new AiServiceOptions
+            {
+                ProviderMode = "bitmind",
+                BitMindEnabled = true,
+                BitMindMonthlyQuota = 100,
+                MaxFramesPerRequest = 30
+            });
+
+        await service.ProcessAnalysisJobAsync(job.Id);
+
+        var result = await dbContext.AiResults.SingleAsync();
+        Assert.Equal("BitMind", result.Provider);
+        Assert.Equal("bitmind", result.ProviderMode);
+        Assert.Equal("BitMind", result.FinalDecisionSource);
+        Assert.Equal(0.8816881775856018m, result.ExternalScore);
+        Assert.Equal(0.8816881775856018m, result.ExternalConfidence);
+        Assert.Equal("LikelyAiGenerated", result.ExternalLabel);
+        Assert.Equal(0.882m, result.FinalScore);
+        Assert.Equal(0.882m, result.Confidence);
+        Assert.Equal(AnalysisLabel.LikelyAiGenerated, result.Label);
+        Assert.Contains("isAI", result.ExternalRawResponseJson);
+        Assert.Contains("true", result.ExternalRawResponseJson);
+    }
+
+    [Fact]
+    public async Task BitMindModeModerateAiConfidenceSavesSuspiciousNotLikelyAiGenerated()
+    {
+        await using var dbContext = CreateDbContext();
+        var job = await SeedQueuedJobAsync(dbContext);
+        var service = CreateService(
+            dbContext,
+            new FakeObjectStorageService(),
+            new FakeMetadataExtractionService(),
+            new FakeFrameExtractionService(),
+            CreateWorkRoot(),
+            new FakeModerateBitMindAiInferenceClient(),
+            new AiServiceOptions
+            {
+                ProviderMode = "bitmind",
+                BitMindEnabled = true,
+                BitMindMonthlyQuota = 100,
+                MaxFramesPerRequest = 30
+            });
+
+        await service.ProcessAnalysisJobAsync(job.Id);
+
+        var result = await dbContext.AiResults.SingleAsync();
+        Assert.Equal("BitMind", result.Provider);
+        Assert.Equal(0.7529020309448242m, result.ExternalScore);
+        Assert.Equal(0.7529020309448242m, result.ExternalConfidence);
+        Assert.Equal("Suspicious", result.ExternalLabel);
+        Assert.Equal(0.753m, result.FinalScore);
+        Assert.Equal(0.753m, result.Confidence);
+        Assert.Equal(AnalysisLabel.Suspicious, result.Label);
+        Assert.NotEqual(AnalysisLabel.LikelyAiGenerated, result.Label);
+        var providerRequest = await dbContext.AiProviderRequests.SingleAsync();
+        Assert.Contains("compression_used", providerRequest.RawRequestMetadataJson);
+        Assert.Contains("provider_sent_file_name", providerRequest.RawRequestMetadataJson);
+    }
+
     private static VideoProcessingService CreateService(
         AppDbContext dbContext,
         IObjectStorageService storage,
         IMetadataExtractionService metadata,
         IFrameExtractionService frames,
         string workRoot,
-        IAiInferenceClient? aiClient = null)
+        IAiInferenceClient? aiClient = null,
+        AiServiceOptions? aiOptions = null)
     {
         return new VideoProcessingService(
             dbContext,
@@ -168,7 +241,7 @@ public class VideoProcessingServiceTests
             new JobLogService(dbContext),
             Options.Create(new VideoProcessingOptions { WorkingRootPath = workRoot }),
             Options.Create(new InternalMatchingOptions { Enabled = true, FailJobOnMatchingError = false }),
-            Options.Create(new AiServiceOptions { MaxFramesPerRequest = 30 }),
+            Options.Create(aiOptions ?? new AiServiceOptions { MaxFramesPerRequest = 30 }),
             NullLogger<VideoProcessingService>.Instance);
     }
 
@@ -342,6 +415,15 @@ public class VideoProcessingServiceTests
         {
             return Task.FromResult(true);
         }
+
+        public Task<AiAnalyzeFramesResponse> AnalyzeVideoAsync(
+            AiAnalyzeVideoRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            return AnalyzeFramesAsync(
+                new AiAnalyzeFramesRequest(request.VideoId, request.JobId, request.Frames),
+                cancellationToken);
+        }
     }
 
     private sealed class FailingAiInferenceClient : IAiInferenceClient
@@ -356,6 +438,187 @@ public class VideoProcessingServiceTests
         public Task<bool> HealthCheckAsync(CancellationToken cancellationToken = default)
         {
             return Task.FromResult(false);
+        }
+
+        public Task<AiAnalyzeFramesResponse> AnalyzeVideoAsync(
+            AiAnalyzeVideoRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            throw new AiServiceException("AI_SERVICE_UNAVAILABLE", "AI analysis service is currently unavailable. Please try again later.");
+        }
+    }
+
+    private sealed class FakeBitMindAiInferenceClient : IAiInferenceClient
+    {
+        public Task<AiAnalyzeFramesResponse> AnalyzeFramesAsync(
+            AiAnalyzeFramesRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            throw new InvalidOperationException("BitMind mode should use AnalyzeVideoAsync.");
+        }
+
+        public Task<AiAnalyzeFramesResponse> AnalyzeVideoAsync(
+            AiAnalyzeVideoRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            const string externalProviderResult = """
+            {
+              "provider_name": "BitMind",
+              "provider_label": "LikelyAiGenerated",
+              "provider_score": 0.8816881775856018,
+              "provider_job_id": null,
+              "provider_status": "Completed",
+              "provider_confidence": 0.8816881775856018,
+              "provider_request_id": null,
+              "provider_started_at": "2026-07-12T07:36:04.530939+00:00",
+              "provider_completed_at": "2026-07-12T07:36:16.004705+00:00",
+              "provider_raw_response": {
+                "isAI": true,
+                "objectKey": "1783841775771.mp4",
+                "confidence": 0.8816881775856018,
+                "similarity": 0,
+                "thumbnailObjectKey": "thumbnails/1783841775771/main.jpg"
+              },
+              "provider_error_message": null
+            }
+            """;
+            return Task.FromResult(new AiAnalyzeFramesResponse(
+                request.VideoId,
+                request.JobId,
+                "bitmind-subnet-34",
+                "bitmind-oracle-v1-sn34",
+                "external_video",
+                false,
+                0.8816881775856018m,
+                0.1183118224143982m,
+                0.8816881775856018m,
+                "LikelyAiGenerated",
+                [],
+                ["External BitMind video detection completed."],
+                ["This video may be processed by an external AI detection provider for analysis."],
+                Provider: "BitMind",
+                ProviderMode: "bitmind",
+                ExternalProviderResultJson: externalProviderResult,
+                FinalDecisionSource: "BitMind")
+            {
+                RawJson = $$"""
+                {
+                  "video_id": {{request.VideoId}},
+                  "job_id": {{request.JobId}},
+                  "provider": "BitMind",
+                  "provider_mode": "bitmind",
+                  "final_decision_source": "BitMind",
+                  "model_id": "bitmind-subnet-34",
+                  "model_version": "bitmind-oracle-v1-sn34",
+                  "model_capability": "external_video",
+                  "is_mock": false,
+                  "overall_ai_score": 0.8816881775856018,
+                  "real_probability": 0.1183118224143982,
+                  "overall_confidence": 0.8816881775856018,
+                  "label_hint": "LikelyAiGenerated",
+                  "frames": [],
+                  "notes": ["External BitMind video detection completed."],
+                  "warnings": ["This video may be processed by an external AI detection provider for analysis."],
+                  "external_provider_result": {{externalProviderResult}}
+                }
+                """
+            });
+        }
+
+        public Task<bool> HealthCheckAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(true);
+        }
+    }
+
+    private sealed class FakeModerateBitMindAiInferenceClient : IAiInferenceClient
+    {
+        public Task<AiAnalyzeFramesResponse> AnalyzeFramesAsync(
+            AiAnalyzeFramesRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            throw new InvalidOperationException("BitMind mode should use AnalyzeVideoAsync.");
+        }
+
+        public Task<AiAnalyzeFramesResponse> AnalyzeVideoAsync(
+            AiAnalyzeVideoRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            const string externalProviderResult = """
+            {
+              "provider_name": "BitMind",
+              "provider_label": "Suspicious",
+              "provider_score": 0.7529020309448242,
+              "provider_job_id": null,
+              "provider_status": "Completed",
+              "provider_confidence": 0.7529020309448242,
+              "provider_request_id": null,
+              "provider_decision_band": "ai_moderate_confidence",
+              "original_file_size_bytes": 524288000,
+              "bitmind_file_size_bytes": 104857600,
+              "compression_used": true,
+              "compression_attempts": 1,
+              "compression_error": null,
+              "analysis_copy_path": "C:\\temp\\bitmind_analysis_source.mp4",
+              "provider_sent_file_name": "bitmind_analysis_source.mp4",
+              "provider_started_at": "2026-07-12T07:36:04.530939+00:00",
+              "provider_completed_at": "2026-07-12T07:36:16.004705+00:00",
+              "provider_raw_response": {
+                "isAI": true,
+                "objectKey": "1783843392037.mp4",
+                "confidence": 0.7529020309448242,
+                "similarity": 0,
+                "thumbnailObjectKey": "thumbnails/1783843392037/main.jpg"
+              },
+              "provider_error_message": null
+            }
+            """;
+            return Task.FromResult(new AiAnalyzeFramesResponse(
+                request.VideoId,
+                request.JobId,
+                "bitmind-subnet-34",
+                "bitmind-oracle-v1-sn34",
+                "external_video",
+                false,
+                0.7529020309448242m,
+                0.2470979690551758m,
+                0.7529020309448242m,
+                "Suspicious",
+                [],
+                ["External BitMind video detection completed.", "BitMind detected AI-like signals, but confidence is moderate. Treat this as suspicious, not definitive."],
+                ["BitMind detected AI-like signals, but confidence is moderate. This is suspicious, not definitive."],
+                Provider: "BitMind",
+                ProviderMode: "bitmind",
+                ExternalProviderResultJson: externalProviderResult,
+                FinalDecisionSource: "BitMind")
+            {
+                RawJson = $$"""
+                {
+                  "video_id": {{request.VideoId}},
+                  "job_id": {{request.JobId}},
+                  "provider": "BitMind",
+                  "provider_mode": "bitmind",
+                  "final_decision_source": "BitMind",
+                  "model_id": "bitmind-subnet-34",
+                  "model_version": "bitmind-oracle-v1-sn34",
+                  "model_capability": "external_video",
+                  "is_mock": false,
+                  "overall_ai_score": 0.7529020309448242,
+                  "real_probability": 0.2470979690551758,
+                  "overall_confidence": 0.7529020309448242,
+                  "label_hint": "Suspicious",
+                  "frames": [],
+                  "notes": ["External BitMind video detection completed."],
+                  "warnings": ["BitMind detected AI-like signals, but confidence is moderate. This is suspicious, not definitive."],
+                  "external_provider_result": {{externalProviderResult}}
+                }
+                """
+            });
+        }
+
+        public Task<bool> HealthCheckAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(true);
         }
     }
 
