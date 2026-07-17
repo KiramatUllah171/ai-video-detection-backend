@@ -18,7 +18,10 @@ public class AiServiceOptions
 
     public string FrameSamplingStrategy { get; set; } = "uniform";
 
-    public string ProviderMode { get; set; } = Environment.GetEnvironmentVariable("AI_PROVIDER") ?? "local";
+    public string ProviderMode { get; set; } =
+        Environment.GetEnvironmentVariable("AI_PROVIDER")
+        ?? Environment.GetEnvironmentVariable("PROVIDER_MODE")
+        ?? "local";
 
     public bool BitMindEnabled { get; set; } = bool.TryParse(Environment.GetEnvironmentVariable("BITMIND_ENABLED"), out var enabled) && enabled;
 

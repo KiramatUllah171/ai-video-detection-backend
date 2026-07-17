@@ -38,6 +38,11 @@ public class PythonAiInferenceClient(
 
         try
         {
+            logger.LogInformation(
+                "Calling AI service endpoint {Endpoint} using local frame mode for video {VideoId} job {JobId}.",
+                _options.AnalyzeFramesPath,
+                request.VideoId,
+                request.JobId);
             using var response = await client.PostAsJsonAsync(_options.AnalyzeFramesPath, payload, JsonOptions, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
@@ -105,6 +110,12 @@ public class PythonAiInferenceClient(
 
         try
         {
+            logger.LogInformation(
+                "Calling AI service endpoint {Endpoint} using provider mode {ProviderMode} for video {VideoId} job {JobId}.",
+                _options.AnalyzeVideoPath,
+                request.ProviderMode,
+                request.VideoId,
+                request.JobId);
             using var response = await client.PostAsJsonAsync(_options.AnalyzeVideoPath, payload, JsonOptions, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {

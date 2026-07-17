@@ -63,7 +63,9 @@ public static class DependencyInjection
         services.Configure<AiServiceOptions>(configuration.GetSection(AiServiceOptions.SectionName));
         services.PostConfigure<AiServiceOptions>(options =>
         {
-            options.ProviderMode = Environment.GetEnvironmentVariable("AI_PROVIDER") ?? options.ProviderMode;
+            options.ProviderMode = Environment.GetEnvironmentVariable("AI_PROVIDER")
+                ?? Environment.GetEnvironmentVariable("PROVIDER_MODE")
+                ?? options.ProviderMode;
             options.BitMindEnabled = bool.TryParse(Environment.GetEnvironmentVariable("BITMIND_ENABLED"), out var bitMindEnabled)
                 ? bitMindEnabled
                 : options.BitMindEnabled;

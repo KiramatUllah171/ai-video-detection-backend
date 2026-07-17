@@ -337,6 +337,12 @@ public class VideoProcessingService(
 
         var providerMode = await ResolveProviderModeAsync(job, cancellationToken);
         var useVideoEndpoint = !string.Equals(providerMode, "local", StringComparison.OrdinalIgnoreCase);
+        logger.LogInformation(
+            "Resolved AI provider mode {ProviderMode} for video {VideoId} job {JobId}; selected endpoint {Endpoint}.",
+            providerMode,
+            job.VideoId,
+            job.Id,
+            useVideoEndpoint ? _aiServiceOptions.AnalyzeVideoPath : _aiServiceOptions.AnalyzeFramesPath);
         if (useVideoEndpoint)
         {
             return await aiInferenceClient.AnalyzeVideoAsync(
@@ -358,6 +364,13 @@ public class VideoProcessingService(
     private async Task<string> ResolveProviderModeAsync(AnalysisJob job, CancellationToken cancellationToken)
     {
         var configuredMode = NormalizeProviderMode(_aiServiceOptions.ProviderMode);
+        logger.LogInformation(
+            "Resolving AI provider mode for job {JobId}: configured={ConfiguredMode}, bitmindEnabled={BitMindEnabled}, externalPolicy={ExternalPolicy}, localFallback={LocalFallback}.",
+            job.Id,
+            configuredMode,
+            _aiServiceOptions.BitMindEnabled,
+            _aiServiceOptions.ExternalProviderPolicy,
+            _aiServiceOptions.LocalFallbackEnabled);
         if (configuredMode == "local"
             || !_aiServiceOptions.BitMindEnabled
             || string.Equals(_aiServiceOptions.ExternalProviderPolicy, "Disabled", StringComparison.OrdinalIgnoreCase))
