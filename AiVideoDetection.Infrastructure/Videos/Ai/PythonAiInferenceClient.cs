@@ -307,6 +307,9 @@ public class PythonAiInferenceClient(
             "FRAME_IMAGE_REQUIRED" => "AI analysis could not be completed because frame images were not available.",
             "MODEL_LOAD_FAILED" => "AI detection model could not be loaded.",
             "AI_SERVICE_INVALID_RESPONSE" => "AI analysis service returned an invalid response.",
+            "BITMIND_UNAVAILABLE" => "External video analysis is temporarily unavailable.",
+            "AI_SERVICE_TIMEOUT" => "The external analysis service took too long to respond. Please retry.",
+            "AI_VIDEO_SERVICE_UNAVAILABLE" => "External video analysis is temporarily unavailable.",
             _ => string.IsNullOrWhiteSpace(fallback) ? "AI analysis could not be completed for this video." : fallback
         };
     }

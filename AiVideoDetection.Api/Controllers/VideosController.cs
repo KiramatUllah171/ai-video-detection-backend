@@ -127,6 +127,29 @@ public class VideosController(
         return response.Success ? Ok(response) : NotFound(response);
     }
 
+    [HttpPost("{videoId:long}/retry-analysis")]
+    [ProducesResponseType(typeof(ApiResponse<UploadVideoResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<UploadVideoResponse>), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ApiResponse<UploadVideoResponse>), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ApiResponse<UploadVideoResponse>), StatusCodes.Status401Unauthorized)]
+    public async Task<ActionResult<ApiResponse<UploadVideoResponse>>> RetryAnalysis(long videoId, CancellationToken cancellationToken)
+    {
+        if (!TryGetCurrentUserId(out var currentUserId))
+        {
+            return Unauthorized(ApiResponse<UploadVideoResponse>.ErrorResponse("Unauthorized."));
+        }
+
+        var response = await videoService.RetryAnalysisAsync(videoId, currentUserId, cancellationToken);
+        if (response.Success)
+        {
+            return Ok(response);
+        }
+
+        return response.Message.Contains("not found", StringComparison.OrdinalIgnoreCase)
+            ? NotFound(response)
+            : BadRequest(response);
+    }
+
     [HttpGet("{videoId:long}/evidence")]
     [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<EvidenceItemDto>>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<EvidenceItemDto>>), StatusCodes.Status404NotFound)]

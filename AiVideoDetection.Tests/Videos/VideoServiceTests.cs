@@ -304,6 +304,170 @@ public class VideoServiceTests
         Assert.Equal(1, await dbContext.AnalysisJobs.CountAsync());
     }
 
+    [Fact]
+    public async Task OwnerCanRetryFailedAnalysisWithoutCreatingVideo()
+    {
+        await using var dbContext = CreateDbContext();
+        dbContext.Users.Add(CreateUser(1, "owner@example.com"));
+        dbContext.Videos.Add(new Video
+        {
+            Id = 10,
+            UserId = 1,
+            OriginalName = "owner.mp4",
+            FileUrl = "videos/1/file.mp4",
+            FileSize = 100,
+            Status = VideoStatus.Failed,
+            AnalysisJobs =
+            [
+                new AnalysisJob
+                {
+                    Id = 20,
+                    Status = JobStatus.Failed,
+                    Progress = 78,
+                    ErrorCode = "BITMIND_UNAVAILABLE",
+                    ErrorMessage = "External BitMind verification failed: BitMind returned HTTP 401.",
+                    RetryCount = 0,
+                    MaxRetryCount = 3
+                }
+            ]
+        });
+        await dbContext.SaveChangesAsync();
+        var queue = new FakeAnalysisJobQueue();
+        var service = CreateService(dbContext, new FakeObjectStorageService(), queue);
+
+        var response = await service.RetryAnalysisAsync(10, 1);
+
+        Assert.True(response.Success);
+        Assert.Equal(1, await dbContext.Videos.CountAsync());
+        Assert.Equal(2, await dbContext.AnalysisJobs.CountAsync());
+        Assert.Equal(1, queue.EnqueueCalls);
+        Assert.Equal(1, response.Data!.RetryCount);
+        Assert.Equal(3, response.Data.MaxRetryCount);
+        Assert.Equal(10, response.Data.VideoId);
+    }
+
+    [Fact]
+    public async Task NonOwnerCannotRetryAnotherUsersVideo()
+    {
+        await using var dbContext = CreateDbContext();
+        dbContext.Users.AddRange(CreateUser(1, "owner@example.com"), CreateUser(2, "other@example.com"));
+        dbContext.Videos.Add(new Video
+        {
+            Id = 10,
+            UserId = 1,
+            OriginalName = "owner.mp4",
+            FileUrl = "videos/1/file.mp4",
+            FileSize = 100,
+            Status = VideoStatus.Failed,
+            AnalysisJobs = [new AnalysisJob { Status = JobStatus.Failed, RetryCount = 0, MaxRetryCount = 3 }]
+        });
+        await dbContext.SaveChangesAsync();
+        var queue = new FakeAnalysisJobQueue();
+        var service = CreateService(dbContext, new FakeObjectStorageService(), queue);
+
+        var response = await service.RetryAnalysisAsync(10, 2);
+
+        Assert.False(response.Success);
+        Assert.Equal(0, queue.EnqueueCalls);
+        Assert.Equal(1, await dbContext.AnalysisJobs.CountAsync());
+    }
+
+    [Fact]
+    public async Task RetryReturnsActiveJobWithoutDuplicateEnqueue()
+    {
+        await using var dbContext = CreateDbContext();
+        dbContext.Users.Add(CreateUser(1, "owner@example.com"));
+        dbContext.Videos.Add(new Video
+        {
+            Id = 10,
+            UserId = 1,
+            OriginalName = "owner.mp4",
+            FileUrl = "videos/1/file.mp4",
+            FileSize = 100,
+            Status = VideoStatus.Queued,
+            AnalysisJobs =
+            [
+                new AnalysisJob { Id = 20, Status = JobStatus.Failed, RetryCount = 0, MaxRetryCount = 3, CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-2) },
+                new AnalysisJob { Id = 21, Status = JobStatus.Queued, RetryCount = 1, MaxRetryCount = 3, CreatedAt = DateTimeOffset.UtcNow }
+            ]
+        });
+        await dbContext.SaveChangesAsync();
+        var queue = new FakeAnalysisJobQueue();
+        var service = CreateService(dbContext, new FakeObjectStorageService(), queue);
+
+        var response = await service.RetryAnalysisAsync(10, 1);
+
+        Assert.True(response.Success);
+        Assert.Equal(21, response.Data!.JobId);
+        Assert.Equal(0, queue.EnqueueCalls);
+        Assert.Equal(2, await dbContext.AnalysisJobs.CountAsync());
+    }
+
+    [Fact]
+    public async Task RetryRespectsMaxRetryCount()
+    {
+        await using var dbContext = CreateDbContext();
+        dbContext.Users.Add(CreateUser(1, "owner@example.com"));
+        dbContext.Videos.Add(new Video
+        {
+            Id = 10,
+            UserId = 1,
+            OriginalName = "owner.mp4",
+            FileUrl = "videos/1/file.mp4",
+            FileSize = 100,
+            Status = VideoStatus.Failed,
+            AnalysisJobs = [new AnalysisJob { Status = JobStatus.Failed, RetryCount = 3, MaxRetryCount = 3 }]
+        });
+        await dbContext.SaveChangesAsync();
+        var queue = new FakeAnalysisJobQueue();
+        var service = CreateService(dbContext, new FakeObjectStorageService(), queue);
+
+        var response = await service.RetryAnalysisAsync(10, 1);
+
+        Assert.False(response.Success);
+        Assert.Equal(0, queue.EnqueueCalls);
+        Assert.Equal(1, await dbContext.AnalysisJobs.CountAsync());
+    }
+
+    [Fact]
+    public async Task JobStatusMapsBitMindFailureToSafeUserMessage()
+    {
+        await using var dbContext = CreateDbContext();
+        dbContext.Users.Add(CreateUser(1, "owner@example.com"));
+        dbContext.Videos.Add(new Video
+        {
+            Id = 10,
+            UserId = 1,
+            OriginalName = "owner.mp4",
+            FileUrl = "videos/1/file.mp4",
+            FileSize = 100,
+            Status = VideoStatus.Failed,
+            AnalysisJobs =
+            [
+                new AnalysisJob
+                {
+                    Id = 20,
+                    Status = JobStatus.Failed,
+                    ErrorCode = "BITMIND_UNAVAILABLE",
+                    ErrorMessage = "External BitMind verification failed: BitMind returned HTTP 401. Error code: BITMIND_UNAVAILABLE",
+                    RetryCount = 0,
+                    MaxRetryCount = 3
+                }
+            ]
+        });
+        await dbContext.SaveChangesAsync();
+        var service = new JobService(dbContext, new FakeAnalysisJobQueue(), new FakeJobLogService());
+
+        var response = await service.GetStatusByVideoIdAsync(10, 1);
+
+        Assert.True(response.Success);
+        Assert.Equal("ProviderAuthenticationFailed", response.Data!.ErrorCode);
+        Assert.Equal("The external analysis service is temporarily unavailable. Please try again later.", response.Data.UserMessage);
+        Assert.DoesNotContain("HTTP 401", response.Data.ErrorMessage);
+        Assert.Equal("JOB-20", response.Data.TechnicalReferenceId);
+        Assert.True(response.Data.CanRetry);
+    }
+
     private static VideoService CreateService(
         AppDbContext dbContext,
         IObjectStorageService storage,

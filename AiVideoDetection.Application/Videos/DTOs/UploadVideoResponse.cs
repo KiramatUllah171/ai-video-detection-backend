@@ -16,5 +16,9 @@ public class UploadVideoResponse
 
     public string ContentType { get; init; } = string.Empty;
 
+    public int RetryCount { get; init; }
+
+    public int MaxRetryCount { get; init; }
+
     public string Message { get; init; } = string.Empty;
 }

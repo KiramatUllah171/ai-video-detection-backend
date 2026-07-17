@@ -16,13 +16,25 @@ public class JobStatusDto
 
     public string? ErrorCode { get; init; }
 
+    public string? UserMessage { get; init; }
+
+    public bool CanRetry { get; init; }
+
     public int RetryCount { get; init; }
 
     public int MaxRetryCount { get; init; }
+
+    public string? FailedStage { get; init; }
+
+    public string? NextRecommendedAction { get; init; }
+
+    public string? TechnicalReferenceId { get; init; }
 
     public DateTimeOffset CreatedAt { get; init; }
 
     public DateTimeOffset? StartedAt { get; init; }
 
     public DateTimeOffset? CompletedAt { get; init; }
+
+    public DateTimeOffset LastUpdatedAt { get; init; }
 }

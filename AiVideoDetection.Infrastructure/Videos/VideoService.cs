@@ -120,17 +120,7 @@ public class VideoService(
                 backgroundJobId);
 
             return ApiResponse<UploadVideoResponse>.SuccessResponse(
-                new UploadVideoResponse
-                {
-                    VideoId = video.Id,
-                    JobId = job.Id,
-                    Status = video.Status.ToString(),
-                    JobStatus = job.Status.ToString(),
-                    OriginalName = video.OriginalName,
-                    FileSize = video.FileSize,
-                    ContentType = video.ContentType ?? string.Empty,
-                    Message = "Video uploaded and queued for processing."
-                },
+                ToUploadResponse(video, job, "Video uploaded and queued for processing."),
                 "Video uploaded successfully.");
         }
         catch
@@ -286,18 +276,85 @@ public class VideoService(
             video.Id);
 
         return ApiResponse<UploadVideoResponse>.SuccessResponse(
-            new UploadVideoResponse
-            {
-                VideoId = video.Id,
-                JobId = job.Id,
-                Status = video.Status.ToString(),
-                JobStatus = job.Status.ToString(),
-                OriginalName = video.OriginalName,
-                FileSize = video.FileSize,
-                ContentType = video.ContentType ?? string.Empty,
-                Message = "Video queued for reanalysis."
-            },
+            ToUploadResponse(video, job, "Video queued for reanalysis."),
             "Video queued for reanalysis.");
+    }
+
+    public async Task<ApiResponse<UploadVideoResponse>> RetryAnalysisAsync(
+        long videoId,
+        long currentUserId,
+        CancellationToken cancellationToken = default)
+    {
+        var video = await dbContext.Videos
+            .Include(existingVideo => existingVideo.AnalysisJobs)
+            .FirstOrDefaultAsync(existingVideo => existingVideo.Id == videoId
+                && existingVideo.UserId == currentUserId
+                && existingVideo.DeletedAt == null
+                && existingVideo.Status != VideoStatus.Deleted,
+                cancellationToken);
+
+        if (video is null)
+        {
+            return ApiResponse<UploadVideoResponse>.ErrorResponse("Video was not found.");
+        }
+
+        var latestJob = video.AnalysisJobs
+            .OrderByDescending(job => job.CreatedAt)
+            .ThenByDescending(job => job.Id)
+            .FirstOrDefault();
+
+        var activeJob = video.AnalysisJobs
+            .Where(IsActiveJob)
+            .OrderByDescending(job => job.CreatedAt)
+            .ThenByDescending(job => job.Id)
+            .FirstOrDefault();
+        if (activeJob is not null)
+        {
+            return ApiResponse<UploadVideoResponse>.SuccessResponse(
+                ToUploadResponse(video, activeJob, "Analysis retry is already queued or processing."),
+                "Analysis retry is already queued or processing.");
+        }
+
+        if (latestJob is null)
+        {
+            return ApiResponse<UploadVideoResponse>.ErrorResponse("No failed analysis job was found for this video.");
+        }
+
+        if (latestJob.Status != JobStatus.Failed)
+        {
+            return ApiResponse<UploadVideoResponse>.ErrorResponse("Only failed analyses can be retried from this endpoint.");
+        }
+
+        if (latestJob.RetryCount >= latestJob.MaxRetryCount)
+        {
+            return ApiResponse<UploadVideoResponse>.ErrorResponse("Maximum retry count was reached.");
+        }
+
+        var job = new AnalysisJob
+        {
+            VideoId = video.Id,
+            Status = JobStatus.Queued,
+            Progress = 0,
+            CurrentStep = "Waiting for retry worker",
+            RetryCount = latestJob.RetryCount + 1,
+            MaxRetryCount = latestJob.MaxRetryCount
+        };
+
+        video.Status = VideoStatus.Queued;
+        dbContext.AnalysisJobs.Add(job);
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        var backgroundJobId = analysisJobQueue.EnqueueAnalysisJob(job.Id);
+        logger.LogInformation(
+            "Queued retry analysis job {AnalysisJobId} as Hangfire job {BackgroundJobId} for video {VideoId} from failed job {FailedJobId}.",
+            job.Id,
+            backgroundJobId,
+            video.Id,
+            latestJob.Id);
+
+        return ApiResponse<UploadVideoResponse>.SuccessResponse(
+            ToUploadResponse(video, job, "Analysis retry queued."),
+            "Analysis retry queued.");
     }
 
     public async Task<ApiResponse<MetadataResultDto>> GetMetadataAsync(
@@ -494,6 +551,11 @@ public class VideoService(
 
     internal static JobStatusDto MapJob(AnalysisJob job)
     {
+        var errorCategory = MapErrorCategory(job.ErrorCode, job.ErrorMessage);
+        var userMessage = job.Status == JobStatus.Failed
+            ? GetUserMessage(errorCategory)
+            : null;
+
         return new JobStatusDto
         {
             JobId = job.Id,
@@ -501,14 +563,128 @@ public class VideoService(
             Status = job.Status.ToString(),
             Progress = job.Progress,
             CurrentStep = job.CurrentStep,
-            ErrorMessage = job.ErrorMessage,
-            ErrorCode = job.ErrorCode,
+            ErrorMessage = userMessage,
+            ErrorCode = job.Status == JobStatus.Failed ? errorCategory : null,
+            UserMessage = userMessage,
+            CanRetry = job.Status == JobStatus.Failed && job.RetryCount < job.MaxRetryCount,
             RetryCount = job.RetryCount,
             MaxRetryCount = job.MaxRetryCount,
+            FailedStage = job.Status == JobStatus.Failed ? GetFailedStage(job.CurrentStep) : null,
+            NextRecommendedAction = job.Status == JobStatus.Failed
+                ? job.RetryCount < job.MaxRetryCount
+                    ? "RetryAnalysis"
+                    : "UploadAnotherVideo"
+                : null,
+            TechnicalReferenceId = job.Status == JobStatus.Failed ? $"JOB-{job.Id}" : null,
             CreatedAt = job.CreatedAt,
             StartedAt = job.StartedAt,
-            CompletedAt = job.CompletedAt
+            CompletedAt = job.CompletedAt,
+            LastUpdatedAt = job.UpdatedAt
         };
+    }
+
+    private static UploadVideoResponse ToUploadResponse(Video video, AnalysisJob job, string message)
+    {
+        return new UploadVideoResponse
+        {
+            VideoId = video.Id,
+            JobId = job.Id,
+            Status = video.Status.ToString(),
+            JobStatus = job.Status.ToString(),
+            OriginalName = video.OriginalName,
+            FileSize = video.FileSize,
+            ContentType = video.ContentType ?? string.Empty,
+            RetryCount = job.RetryCount,
+            MaxRetryCount = job.MaxRetryCount,
+            Message = message
+        };
+    }
+
+    private static bool IsActiveJob(AnalysisJob job)
+    {
+        return job.Status is JobStatus.Queued or JobStatus.Processing or JobStatus.Retrying;
+    }
+
+    private static string MapErrorCategory(string? errorCode, string? errorMessage)
+    {
+        var normalizedCode = (errorCode ?? string.Empty).Trim().ToUpperInvariant();
+        var normalizedMessage = (errorMessage ?? string.Empty).Trim().ToUpperInvariant();
+
+        if (normalizedCode.Contains("AUTH") || normalizedMessage.Contains("HTTP 401") || normalizedMessage.Contains("UNAUTHORIZED"))
+        {
+            return "ProviderAuthenticationFailed";
+        }
+
+        if (normalizedCode.Contains("RATE") || normalizedMessage.Contains("HTTP 429") || normalizedMessage.Contains("RATE LIMIT"))
+        {
+            return "ProviderRateLimited";
+        }
+
+        if (normalizedCode.Contains("TIMEOUT") || normalizedMessage.Contains("TIMED OUT"))
+        {
+            return "ProviderTimeout";
+        }
+
+        if (normalizedCode.Contains("BITMIND") || normalizedCode.Contains("PROVIDER") || normalizedCode.Contains("AI_SERVICE_UNAVAILABLE") || normalizedCode.Contains("AI_VIDEO_SERVICE_UNAVAILABLE"))
+        {
+            return "ProviderUnavailable";
+        }
+
+        if (normalizedCode.Contains("TOO_LARGE") || normalizedMessage.Contains("UPLOAD LIMIT"))
+        {
+            return "VideoTooLarge";
+        }
+
+        if (normalizedCode.Contains("COMPRESSION"))
+        {
+            return "CompressionFailed";
+        }
+
+        if (normalizedCode.Contains("INVALID") || normalizedCode.Contains("FFPROBE") || normalizedCode.Contains("METADATA"))
+        {
+            return "InvalidVideo";
+        }
+
+        if (normalizedCode.Contains("NETWORK") || normalizedCode.Contains("HTTP_REQUEST"))
+        {
+            return "NetworkFailure";
+        }
+
+        if (normalizedCode.Contains("PROCESS") || normalizedCode.Contains("FFMPEG") || normalizedCode.Contains("AI_ANALYSIS"))
+        {
+            return "ProcessingFailed";
+        }
+
+        return "UnknownFailure";
+    }
+
+    private static string GetUserMessage(string errorCategory)
+    {
+        return errorCategory switch
+        {
+            "ProviderAuthenticationFailed" => "The external analysis service is temporarily unavailable. Please try again later.",
+            "ProviderRateLimited" => "The analysis service is currently busy. Please wait a moment and retry.",
+            "ProviderTimeout" => "The external analysis service took too long to respond. Please retry.",
+            "ProviderUnavailable" => "External video analysis is temporarily unavailable.",
+            "VideoTooLarge" => "The video could not be prepared for external analysis.",
+            "CompressionFailed" => "We could not prepare this video for analysis. Please retry or upload a different format.",
+            "InvalidVideo" => "This file could not be processed as a valid video.",
+            "NetworkFailure" => "A temporary connection problem interrupted the analysis.",
+            "ProcessingFailed" => "We could not complete the analysis. Please retry.",
+            _ => "Something went wrong while processing this video."
+        };
+    }
+
+    private static string? GetFailedStage(string? currentStep)
+    {
+        if (string.IsNullOrWhiteSpace(currentStep))
+        {
+            return null;
+        }
+
+        return currentStep.StartsWith("Failed:", StringComparison.OrdinalIgnoreCase)
+            ? "Failed"
+            : currentStep;
     }
 
     private static EvidenceItemDto MapEvidence(EvidenceItem item)
