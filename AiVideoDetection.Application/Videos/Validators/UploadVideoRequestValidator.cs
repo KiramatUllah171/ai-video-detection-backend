@@ -7,6 +7,15 @@ namespace AiVideoDetection.Application.Videos.Validators;
 
 public class UploadVideoRequestValidator : AbstractValidator<UploadVideoRequest>
 {
+    private static readonly IReadOnlyDictionary<string, string[]> ExtensionContentTypes = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+    {
+        [".mp4"] = ["video/mp4"],
+        [".mov"] = ["video/quicktime", "video/mov", "video/x-quicktime"],
+        [".avi"] = ["video/x-msvideo", "video/avi", "video/msvideo"],
+        [".mkv"] = ["video/x-matroska", "video/matroska", "video/mkv", "video/x-mkv", "application/x-matroska"],
+        [".webm"] = ["video/webm"]
+    };
+
     private readonly VideoUploadOptions _options;
 
     public UploadVideoRequestValidator(IOptions<VideoUploadOptions> options)
@@ -22,7 +31,7 @@ public class UploadVideoRequestValidator : AbstractValidator<UploadVideoRequest>
                     .GreaterThan(0)
                     .WithMessage("The uploaded file is empty.")
                     .LessThanOrEqualTo(_options.MaxFileSizeBytes)
-                    .WithMessage($"The uploaded file exceeds the maximum allowed size of {_options.MaxFileSizeBytes} bytes.");
+                    .WithMessage("The maximum allowed video size is 500 MB.");
 
                 RuleFor(request => request.File!)
                     .Must(HaveAllowedExtension)
@@ -63,9 +72,25 @@ public class UploadVideoRequestValidator : AbstractValidator<UploadVideoRequest>
             return false;
         }
 
-        var extensionIsAllowed = HaveAllowedExtension(file);
-        var contentTypeIsAllowed = _options.AllowedContentTypes.Contains(file.ContentType, StringComparer.OrdinalIgnoreCase);
+        var extension = Path.GetExtension(file.FileName);
+        if (string.IsNullOrWhiteSpace(extension)
+            || !_options.AllowedExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase))
+        {
+            return false;
+        }
 
-        return contentTypeIsAllowed && (file.ContentType != "application/octet-stream" || extensionIsAllowed);
+        var configuredContentTypeIsAllowed = _options.AllowedContentTypes.Contains(file.ContentType, StringComparer.OrdinalIgnoreCase);
+        if (!configuredContentTypeIsAllowed)
+        {
+            return false;
+        }
+
+        if (string.Equals(file.ContentType, "application/octet-stream", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return ExtensionContentTypes.TryGetValue(extension, out var allowedForExtension)
+            && allowedForExtension.Contains(file.ContentType, StringComparer.OrdinalIgnoreCase);
     }
 }

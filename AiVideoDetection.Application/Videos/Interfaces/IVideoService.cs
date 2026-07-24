@@ -48,6 +48,11 @@ public interface IVideoService
         long currentUserId,
         CancellationToken cancellationToken = default);
 
+    Task<ApiResponse<JobStatusDto>> CancelAnalysisAsync(
+        long videoId,
+        long currentUserId,
+        CancellationToken cancellationToken = default);
+
     Task<ApiResponse<IReadOnlyList<EvidenceItemDto>>> GetEvidenceAsync(
         long videoId,
         long currentUserId,

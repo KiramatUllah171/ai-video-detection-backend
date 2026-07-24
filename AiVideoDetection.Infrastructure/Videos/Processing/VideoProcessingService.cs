@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Globalization;
 using AiVideoDetection.Application.Videos.Ai;
 using AiVideoDetection.Application.Videos.Interfaces;
 using AiVideoDetection.Application.Videos.Options;
@@ -18,6 +19,7 @@ public class VideoProcessingService(
     IObjectStorageService objectStorageService,
     IMetadataExtractionService metadataExtractionService,
     IFrameExtractionService frameExtractionService,
+    IProcessRunner processRunner,
     IAiInferenceClient aiInferenceClient,
     IFinalScoringService finalScoringService,
     IEvidenceGenerationService evidenceGenerationService,
@@ -47,9 +49,9 @@ public class VideoProcessingService(
             return;
         }
 
-        if (job.Status == JobStatus.Completed)
+        if (job.Status is JobStatus.Completed or JobStatus.Failed or JobStatus.Cancelled)
         {
-            logger.LogInformation("Analysis job {JobId} is already completed. Skipping.", jobId);
+            logger.LogInformation("Analysis job {JobId} is terminal ({Status}). Skipping.", jobId, job.Status);
             return;
         }
 
@@ -66,17 +68,6 @@ public class VideoProcessingService(
             return;
         }
 
-        if (job.Status == JobStatus.Failed || job.Status == JobStatus.Retrying)
-        {
-            if (job.RetryCount >= job.MaxRetryCount)
-            {
-                await MarkFailedAsync(job, "PreparingVideo", "MAX_RETRIES_EXCEEDED", "Maximum processing retry count was reached.", cancellationToken);
-                return;
-            }
-
-            job.RetryCount++;
-        }
-
         var workDirectory = Path.GetFullPath(Path.Combine(_options.WorkingRootPath, job.Id.ToString()));
 
         try
@@ -86,13 +77,15 @@ public class VideoProcessingService(
             Directory.CreateDirectory(workDirectory);
             var sourcePath = Path.Combine(workDirectory, $"source{job.Video.FileExtension ?? ".video"}");
 
-            await UpdateProgressAsync(job, 10, "Downloading source video", cancellationToken);
+            await ThrowIfCancellationRequestedAsync(job, cancellationToken);
+            await UpdateProgressAsync(job, 10, "Preparing video", cancellationToken);
             await objectStorageService.DownloadToAsync(job.Video.FileUrl, sourcePath, cancellationToken);
-            await jobLogService.LogAsync(job.Id, "PreparingVideo", "Information", "Source video prepared for FFmpeg processing.", null, cancellationToken);
+            await jobLogService.LogAsync(job.Id, "PreparingVideo", "Information", "Source video prepared for processing.", null, cancellationToken);
 
             var input = new VideoProcessingInput(job.Id, job.VideoId, sourcePath, workDirectory, job.Video.DurationSeconds);
 
-            await UpdateProgressAsync(job, 20, "Extracting video metadata", cancellationToken);
+            await ThrowIfCancellationRequestedAsync(job, cancellationToken);
+            await UpdateProgressAsync(job, 18, "Preparing video", cancellationToken);
             var metadata = await metadataExtractionService.ExtractMetadataAsync(input, cancellationToken);
             await SaveMetadataAsync(job.Video, metadata, cancellationToken);
             await jobLogService.LogAsync(job.Id, "MetadataExtraction", "Information", "Video metadata extracted.", new
@@ -106,7 +99,10 @@ public class VideoProcessingService(
 
             input = input with { DurationSeconds = metadata.DurationSeconds ?? job.Video.DurationSeconds };
 
-            await UpdateProgressAsync(job, 40, "Generating video thumbnail", cancellationToken);
+            ValidateMetadata(metadata);
+
+            await ThrowIfCancellationRequestedAsync(job, cancellationToken);
+            await UpdateProgressAsync(job, 22, "Preparing video", cancellationToken);
             var thumbnail = await frameExtractionService.GenerateThumbnailAsync(input, cancellationToken);
             await UploadThumbnailAsync(job.Video, thumbnail, cancellationToken);
             await jobLogService.LogAsync(job.Id, "ThumbnailGeneration", "Information", "Video thumbnail generated.", new
@@ -114,31 +110,19 @@ public class VideoProcessingService(
                 thumbnail.TimestampSeconds
             }, cancellationToken);
 
-            await UpdateProgressAsync(job, 65, "Extracting representative video frames", cancellationToken);
             var frames = await frameExtractionService.ExtractFramesAsync(input, cancellationToken);
             await UploadFramesAsync(job.VideoId, frames, metadata.Resolution, cancellationToken);
-            await jobLogService.LogAsync(job.Id, "FrameExtraction", "Information", "Representative video frames extracted.", new
+
+            var segments = await GetOrCreateSegmentsAsync(job, input.DurationSeconds!.Value, cancellationToken);
+            await jobLogService.LogAsync(job.Id, "SmartScanPlanned", "Information", "Smart Scan timeline plan created.", new
             {
-                frameCount = frames.Count
+                segmentCount = segments.Count,
+                durationSeconds = input.DurationSeconds,
+                scanMode = job.ScanMode
             }, cancellationToken);
 
-            await UpdateProgressAsync(job, 78, "Preparing frames for AI analysis", cancellationToken);
-            await jobLogService.LogAsync(job.Id, "AiAnalysisStarted", "Information", "AI frame analysis started.", null, cancellationToken);
-            var savedFrames = await dbContext.VideoFrames
-                .Where(frame => frame.VideoId == job.VideoId)
-                .OrderBy(frame => frame.FrameIndex)
-                .ToListAsync(cancellationToken);
-            var aiResponse = await AnalyzeAsync(job, savedFrames, workDirectory, sourcePath, cancellationToken);
-            await UpdateProgressAsync(job, 82, "Running AI detection model", cancellationToken);
-            await jobLogService.LogAsync(job.Id, "AiAnalysisCompleted", "Information", "AI frame analysis completed.", new
-            {
-                aiResponse.ModelId,
-                aiResponse.ModelVersion,
-                aiResponse.ModelCapability,
-                aiResponse.IsMock,
-                aiResponse.OverallAiScore,
-                aiResponse.OverallConfidence
-            }, cancellationToken);
+            await ProcessSegmentsAsync(job, segments, sourcePath, workDirectory, cancellationToken);
+            var aiResponse = BuildAggregateResponse(job, segments);
 
             var metadataWarnings = ParseMetadataWarnings(await dbContext.MetadataResults
                 .AsNoTracking()
@@ -157,7 +141,7 @@ public class VideoProcessingService(
                     visualScore,
                     aiResponse.OverallConfidence,
                     metadataWarnings,
-                    savedFrames.Count,
+                    segments.Count,
                     aiResponse.VideoComponentScore,
                     aiResponse.LabelHint,
                     aiResponse.ModelDisagreement,
@@ -168,7 +152,7 @@ public class VideoProcessingService(
                     null,
                     null,
                     aiResponse.FrameReliabilityScore));
-            await UpdateProgressAsync(job, 88, "Calculating authenticity score", cancellationToken);
+            await UpdateProgressAsync(job, 92, "Generating final result", cancellationToken);
             await jobLogService.LogAsync(job.Id, "ScoringCompleted", "Information", "Final scoring completed.", new
             {
                 scoringResult.FinalScore,
@@ -177,11 +161,11 @@ public class VideoProcessingService(
             }, cancellationToken);
 
             var aiResult = await SaveAiResultAsync(job.VideoId, aiResponse, scoringResult, cancellationToken);
-            await UpdateProgressAsync(job, 92, "Generating evidence", cancellationToken);
+            await UpdateProgressAsync(job, 96, "Generating final result", cancellationToken);
             var evidenceItems = evidenceGenerationService.GenerateEvidence(new EvidenceGenerationInput(
                 aiResponse.ModelVersion,
                 aiResponse.Frames,
-                savedFrames.ToDictionary(frame => frame.Id, frame => frame.Id),
+                new Dictionary<long, long>(),
                 metadataWarnings,
                 scoringResult,
                 aiResponse.ModelDisagreement,
@@ -194,6 +178,7 @@ public class VideoProcessingService(
 
             await RunInternalMatchingAsync(job, cancellationToken);
 
+            await ThrowIfCancellationRequestedAsync(job, cancellationToken);
             job.Status = JobStatus.Completed;
             job.Progress = 100;
             job.CurrentStep = CompletedStep;
@@ -207,6 +192,12 @@ public class VideoProcessingService(
         }
         catch (ProcessingException exception)
         {
+            if (exception.ErrorCode == "CANCELLED")
+            {
+                await MarkCancelledAsync(job, cancellationToken);
+                return;
+            }
+
             var errorCode = MapProcessingErrorCode(exception.ErrorCode, job.CurrentStep);
             logger.LogError(exception, "Analysis job {JobId} failed with {ErrorCode}.", job.Id, errorCode);
             await MarkFailedAsync(job, "Failed", errorCode, exception.SafeMessage, cancellationToken);
@@ -241,6 +232,356 @@ public class VideoProcessingService(
         finally
         {
             TryDeleteDirectory(workDirectory);
+        }
+    }
+
+    private async Task<IReadOnlyList<AnalysisSegment>> GetOrCreateSegmentsAsync(
+        AnalysisJob job,
+        decimal durationSeconds,
+        CancellationToken cancellationToken)
+    {
+        var existing = await dbContext.AnalysisSegments
+            .Where(segment => segment.AnalysisJobId == job.Id)
+            .OrderBy(segment => segment.SegmentIndex)
+            .ToListAsync(cancellationToken);
+        if (existing.Count > 0)
+        {
+            return existing;
+        }
+
+        var detailed = string.Equals(job.ScanMode, "Detailed", StringComparison.OrdinalIgnoreCase);
+        var tiers = detailed ? _options.DetailedScanTiers : _options.SmartScanTiers;
+        var targetCount = tiers
+            .OrderBy(tier => tier.MaxDurationSeconds)
+            .FirstOrDefault(tier => durationSeconds <= tier.MaxDurationSeconds)?.SegmentCount ?? _options.MaxSegmentCount;
+        targetCount = Math.Clamp(targetCount, 1, _options.MaxSegmentCount);
+        var clipDuration = Math.Min(_options.SmartScanClipDurationSeconds, durationSeconds);
+        var segments = SelectSegmentStarts(durationSeconds, clipDuration, targetCount)
+            .Select((start, index) =>
+            {
+                var end = Math.Min(durationSeconds, start + clipDuration);
+                return new AnalysisSegment
+                {
+                    AnalysisJobId = job.Id,
+                    VideoId = job.VideoId,
+                    SegmentIndex = index + 1,
+                    StartTime = Math.Round(start, 3),
+                    EndTime = Math.Round(end, 3),
+                    Duration = Math.Round(end - start, 3),
+                    Status = AnalysisSegmentStatus.Pending
+                };
+            })
+            .ToList();
+
+        dbContext.AnalysisSegments.AddRange(segments);
+        job.TotalSegments = segments.Count;
+        job.CompletedSegments = 0;
+        job.TotalDurationSeconds = durationSeconds;
+        job.AnalyzedCoverageSeconds = 0;
+        job.ScanMode = detailed ? "Detailed Scan" : "Smart Scan";
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return segments;
+    }
+
+    private static IReadOnlyList<decimal> SelectSegmentStarts(decimal duration, decimal clipDuration, int count)
+    {
+        if (duration <= clipDuration || count <= 1)
+        {
+            return [0m];
+        }
+
+        var maxStart = Math.Max(0, duration - clipDuration);
+        var raw = new SortedSet<decimal> { 0m, Math.Round(maxStart / 2, 3), Math.Round(maxStart, 3) };
+        var step = maxStart / Math.Max(1, count - 1);
+        for (var index = 0; index < count; index++)
+        {
+            raw.Add(Math.Round(Math.Clamp(index * step, 0, maxStart), 3));
+        }
+
+        var selected = new List<decimal>();
+        foreach (var start in raw)
+        {
+            if (selected.Count == 0 || start - selected[^1] >= Math.Min(clipDuration, 1m))
+            {
+                selected.Add(start);
+            }
+            if (selected.Count == count)
+            {
+                break;
+            }
+        }
+
+        return selected;
+    }
+
+    private async Task ProcessSegmentsAsync(
+        AnalysisJob job,
+        IReadOnlyList<AnalysisSegment> segments,
+        string sourcePath,
+        string workDirectory,
+        CancellationToken cancellationToken)
+    {
+        var providerMode = await ResolveProviderModeAsync(job, cancellationToken);
+        foreach (var segment in segments.Where(segment => segment.Status != AnalysisSegmentStatus.Completed))
+        {
+            await ProcessSegmentAsync(job, segment, sourcePath, workDirectory, providerMode, cancellationToken);
+        }
+        var refreshed = await dbContext.AnalysisSegments
+            .Where(segment => segment.AnalysisJobId == job.Id)
+            .ToListAsync(cancellationToken);
+        var completedCoverage = refreshed.Where(segment => segment.Status == AnalysisSegmentStatus.Completed).Sum(segment => segment.Duration);
+        var requiredCoverage = refreshed.Sum(segment => segment.Duration) * _options.MinimumRequiredCoverageRatio;
+        if (completedCoverage < requiredCoverage)
+        {
+            throw new ProcessingException("MINIMUM_COVERAGE_NOT_REACHED", "We could not analyze enough of this video. Please retry.");
+        }
+    }
+
+    private async Task ProcessSegmentAsync(
+        AnalysisJob job,
+        AnalysisSegment segment,
+        string sourcePath,
+        string workDirectory,
+        string providerMode,
+        CancellationToken cancellationToken)
+    {
+        await ThrowIfCancellationRequestedAsync(job, cancellationToken);
+        segment.Status = AnalysisSegmentStatus.Preparing;
+        segment.AttemptCount++;
+        segment.StartedAt ??= DateTimeOffset.UtcNow;
+        segment.LastActivityAt = DateTimeOffset.UtcNow;
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        var segmentDirectory = Path.Combine(workDirectory, "segments");
+        Directory.CreateDirectory(segmentDirectory);
+        var clipPath = Path.Combine(segmentDirectory, $"segment_{segment.SegmentIndex:000}.mp4");
+        try
+        {
+            await ExtractSegmentClipAsync(sourcePath, clipPath, segment.StartTime, segment.Duration, cancellationToken);
+            segment.LocalTemporaryPath = clipPath;
+            segment.Status = AnalysisSegmentStatus.Analyzing;
+            segment.Progress = 50;
+            segment.LastActivityAt = DateTimeOffset.UtcNow;
+            await dbContext.SaveChangesAsync(cancellationToken);
+
+            await ThrowIfCancellationRequestedAsync(job, cancellationToken);
+            var response = await aiInferenceClient.AnalyzeVideoAsync(
+                new AiAnalyzeVideoRequest(job.VideoId, job.Id, job.Video.UserId, providerMode, clipPath, []),
+                cancellationToken);
+
+            segment.AiScore = response.OverallAiScore;
+            segment.Confidence = response.OverallConfidence;
+            segment.ResultJson = JsonSerializer.Serialize(response, SerializerOptions);
+            segment.ProviderRequestId = TryGetProviderRequestId(response.ExternalProviderResultJson);
+            segment.Status = AnalysisSegmentStatus.Completed;
+            segment.Progress = 100;
+            segment.CompletedAt = DateTimeOffset.UtcNow;
+            segment.LastActivityAt = DateTimeOffset.UtcNow;
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await UpdateSegmentProgressAsync(job.Id, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            await MarkSegmentCancelledAsync(segment, CancellationToken.None);
+            throw new ProcessingException("CANCELLED", "Analysis was cancelled.");
+        }
+        catch (Exception exception) when (exception is AiServiceException or ProcessingException)
+        {
+            segment.Status = AnalysisSegmentStatus.Failed;
+            segment.Progress = Math.Clamp(segment.Progress, 0, 99);
+            segment.ErrorCode = exception is AiServiceException aiException ? aiException.ErrorCode : ((ProcessingException)exception).ErrorCode;
+            segment.SafeErrorMessage = exception is AiServiceException ai ? ai.SafeMessage : ((ProcessingException)exception).SafeMessage;
+            segment.FailedAt = DateTimeOffset.UtcNow;
+            segment.LastActivityAt = DateTimeOffset.UtcNow;
+            await dbContext.SaveChangesAsync(CancellationToken.None);
+            throw;
+        }
+        finally
+        {
+            TryDeleteFile(clipPath);
+        }
+    }
+
+    private async Task ExtractSegmentClipAsync(string sourcePath, string outputPath, decimal start, decimal duration, CancellationToken cancellationToken)
+    {
+        var result = await processRunner.RunAsync("ffmpeg", _options.FfmpegPath, [
+            "-y",
+            "-ss", FormatSeconds(start),
+            "-i", sourcePath,
+            "-t", FormatSeconds(duration),
+            "-map", "0:v:0",
+            "-an",
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "23",
+            outputPath
+        ], cancellationToken);
+        if (!result.Succeeded || !File.Exists(outputPath))
+        {
+            throw new ProcessingException("SEGMENT_EXTRACTION_FAILED", "We could not prepare part of this video for analysis.");
+        }
+    }
+
+    private AiAnalyzeFramesResponse BuildAggregateResponse(AnalysisJob job, IReadOnlyList<AnalysisSegment> plannedSegments)
+    {
+        var completed = dbContext.AnalysisSegments
+            .AsNoTracking()
+            .Where(segment => segment.AnalysisJobId == job.Id && segment.Status == AnalysisSegmentStatus.Completed)
+            .OrderBy(segment => segment.SegmentIndex)
+            .ToList();
+        if (completed.Count == 1 && !string.IsNullOrWhiteSpace(completed[0].ResultJson))
+        {
+            var direct = JsonSerializer.Deserialize<AiAnalyzeFramesResponse>(completed[0].ResultJson!, SerializerOptions);
+            if (direct is not null)
+            {
+                return direct;
+            }
+        }
+
+        var coverage = completed.Sum(segment => segment.Duration);
+        var weightedScore = coverage <= 0 ? 0m : completed.Sum(segment => (segment.AiScore ?? 0m) * segment.Duration) / coverage;
+        var weightedConfidence = coverage <= 0 ? 0m : completed.Sum(segment => (segment.Confidence ?? 0m) * segment.Duration) / coverage;
+        var highRisk = completed.Any(segment => segment.AiScore >= _options.HighRiskOverrideScore);
+        var finalScore = highRisk ? Math.Max(weightedScore, _options.HighRiskOverrideScore) : weightedScore;
+
+        return new AiAnalyzeFramesResponse(
+            job.VideoId,
+            job.Id,
+            "smart-scan-aggregate",
+            "smart-scan-v1",
+            "representative_video_segments",
+            false,
+            Math.Round(Math.Clamp(finalScore, 0m, 1m), 3),
+            Math.Round(1m - Math.Clamp(finalScore, 0m, 1m), 3),
+            Math.Round(Math.Clamp(weightedConfidence, 0m, 1m), 3),
+            highRisk ? "Suspicious" : "Inconclusive",
+            [],
+            ["Smart Scan analyzes representative portions throughout the video; it does not claim every frame was analyzed."],
+            highRisk ? ["One analyzed portion showed very high AI probability."] : [],
+            StrongFrameEvidence: highRisk,
+            MinimumRecommendedScore: highRisk ? _options.HighRiskOverrideScore : null,
+            VideoComponentScore: Math.Round(weightedScore, 3),
+            Provider: "SmartScan",
+            ProviderMode: job.ScanMode ?? "Smart Scan",
+            FinalDecisionSource: "SmartScan")
+        {
+            RawJson = JsonSerializer.Serialize(new
+            {
+                scan_mode = job.ScanMode ?? "Smart Scan",
+                sampled = plannedSegments.Count > 1,
+                analyzed_coverage_seconds = coverage,
+                total_duration_seconds = job.TotalDurationSeconds,
+                high_risk_override = highRisk,
+                segments = completed.Select(segment => new
+                {
+                    segment.SegmentIndex,
+                    segment.StartTime,
+                    segment.EndTime,
+                    segment.Duration,
+                    segment.AiScore,
+                    segment.Confidence
+                })
+            }, SerializerOptions)
+        };
+    }
+
+    private async Task UpdateSegmentProgressAsync(long jobId, CancellationToken cancellationToken)
+    {
+        var job = await dbContext.AnalysisJobs.FirstAsync(existing => existing.Id == jobId, cancellationToken);
+        var segments = await dbContext.AnalysisSegments.Where(segment => segment.AnalysisJobId == jobId).ToListAsync(cancellationToken);
+        job.CompletedSegments = segments.Count(segment => segment.Status == AnalysisSegmentStatus.Completed);
+        job.TotalSegments = segments.Count;
+        job.AnalyzedCoverageSeconds = segments.Where(segment => segment.Status == AnalysisSegmentStatus.Completed).Sum(segment => segment.Duration);
+        job.CurrentStep = $"Analyzing different parts - {job.CompletedSegments} of {job.TotalSegments}";
+        job.Progress = Math.Clamp(25 + (int)Math.Round((job.CompletedSegments / (decimal)Math.Max(1, job.TotalSegments)) * 65m), 25, 90);
+        job.LastActivityAt = DateTimeOffset.UtcNow;
+        await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task ThrowIfCancellationRequestedAsync(AnalysisJob job, CancellationToken cancellationToken)
+    {
+        await dbContext.Entry(job).ReloadAsync(cancellationToken);
+        if (job.CancelRequested || job.Status == JobStatus.CancelRequested)
+        {
+            throw new ProcessingException("CANCELLED", "Analysis was cancelled.");
+        }
+    }
+
+    private async Task MarkCancelledAsync(AnalysisJob job, CancellationToken cancellationToken)
+    {
+        job.Status = JobStatus.Cancelled;
+        job.CurrentStep = "Analysis cancelled";
+        job.CompletedAt = DateTimeOffset.UtcNow;
+        job.LastActivityAt = DateTimeOffset.UtcNow;
+        if (job.Video is not null)
+        {
+            job.Video.Status = VideoStatus.Cancelled;
+        }
+
+        var segments = await dbContext.AnalysisSegments
+            .Where(segment => segment.AnalysisJobId == job.Id && segment.Status != AnalysisSegmentStatus.Completed)
+            .ToListAsync(cancellationToken);
+        foreach (var segment in segments)
+        {
+            segment.Status = AnalysisSegmentStatus.Cancelled;
+            segment.LastActivityAt = DateTimeOffset.UtcNow;
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+        await jobLogService.LogAsync(job.Id, "Cancelled", "Information", "Analysis was cancelled by the user.", null, cancellationToken);
+    }
+
+    private async Task MarkSegmentCancelledAsync(AnalysisSegment segment, CancellationToken cancellationToken)
+    {
+        segment.Status = AnalysisSegmentStatus.Cancelled;
+        segment.LastActivityAt = DateTimeOffset.UtcNow;
+        await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    private static void ValidateMetadata(ExtractedMetadataResult metadata)
+    {
+        if (metadata.DurationSeconds is null or <= 0 || string.IsNullOrWhiteSpace(metadata.Codec) || string.IsNullOrWhiteSpace(metadata.Resolution))
+        {
+            throw new ProcessingException("INVALID_VIDEO", "This file could not be processed as a valid video.");
+        }
+    }
+
+    private static string? TryGetProviderRequestId(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return document.RootElement.TryGetProperty("provider_request_id", out var value) && value.ValueKind == JsonValueKind.String
+                ? value.GetString()
+                : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string FormatSeconds(decimal seconds)
+    {
+        return seconds.ToString("0.###", CultureInfo.InvariantCulture);
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch
+        {
         }
     }
 
@@ -392,8 +733,6 @@ public class VideoProcessingService(
             return "local";
         }
 
-        usage.RequestCount++;
-        await dbContext.SaveChangesAsync(cancellationToken);
         return configuredMode;
     }
 
@@ -573,14 +912,16 @@ public class VideoProcessingService(
         {
             if (string.Equals(aiResult.ExternalProviderStatus, "Completed", StringComparison.OrdinalIgnoreCase))
             {
+                usage.RequestCount++;
                 usage.SuccessCount++;
             }
             else if (string.Equals(aiResult.ExternalProviderStatus, "Skipped", StringComparison.OrdinalIgnoreCase))
             {
-                usage.RequestCount = Math.Max(0, usage.RequestCount - 1);
+                // Skipped external checks are not billable provider attempts.
             }
             else
             {
+                usage.RequestCount++;
                 usage.FailedCount++;
             }
         }
@@ -801,8 +1142,11 @@ public class VideoProcessingService(
         job.CurrentStep = "Preparing video for processing";
         job.StartedAt ??= DateTimeOffset.UtcNow;
         job.CompletedAt = null;
+        job.FailedAt = null;
+        job.FailedStage = null;
         job.ErrorCode = null;
         job.ErrorMessage = null;
+        job.LastActivityAt = DateTimeOffset.UtcNow;
         job.Video.Status = VideoStatus.Processing;
 
         await dbContext.SaveChangesAsync(cancellationToken);
@@ -817,6 +1161,7 @@ public class VideoProcessingService(
     {
         job.Progress = progress;
         job.CurrentStep = currentStep;
+        job.LastActivityAt = DateTimeOffset.UtcNow;
         await dbContext.SaveChangesAsync(cancellationToken);
     }
 
@@ -920,6 +1265,9 @@ public class VideoProcessingService(
         job.CurrentStep = $"Failed: {safeMessage}";
         job.ErrorCode = errorCode;
         job.ErrorMessage = safeMessage;
+        job.FailedStage = stepName;
+        job.FailedAt = DateTimeOffset.UtcNow;
+        job.LastActivityAt = DateTimeOffset.UtcNow;
         job.CompletedAt ??= DateTimeOffset.UtcNow;
 
         if (job.Video is not null)

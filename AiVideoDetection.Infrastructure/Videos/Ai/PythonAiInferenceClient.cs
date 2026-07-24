@@ -60,8 +60,15 @@ public class PythonAiInferenceClient(
                 }
 
                 throw new AiServiceException(
-                    response.StatusCode == HttpStatusCode.RequestTimeout ? "AI_SERVICE_TIMEOUT" : "AI_SERVICE_UNAVAILABLE",
-                    "AI analysis service is currently unavailable. Please try again later.");
+                    response.StatusCode switch
+                    {
+                        HttpStatusCode.Unauthorized => "AI_SERVICE_UNAUTHORIZED",
+                        HttpStatusCode.RequestTimeout => "AI_SERVICE_TIMEOUT",
+                        _ => "AI_SERVICE_UNAVAILABLE"
+                    },
+                    response.StatusCode == HttpStatusCode.Unauthorized
+                        ? "AI analysis service is not accepting backend requests."
+                        : "AI analysis service is currently unavailable. Please try again later.");
             }
 
             var rawJson = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -128,8 +135,12 @@ public class PythonAiInferenceClient(
                     request.VideoId,
                     request.JobId);
                 throw new AiServiceException(
-                    errorResponse?.ErrorCode ?? "AI_VIDEO_SERVICE_UNAVAILABLE",
-                    errorResponse is null ? "AI video analysis service is currently unavailable." : SafeMessage(errorResponse.ErrorCode, errorResponse.Message));
+                    errorResponse?.ErrorCode ?? (response.StatusCode == HttpStatusCode.Unauthorized ? "AI_SERVICE_UNAUTHORIZED" : "AI_VIDEO_SERVICE_UNAVAILABLE"),
+                    errorResponse is null
+                        ? response.StatusCode == HttpStatusCode.Unauthorized
+                            ? "AI analysis service is not accepting backend requests."
+                            : "AI video analysis service is currently unavailable."
+                        : SafeMessage(errorResponse.ErrorCode, errorResponse.Message));
             }
 
             var rawJson = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -174,6 +185,12 @@ public class PythonAiInferenceClient(
         var client = httpClientFactory.CreateClient("AiService");
         client.BaseAddress = new Uri(_options.BaseUrl.TrimEnd('/') + "/");
         client.Timeout = TimeSpan.FromSeconds(Math.Clamp(_options.TimeoutSeconds, 1, 600));
+        if (!string.IsNullOrWhiteSpace(_options.ApiKey))
+        {
+            client.DefaultRequestHeaders.Remove("X-AI-Service-Key");
+            client.DefaultRequestHeaders.Add("X-AI-Service-Key", _options.ApiKey);
+        }
+
         return client;
     }
 
@@ -307,7 +324,11 @@ public class PythonAiInferenceClient(
             "FRAME_IMAGE_REQUIRED" => "AI analysis could not be completed because frame images were not available.",
             "MODEL_LOAD_FAILED" => "AI detection model could not be loaded.",
             "AI_SERVICE_INVALID_RESPONSE" => "AI analysis service returned an invalid response.",
+            "BITMIND_AUTH_FAILED" => "External video analysis is temporarily unavailable.",
+            "BITMIND_FORBIDDEN" => "External video analysis is temporarily unavailable.",
+            "BITMIND_RATE_LIMITED" => "The analysis service is currently busy. Please wait a moment and retry.",
             "BITMIND_UNAVAILABLE" => "External video analysis is temporarily unavailable.",
+            "AI_SERVICE_UNAUTHORIZED" => "AI analysis service is not accepting backend requests.",
             "AI_SERVICE_TIMEOUT" => "The external analysis service took too long to respond. Please retry.",
             "AI_VIDEO_SERVICE_UNAVAILABLE" => "External video analysis is temporarily unavailable.",
             _ => string.IsNullOrWhiteSpace(fallback) ? "AI analysis could not be completed for this video." : fallback

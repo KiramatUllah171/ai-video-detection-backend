@@ -12,7 +12,13 @@ public class AiServiceOptions
 
     public string HealthPath { get; set; } = "/health";
 
+    public string? ApiKey { get; set; } = Environment.GetEnvironmentVariable("AI_SERVICE_API_KEY");
+
     public int TimeoutSeconds { get; set; } = 60;
+
+    public int TransientRetryCount { get; set; } = 2;
+
+    public int TransientRetryBackoffSeconds { get; set; } = 5;
 
     public int MaxFramesPerRequest { get; set; } = 30;
 

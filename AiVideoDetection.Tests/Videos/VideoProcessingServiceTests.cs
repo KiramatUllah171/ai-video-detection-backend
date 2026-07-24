@@ -89,7 +89,7 @@ public class VideoProcessingServiceTests
     }
 
     [Fact]
-    public async Task ReRunDoesNotDuplicateMetadataOrFrames()
+    public async Task FailedJobIsNotProcessedAgainWithoutExplicitRetry()
     {
         await using var dbContext = CreateDbContext();
         var job = await SeedQueuedJobAsync(dbContext);
@@ -119,11 +119,11 @@ public class VideoProcessingServiceTests
 
         await service.ProcessAnalysisJobAsync(job.Id);
 
+        Assert.Equal(JobStatus.Failed, job.Status);
         Assert.Equal(1, await dbContext.MetadataResults.CountAsync());
-        Assert.Equal(2, await dbContext.VideoFrames.CountAsync());
-        Assert.Equal(1, await dbContext.AiResults.CountAsync());
-        Assert.Equal(1, await dbContext.EvidenceItems.CountAsync());
-        Assert.Contains(await dbContext.VideoFrames.ToListAsync(), frame => frame.FrameIndex == 1 && frame.FrameUrl.Contains("frame_000001"));
+        Assert.Equal(1, await dbContext.VideoFrames.CountAsync());
+        Assert.Equal(0, await dbContext.AiResults.CountAsync());
+        Assert.Equal(0, await dbContext.EvidenceItems.CountAsync());
     }
 
     [Fact]
@@ -233,6 +233,7 @@ public class VideoProcessingServiceTests
             storage,
             metadata,
             frames,
+            new FakeProcessRunner(),
             aiClient ?? new FakeAiInferenceClient(),
             new FakeFinalScoringService(),
             new FakeEvidenceGenerationService(),
@@ -635,6 +636,24 @@ public class VideoProcessingServiceTests
                 AnalysisLabel.Suspicious,
                 "This result is probability-based and generated using the current AI service output and available metadata signals. This is not a guarantee of authenticity or origin.",
                 []);
+        }
+    }
+
+    private sealed class FakeProcessRunner : IProcessRunner
+    {
+        public async Task<ProcessRunResult> RunAsync(
+            string toolName,
+            string configuredFileName,
+            IReadOnlyList<string> arguments,
+            CancellationToken cancellationToken = default)
+        {
+            var outputPath = arguments.LastOrDefault(argument => argument.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrWhiteSpace(outputPath))
+            {
+                await File.WriteAllBytesAsync(outputPath, [1, 2, 3], cancellationToken);
+            }
+
+            return new ProcessRunResult(0, string.Empty, string.Empty);
         }
     }
 

@@ -9,6 +9,8 @@ using AiVideoDetection.Infrastructure.Data;
 using FluentValidation;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using AiVideoDetection.Application.Videos.Options;
 
 namespace AiVideoDetection.Infrastructure.Videos;
 
@@ -16,9 +18,12 @@ public class VideoService(
     AppDbContext dbContext,
     IObjectStorageService objectStorageService,
     IAnalysisJobQueue analysisJobQueue,
+    IJobLogService jobLogService,
     IValidator<UploadVideoRequest> uploadValidator,
+    IOptions<VideoProcessingOptions> processingOptions,
     ILogger<VideoService> logger) : IVideoService
 {
+    private readonly VideoProcessingOptions _processingOptions = processingOptions.Value;
     public async Task<ApiResponse<UploadVideoResponse>> UploadAsync(
         UploadVideoRequest request,
         long currentUserId,
@@ -93,7 +98,9 @@ public class VideoService(
                 Progress = 0,
                 CurrentStep = "Waiting for processing worker",
                 RetryCount = 0,
-                MaxRetryCount = 3
+                MaxRetryCount = _processingOptions.UserRetryLimit,
+                ScanMode = request.AnalysisMode.ToString(),
+                LastActivityAt = DateTimeOffset.UtcNow
             };
 
             if (dbContext.Database.IsRelational())
@@ -261,7 +268,8 @@ public class VideoService(
             Progress = 0,
             CurrentStep = "Waiting for reanalysis worker",
             RetryCount = 0,
-            MaxRetryCount = 3
+            MaxRetryCount = _processingOptions.UserRetryLimit,
+            LastActivityAt = DateTimeOffset.UtcNow
         };
 
         video.Status = VideoStatus.Queued;
@@ -285,6 +293,10 @@ public class VideoService(
         long currentUserId,
         CancellationToken cancellationToken = default)
     {
+        await using var transaction = dbContext.Database.IsRelational()
+            ? await dbContext.Database.BeginTransactionAsync(cancellationToken)
+            : null;
+
         var video = await dbContext.Videos
             .Include(existingVideo => existingVideo.AnalysisJobs)
             .FirstOrDefaultAsync(existingVideo => existingVideo.Id == videoId
@@ -310,6 +322,11 @@ public class VideoService(
             .FirstOrDefault();
         if (activeJob is not null)
         {
+            if (transaction is not null)
+            {
+                await transaction.CommitAsync(cancellationToken);
+            }
+
             return ApiResponse<UploadVideoResponse>.SuccessResponse(
                 ToUploadResponse(video, activeJob, "Analysis retry is already queued or processing."),
                 "Analysis retry is already queued or processing.");
@@ -337,12 +354,18 @@ public class VideoService(
             Progress = 0,
             CurrentStep = "Waiting for retry worker",
             RetryCount = latestJob.RetryCount + 1,
-            MaxRetryCount = latestJob.MaxRetryCount
+            MaxRetryCount = latestJob.MaxRetryCount,
+            ScanMode = latestJob.ScanMode,
+            LastActivityAt = DateTimeOffset.UtcNow
         };
 
         video.Status = VideoStatus.Queued;
         dbContext.AnalysisJobs.Add(job);
         await dbContext.SaveChangesAsync(cancellationToken);
+        if (transaction is not null)
+        {
+            await transaction.CommitAsync(cancellationToken);
+        }
 
         var backgroundJobId = analysisJobQueue.EnqueueAnalysisJob(job.Id);
         logger.LogInformation(
@@ -355,6 +378,55 @@ public class VideoService(
         return ApiResponse<UploadVideoResponse>.SuccessResponse(
             ToUploadResponse(video, job, "Analysis retry queued."),
             "Analysis retry queued.");
+    }
+
+    public async Task<ApiResponse<JobStatusDto>> CancelAnalysisAsync(
+        long videoId,
+        long currentUserId,
+        CancellationToken cancellationToken = default)
+    {
+        var job = await dbContext.AnalysisJobs
+            .Include(existingJob => existingJob.Video)
+            .Include(existingJob => existingJob.Segments)
+            .Where(existingJob => existingJob.VideoId == videoId
+                && existingJob.Video.UserId == currentUserId
+                && existingJob.Video.DeletedAt == null
+                && existingJob.Video.Status != VideoStatus.Deleted)
+            .OrderByDescending(existingJob => existingJob.CreatedAt)
+            .ThenByDescending(existingJob => existingJob.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (job is null)
+        {
+            return ApiResponse<JobStatusDto>.ErrorResponse("Analysis job was not found.");
+        }
+
+        if (job.Status == JobStatus.Completed)
+        {
+            return ApiResponse<JobStatusDto>.SuccessResponse(MapJob(job), "Analysis already completed.");
+        }
+
+        if (job.Status is JobStatus.Failed or JobStatus.Cancelled)
+        {
+            return ApiResponse<JobStatusDto>.SuccessResponse(MapJob(job), "Analysis is not running.");
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        job.CancelRequested = true;
+        job.CancelRequestedAt ??= now;
+        job.LastActivityAt = now;
+        job.Status = JobStatus.CancelRequested;
+        job.CurrentStep = "Cancelling analysis";
+        foreach (var segment in job.Segments.Where(segment => segment.Status is AnalysisSegmentStatus.Pending or AnalysisSegmentStatus.Preparing or AnalysisSegmentStatus.Ready or AnalysisSegmentStatus.Analyzing))
+        {
+            segment.Status = AnalysisSegmentStatus.CancelRequested;
+            segment.LastActivityAt = now;
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+        await jobLogService.LogAsync(job.Id, "CancellationRequested", "Information", "Analysis cancellation was requested by the user.", null, cancellationToken);
+
+        return ApiResponse<JobStatusDto>.SuccessResponse(MapJob(job), "Cancellation requested.");
     }
 
     public async Task<ApiResponse<MetadataResultDto>> GetMetadataAsync(
@@ -452,8 +524,8 @@ public class VideoService(
             {
                 VideoId = result.VideoId,
                 AiResultId = result.Id,
-                ModelId = GetRawString(result.RawModelOutputJson, "model_id") ?? result.ModelVersion?.Version,
-                ModelVersion = result.ModelVersion?.Version,
+                ModelId = SanitizeProviderValue(GetRawString(result.RawModelOutputJson, "model_id") ?? result.ModelVersion?.Version),
+                ModelVersion = SanitizeProviderValue(result.ModelVersion?.Version),
                 ModelCapability = GetRawString(result.RawModelOutputJson, "model_capability"),
                 IsMock = GetRawBool(result.RawModelOutputJson, "is_mock"),
                 AiGeneratedProbability = ToPercentage(result.FinalScore),
@@ -465,23 +537,23 @@ public class VideoService(
                 FinalScore = result.FinalScore,
                 Confidence = result.Confidence,
                 Label = result.Label.ToString(),
-                Summary = result.Summary,
+                Summary = SanitizeProviderText(result.Summary),
                 Warnings = GetRawStringArray(result.RawModelOutputJson, "warnings"),
-                Provider = result.Provider,
-                ProviderMode = result.ProviderMode,
-                FinalDecisionSource = result.FinalDecisionSource,
-                ExternalProviderName = result.ExternalProviderName,
+                Provider = SanitizeProviderValue(result.Provider) ?? "Internal",
+                ProviderMode = SanitizeProviderValue(result.ProviderMode) ?? "internal",
+                FinalDecisionSource = SanitizeProviderValue(result.FinalDecisionSource) ?? "Internal",
+                ExternalProviderName = SanitizeProviderValue(result.ExternalProviderName),
                 ExternalProviderStatus = result.ExternalProviderStatus,
                 ExternalScore = result.ExternalScore,
                 ExternalConfidence = result.ExternalConfidence,
                 ExternalLabel = result.ExternalLabel,
                 FallbackUsed = result.FallbackUsed,
-                FallbackReason = result.FallbackReason,
+                FallbackReason = SanitizeProviderText(result.FallbackReason),
                 ProviderWarnings = GetRawStringArray(result.RawModelOutputJson, "warnings"),
                 LocalAnalysisSummary = BuildProviderSummary("Local", result.LocalResultJson),
                 ExternalAnalysisSummary = BuildExternalSummary(result),
                 HybridDecisionSummary = result.ProviderMode.Equals("hybrid", StringComparison.OrdinalIgnoreCase)
-                    ? result.Summary
+                    ? SanitizeProviderText(result.Summary)
                     : null,
                 ProviderRequestedAt = result.ExternalRequestedAt,
                 ProviderCompletedAt = result.ExternalCompletedAt,
@@ -489,7 +561,7 @@ public class VideoService(
                 StrongFrameEvidence = GetRawBool(result.RawModelOutputJson, "strong_frame_evidence"),
                 MinimumRecommendedScore = GetRawDecimal(result.RawModelOutputJson, "minimum_recommended_score"),
                 EnsembleStrategy = GetRawString(result.RawModelOutputJson, "ensemble_strategy"),
-                ComponentScoresJson = GetRawJson(result.RawModelOutputJson, "component_scores"),
+                ComponentScoresJson = SanitizeProviderText(GetRawJson(result.RawModelOutputJson, "component_scores")),
                 CreatedAt = result.CreatedAt,
                 EvidenceItems = result.EvidenceItems
                     .OrderByDescending(item => item.Severity)
@@ -563,6 +635,12 @@ public class VideoService(
             Status = job.Status.ToString(),
             Progress = job.Progress,
             CurrentStep = job.CurrentStep,
+            ScanMode = job.ScanMode,
+            CompletedSegments = job.CompletedSegments,
+            TotalSegments = job.TotalSegments,
+            AnalyzedCoverageSeconds = job.AnalyzedCoverageSeconds,
+            TotalDurationSeconds = job.TotalDurationSeconds,
+            LastActivityAt = job.LastActivityAt,
             ErrorMessage = userMessage,
             ErrorCode = job.Status == JobStatus.Failed ? errorCategory : null,
             UserMessage = userMessage,
@@ -602,7 +680,7 @@ public class VideoService(
 
     private static bool IsActiveJob(AnalysisJob job)
     {
-        return job.Status is JobStatus.Queued or JobStatus.Processing or JobStatus.Retrying;
+        return job.Status is JobStatus.Queued or JobStatus.Preparing or JobStatus.Processing or JobStatus.Retrying or JobStatus.Finalizing or JobStatus.CancelRequested;
     }
 
     private static string MapErrorCategory(string? errorCode, string? errorMessage)
@@ -694,8 +772,8 @@ public class VideoService(
             Id = item.Id,
             Type = item.Type.ToString(),
             Severity = item.Severity.ToString(),
-            Title = item.Title,
-            Description = item.Description,
+            Title = SanitizeProviderText(item.Title) ?? item.Title,
+            Description = SanitizeProviderText(item.Description) ?? item.Description,
             ScoreImpact = item.ScoreImpact,
             TimestampSeconds = item.TimestampSeconds,
             VideoFrameId = item.VideoFrameId
@@ -764,7 +842,7 @@ public class VideoService(
 
             return value.EnumerateArray()
                 .Where(item => item.ValueKind == JsonValueKind.String)
-                .Select(item => item.GetString()!)
+                .Select(item => SanitizeProviderText(item.GetString()!)!)
                 .ToList();
         }
         catch
@@ -823,7 +901,7 @@ public class VideoService(
         var score = GetRawDecimal(resultJson, "overall_ai_score");
         var confidence = GetRawDecimal(resultJson, "overall_confidence");
         var label = GetRawString(resultJson, "label_hint");
-        return $"{providerName}: {label ?? "analysis completed"}"
+        return $"{SanitizeProviderValue(providerName)}: {label ?? "analysis completed"}"
             + (score is null ? string.Empty : $" ({ToPercentage(score.Value)}% AI)")
             + (confidence is null ? string.Empty : $", {ToPercentage(confidence.Value)}% confidence");
     }
@@ -835,10 +913,41 @@ public class VideoService(
             return null;
         }
 
-        return $"{result.ExternalProviderName}: {result.ExternalProviderStatus ?? "Unknown"}"
+        return $"{SanitizeProviderValue(result.ExternalProviderName)}: {result.ExternalProviderStatus ?? "Unknown"}"
             + (result.ExternalLabel is null ? string.Empty : $", {result.ExternalLabel}")
             + (result.ExternalScore is null ? string.Empty : $" ({ToPercentage(result.ExternalScore.Value)}% AI)")
             + (result.ExternalConfidence is null ? string.Empty : $", {ToPercentage(result.ExternalConfidence.Value)}% confidence");
+    }
+
+    private static string? SanitizeProviderValue(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return value;
+        }
+
+        var normalized = value.Trim().Replace("_", string.Empty, StringComparison.OrdinalIgnoreCase);
+        if (normalized.Contains("bitmind", StringComparison.OrdinalIgnoreCase))
+        {
+            return "External";
+        }
+
+        if (string.Equals(normalized, "FallbackLocal", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(normalized, "Local", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Internal";
+        }
+
+        return SanitizeProviderText(value);
+    }
+
+    private static string? SanitizeProviderText(string? value)
+    {
+        return value?
+            .Replace("bitmind-oracle-v1-sn34", "external-verification-model", StringComparison.OrdinalIgnoreCase)
+            .Replace("bitmind-subnet-34", "external-verification-model", StringComparison.OrdinalIgnoreCase)
+            .Replace("External BitMind verification", "External verification", StringComparison.OrdinalIgnoreCase)
+            .Replace("BitMind", "external verification", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string CreateObjectKey(long userId, string extension)

@@ -20,6 +20,26 @@ public class AnalysisJob
 
     public string? ErrorCode { get; set; }
 
+    public string? FailedStage { get; set; }
+
+    public DateTimeOffset? FailedAt { get; set; }
+
+    public bool CancelRequested { get; set; }
+
+    public DateTimeOffset? CancelRequestedAt { get; set; }
+
+    public string? ScanMode { get; set; }
+
+    public int CompletedSegments { get; set; }
+
+    public int TotalSegments { get; set; }
+
+    public decimal? AnalyzedCoverageSeconds { get; set; }
+
+    public decimal? TotalDurationSeconds { get; set; }
+
+    public DateTimeOffset? LastActivityAt { get; set; }
+
     public int RetryCount { get; set; }
 
     public int MaxRetryCount { get; set; } = 3;
@@ -33,4 +53,6 @@ public class AnalysisJob
     public DateTimeOffset UpdatedAt { get; set; }
 
     public ICollection<JobLog> Logs { get; set; } = [];
+
+    public ICollection<AnalysisSegment> Segments { get; set; } = [];
 }
