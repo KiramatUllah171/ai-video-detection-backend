@@ -150,6 +150,29 @@ public class VideosController(
             : BadRequest(response);
     }
 
+    [HttpPost("{videoId:long}/cancel-analysis")]
+    [ProducesResponseType(typeof(ApiResponse<JobStatusDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<JobStatusDto>), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ApiResponse<JobStatusDto>), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ApiResponse<JobStatusDto>), StatusCodes.Status401Unauthorized)]
+    public async Task<ActionResult<ApiResponse<JobStatusDto>>> CancelAnalysis(long videoId, CancellationToken cancellationToken)
+    {
+        if (!TryGetCurrentUserId(out var currentUserId))
+        {
+            return Unauthorized(ApiResponse<JobStatusDto>.ErrorResponse("Unauthorized."));
+        }
+
+        var response = await videoService.CancelAnalysisAsync(videoId, currentUserId, cancellationToken);
+        if (response.Success)
+        {
+            return Ok(response);
+        }
+
+        return response.Message.Contains("not found", StringComparison.OrdinalIgnoreCase)
+            ? NotFound(response)
+            : BadRequest(response);
+    }
+
     [HttpGet("{videoId:long}/evidence")]
     [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<EvidenceItemDto>>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<EvidenceItemDto>>), StatusCodes.Status404NotFound)]

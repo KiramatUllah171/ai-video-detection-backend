@@ -1,14 +1,13 @@
 namespace AiVideoDetection.Domain.Enums;
 
-public enum JobStatus
+public enum AnalysisSegmentStatus
 {
-    Queued,
+    Pending,
     Preparing,
-    Processing,
-    Finalizing,
+    Ready,
+    Analyzing,
     Completed,
     Failed,
-    Retrying,
     CancelRequested,
     Cancelled
 }

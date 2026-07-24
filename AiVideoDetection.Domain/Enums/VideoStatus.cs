@@ -7,5 +7,6 @@ public enum VideoStatus
     Processing,
     Completed,
     Failed,
+    Cancelled,
     Deleted
 }

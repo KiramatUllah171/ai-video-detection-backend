@@ -474,7 +474,14 @@ public class VideoServiceTests
         IAnalysisJobQueue queue)
     {
         var validator = new UploadVideoRequestValidator(Options.Create(new VideoUploadOptions()));
-        return new VideoService(dbContext, storage, queue, validator, NullLogger<VideoService>.Instance);
+        return new VideoService(
+            dbContext,
+            storage,
+            queue,
+            new FakeJobLogService(),
+            validator,
+            Options.Create(new VideoProcessingOptions()),
+            NullLogger<VideoService>.Instance);
     }
 
     private static AppDbContext CreateDbContext()

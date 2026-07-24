@@ -111,11 +111,50 @@ public class PythonAiInferenceClientTests
         Assert.Contains("Completed", response.ExternalProviderResultJson);
     }
 
+    [Fact]
+    public async Task SendsConfiguredAiServiceApiKeyHeader()
+    {
+        var handler = new StaticResponseHandler(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = JsonContent("""
+            {
+              "video_id": 123,
+              "job_id": 456,
+              "model_version": "mock-video-ai-v1",
+              "is_mock": true,
+              "overall_ai_score": 0.20,
+              "real_probability": 0.80,
+              "overall_confidence": 0.70,
+              "label_hint": "LikelyReal",
+              "frames": [],
+              "notes": []
+            }
+            """)
+        });
+        var client = CreateClient(handler, new AiServiceOptions
+        {
+            BaseUrl = "http://localhost:8000",
+            ApiKey = "internal-secret"
+        });
+
+        await client.AnalyzeFramesAsync(CreateRequest());
+
+        IEnumerable<string>? values = null;
+        var hasHeader = handler.LastRequest?.Headers.TryGetValues("X-AI-Service-Key", out values) == true;
+        Assert.True(hasHeader);
+        Assert.Equal("internal-secret", Assert.Single(values!));
+    }
+
     private static PythonAiInferenceClient CreateClient(HttpResponseMessage response)
     {
+        return CreateClient(new StaticResponseHandler(response), new AiServiceOptions { BaseUrl = "http://localhost:8000" });
+    }
+
+    private static PythonAiInferenceClient CreateClient(StaticResponseHandler handler, AiServiceOptions options)
+    {
         return new PythonAiInferenceClient(
-            new FakeHttpClientFactory(new HttpClient(new StaticResponseHandler(response))),
-            Options.Create(new AiServiceOptions { BaseUrl = "http://localhost:8000" }),
+            new FakeHttpClientFactory(new HttpClient(handler)),
+            Options.Create(options),
             NullLogger<PythonAiInferenceClient>.Instance);
     }
 
@@ -142,10 +181,13 @@ public class PythonAiInferenceClientTests
 
     private sealed class StaticResponseHandler(HttpResponseMessage response) : HttpMessageHandler
     {
+        public HttpRequestMessage? LastRequest { get; private set; }
+
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
+            LastRequest = request;
             return Task.FromResult(response);
         }
     }

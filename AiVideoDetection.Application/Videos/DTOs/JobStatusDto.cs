@@ -12,6 +12,18 @@ public class JobStatusDto
 
     public string? CurrentStep { get; init; }
 
+    public string? ScanMode { get; init; }
+
+    public int CompletedSegments { get; init; }
+
+    public int TotalSegments { get; init; }
+
+    public decimal? AnalyzedCoverageSeconds { get; init; }
+
+    public decimal? TotalDurationSeconds { get; init; }
+
+    public DateTimeOffset? LastActivityAt { get; init; }
+
     public string? ErrorMessage { get; init; }
 
     public string? ErrorCode { get; init; }

@@ -42,6 +42,9 @@ public static class DependencyInjection
                     npgsqlOptions.MapEnum<JobStatus>(
                         "job_status",
                         nameTranslator: EnumNameTranslator);
+                    npgsqlOptions.MapEnum<AnalysisSegmentStatus>(
+                        "analysis_segment_status",
+                        nameTranslator: EnumNameTranslator);
                     npgsqlOptions.MapEnum<AnalysisLabel>(
                         "analysis_label",
                         nameTranslator: EnumNameTranslator);
@@ -58,8 +61,19 @@ public static class DependencyInjection
                 }));
 
         services.Configure<JwtOptions>(configuration.GetSection(JwtOptions.SectionName));
-        services.Configure<VideoUploadOptions>(configuration.GetSection(VideoUploadOptions.SectionName));
-        services.Configure<VideoProcessingOptions>(configuration.GetSection(VideoProcessingOptions.SectionName));
+        services.AddOptions<VideoUploadOptions>()
+            .Bind(configuration.GetSection(VideoUploadOptions.SectionName))
+            .Validate(options => options.MaxFileSizeBytes == 524_288_000, "VideoUpload:MaxFileSizeBytes must be 524288000.")
+            .Validate(options => options.UploadChunkSizeBytes is >= 5_242_880 and <= 20_971_520, "VideoUpload:UploadChunkSizeBytes must be 5-20 MB.")
+            .Validate(options => options.AllowedExtensions.Length > 0 && options.AllowedContentTypes.Length > 0, "VideoUpload allowed types must be configured.")
+            .ValidateOnStart();
+        services.AddOptions<VideoProcessingOptions>()
+            .Bind(configuration.GetSection(VideoProcessingOptions.SectionName))
+            .Validate(options => options.SmartScanClipDurationSeconds > 0, "Smart scan clip duration must be positive.")
+            .Validate(options => options.MaxSegmentCount is >= 1 and <= 100, "Max segment count must be 1-100.")
+            .Validate(options => options.SegmentConcurrency is >= 1 and <= 8, "Segment concurrency must be 1-8.")
+            .Validate(options => options.MinimumRequiredCoverageRatio is > 0 and <= 1, "Minimum coverage ratio must be between 0 and 1.")
+            .ValidateOnStart();
         services.Configure<AiServiceOptions>(configuration.GetSection(AiServiceOptions.SectionName));
         services.PostConfigure<AiServiceOptions>(options =>
         {
@@ -76,6 +90,7 @@ public static class DependencyInjection
                 ? fallbackEnabled
                 : options.LocalFallbackEnabled;
             options.ExternalProviderPolicy = Environment.GetEnvironmentVariable("EXTERNAL_PROVIDER_POLICY") ?? options.ExternalProviderPolicy;
+            options.ApiKey = Environment.GetEnvironmentVariable("AI_SERVICE_API_KEY") ?? options.ApiKey;
         });
         services.Configure<ScoringOptions>(configuration.GetSection(ScoringOptions.SectionName));
         services.Configure<InternalMatchingOptions>(configuration.GetSection(InternalMatchingOptions.SectionName));

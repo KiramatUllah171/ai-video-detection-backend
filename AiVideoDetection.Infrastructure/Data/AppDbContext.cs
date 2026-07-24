@@ -17,6 +17,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
     public DbSet<AnalysisJob> AnalysisJobs => Set<AnalysisJob>();
 
+    public DbSet<AnalysisSegment> AnalysisSegments => Set<AnalysisSegment>();
+
     public DbSet<JobLog> JobLogs => Set<JobLog>();
 
     public DbSet<VideoFrame> VideoFrames => Set<VideoFrame>();
@@ -53,6 +55,10 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             schema: null,
             name: "job_status",
             nameTranslator: EnumNameTranslator);
+        modelBuilder.HasPostgresEnum<AnalysisSegmentStatus>(
+            schema: null,
+            name: "analysis_segment_status",
+            nameTranslator: EnumNameTranslator);
         modelBuilder.HasPostgresEnum<AnalysisLabel>(
             schema: null,
             name: "analysis_label",
@@ -74,6 +80,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         ConfigureRefreshToken(modelBuilder);
         ConfigureVideo(modelBuilder);
         ConfigureAnalysisJob(modelBuilder);
+        ConfigureAnalysisSegment(modelBuilder);
         ConfigureJobLog(modelBuilder);
         ConfigureVideoFrame(modelBuilder);
         ConfigureMetadataResult(modelBuilder);
@@ -158,6 +165,24 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             {
                 entry.Property(job => job.CreatedAt).IsModified = false;
                 entry.Entity.UpdatedAt = now;
+            }
+        }
+
+        foreach (var entry in ChangeTracker.Entries<AnalysisSegment>())
+        {
+            if (entry.State == EntityState.Added)
+            {
+                if (entry.Entity.CreatedAt == default)
+                {
+                    entry.Entity.CreatedAt = now;
+                }
+
+                entry.Entity.LastActivityAt ??= now;
+            }
+            else if (entry.State == EntityState.Modified)
+            {
+                entry.Property(segment => segment.CreatedAt).IsModified = false;
+                entry.Entity.LastActivityAt ??= now;
             }
         }
 
@@ -495,6 +520,44 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
                 .HasColumnName("error_code")
                 .HasMaxLength(100);
 
+            entity.Property(job => job.FailedStage)
+                .HasColumnName("failed_stage")
+                .HasMaxLength(100);
+
+            entity.Property(job => job.FailedAt)
+                .HasColumnName("failed_at");
+
+            entity.Property(job => job.CancelRequested)
+                .HasColumnName("cancel_requested")
+                .HasDefaultValue(false)
+                .IsRequired();
+
+            entity.Property(job => job.CancelRequestedAt)
+                .HasColumnName("cancel_requested_at");
+
+            entity.Property(job => job.ScanMode)
+                .HasColumnName("scan_mode")
+                .HasMaxLength(50);
+
+            entity.Property(job => job.CompletedSegments)
+                .HasColumnName("completed_segments")
+                .HasDefaultValue(0)
+                .IsRequired();
+
+            entity.Property(job => job.TotalSegments)
+                .HasColumnName("total_segments")
+                .HasDefaultValue(0)
+                .IsRequired();
+
+            entity.Property(job => job.AnalyzedCoverageSeconds)
+                .HasColumnName("analyzed_coverage_seconds");
+
+            entity.Property(job => job.TotalDurationSeconds)
+                .HasColumnName("total_duration_seconds");
+
+            entity.Property(job => job.LastActivityAt)
+                .HasColumnName("last_activity_at");
+
             entity.Property(job => job.RetryCount)
                 .HasColumnName("retry_count")
                 .HasDefaultValue(0)
@@ -531,6 +594,65 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
             entity.HasIndex(job => job.Status)
                 .HasDatabaseName("ix_analysis_jobs_status");
+
+            entity.HasIndex(job => job.VideoId)
+                .IsUnique()
+                .HasFilter("status NOT IN ('Completed', 'Failed', 'Cancelled')")
+                .HasDatabaseName("ux_analysis_jobs_one_active_per_video");
+        });
+    }
+
+    private static void ConfigureAnalysisSegment(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<AnalysisSegment>(entity =>
+        {
+            entity.ToTable("analysis_segments", table =>
+            {
+                table.HasCheckConstraint("ck_analysis_segments_progress", "progress >= 0 AND progress <= 100");
+                table.HasCheckConstraint("ck_analysis_segments_times", "end_time > start_time AND duration > 0");
+            });
+
+            entity.HasKey(segment => segment.Id);
+            entity.Property(segment => segment.Id).HasColumnName("id").UseIdentityByDefaultColumn();
+            entity.Property(segment => segment.AnalysisJobId).HasColumnName("analysis_job_id").IsRequired();
+            entity.Property(segment => segment.VideoId).HasColumnName("video_id").IsRequired();
+            entity.Property(segment => segment.SegmentIndex).HasColumnName("segment_index").IsRequired();
+            entity.Property(segment => segment.StartTime).HasColumnName("start_time").IsRequired();
+            entity.Property(segment => segment.EndTime).HasColumnName("end_time").IsRequired();
+            entity.Property(segment => segment.Duration).HasColumnName("duration").IsRequired();
+            entity.Property(segment => segment.LocalTemporaryPath).HasColumnName("local_temporary_path");
+            entity.Property(segment => segment.Status)
+                .HasColumnName("status")
+                .HasColumnType("analysis_segment_status")
+                .HasSentinel((AnalysisSegmentStatus)(-1))
+                .HasDefaultValueSql("'Pending'::analysis_segment_status")
+                .IsRequired();
+            entity.Property(segment => segment.Progress).HasColumnName("progress").HasDefaultValue(0).IsRequired();
+            entity.Property(segment => segment.AttemptCount).HasColumnName("attempt_count").HasDefaultValue(0).IsRequired();
+            entity.Property(segment => segment.ProviderRequestId).HasColumnName("provider_request_id").HasMaxLength(200);
+            entity.Property(segment => segment.AiScore).HasColumnName("ai_score");
+            entity.Property(segment => segment.Confidence).HasColumnName("confidence");
+            entity.Property(segment => segment.ResultJson).HasColumnName("result_json").HasColumnType("jsonb");
+            entity.Property(segment => segment.ErrorCode).HasColumnName("error_code").HasMaxLength(100);
+            entity.Property(segment => segment.SafeErrorMessage).HasColumnName("safe_error_message");
+            entity.Property(segment => segment.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("NOW()").IsRequired();
+            entity.Property(segment => segment.StartedAt).HasColumnName("started_at");
+            entity.Property(segment => segment.CompletedAt).HasColumnName("completed_at");
+            entity.Property(segment => segment.FailedAt).HasColumnName("failed_at");
+            entity.Property(segment => segment.LastActivityAt).HasColumnName("last_activity_at");
+
+            entity.HasOne(segment => segment.AnalysisJob)
+                .WithMany(job => job.Segments)
+                .HasForeignKey(segment => segment.AnalysisJobId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(segment => segment.Video)
+                .WithMany()
+                .HasForeignKey(segment => segment.VideoId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasIndex(segment => new { segment.AnalysisJobId, segment.SegmentIndex })
+                .IsUnique()
+                .HasDatabaseName("ux_analysis_segments_job_index");
+            entity.HasIndex(segment => segment.Status).HasDatabaseName("ix_analysis_segments_status");
         });
     }
 

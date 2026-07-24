@@ -2,9 +2,11 @@ using AiVideoDetection.Api.Middleware;
 using AiVideoDetection.Application;
 using AiVideoDetection.Application.Videos.Interfaces;
 using AiVideoDetection.Infrastructure;
+using AiVideoDetection.Infrastructure.Data;
 using Hangfire;
 using Hangfire.PostgreSql;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi;
 using Serilog;
 
@@ -22,6 +24,8 @@ builder.Host.UseSerilog((context, loggerConfiguration) =>
         .ReadFrom.Configuration(context.Configuration)
         .WriteTo.Console();
 });
+
+ValidateProductionConfiguration(builder.Configuration, builder.Environment);
 
 builder.Services.AddControllers();
 builder.Services.Configure<FormOptions>(options =>
@@ -94,7 +98,8 @@ builder.Services.AddCors(options =>
         policy
             .WithOrigins(allowedOrigins)
             .AllowAnyHeader()
-            .AllowAnyMethod();
+            .AllowAnyMethod()
+            .AllowCredentials();
     });
 });
 
@@ -107,6 +112,9 @@ var app = builder.Build();
 
 using (var scope = app.Services.CreateScope())
 {
+    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    await dbContext.Database.MigrateAsync();
+
     var toolValidator = scope.ServiceProvider.GetRequiredService<IVideoProcessingToolValidator>();
     _ = await toolValidator.ValidateAsync();
 }
@@ -131,3 +139,32 @@ app.UseAuthorization();
 app.MapControllers();
 
 app.Run();
+
+static void ValidateProductionConfiguration(IConfiguration configuration, IWebHostEnvironment environment)
+{
+    if (environment.IsDevelopment())
+    {
+        return;
+    }
+
+    var connectionString = configuration.GetConnectionString("DefaultConnection");
+    if (string.IsNullOrWhiteSpace(connectionString)
+        || connectionString.Contains("Password=123456789", StringComparison.OrdinalIgnoreCase)
+        || connectionString.Contains("Host=localhost", StringComparison.OrdinalIgnoreCase))
+    {
+        throw new InvalidOperationException("Production database connection string must be provided through secure configuration.");
+    }
+
+    var jwtSecret = configuration["Jwt:Secret"];
+    if (string.IsNullOrWhiteSpace(jwtSecret)
+        || jwtSecret.Length < 32
+        || string.Equals(jwtSecret, "development-only-jwt-secret-change-before-production", StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException("Production JWT secret must be provided through secure configuration.");
+    }
+
+    if (string.IsNullOrWhiteSpace(configuration["AiService:ApiKey"]))
+    {
+        throw new InvalidOperationException("Production AI service API key must be configured.");
+    }
+}

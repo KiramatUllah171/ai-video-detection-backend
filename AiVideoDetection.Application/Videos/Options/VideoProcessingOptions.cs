@@ -19,4 +19,55 @@ public class VideoProcessingOptions
     public int FrameImageQuality { get; set; } = 2;
 
     public string FrameOutputFormat { get; set; } = "jpg";
+
+    public decimal SmartScanClipDurationSeconds { get; set; } = 6;
+
+    public int MaxSegmentCount { get; set; } = 20;
+
+    public int SegmentConcurrency { get; set; } = 2;
+
+    public int UserRetryLimit { get; set; } = 3;
+
+    public int StaleActiveJobTimeoutMinutes { get; set; } = 30;
+
+    public decimal HighRiskOverrideScore { get; set; } = 0.90m;
+
+    public decimal MinimumRequiredCoverageRatio { get; set; } = 0.80m;
+
+    public int TemporaryFileRetentionHours { get; set; } = 24;
+
+    public int OriginalVideoRetentionDays { get; set; } = 30;
+
+    public Dictionary<string, int> ProgressStageWeights { get; set; } = new()
+    {
+        ["Preparing"] = 20,
+        ["SegmentPreparation"] = 30,
+        ["Analysis"] = 40,
+        ["Finalization"] = 10
+    };
+
+    public VideoSamplingTierOptions[] SmartScanTiers { get; set; } =
+    [
+        new() { MaxDurationSeconds = 6, SegmentCount = 1 },
+        new() { MaxDurationSeconds = 30, SegmentCount = 1 },
+        new() { MaxDurationSeconds = 60, SegmentCount = 3 },
+        new() { MaxDurationSeconds = 300, SegmentCount = 5 },
+        new() { MaxDurationSeconds = 900, SegmentCount = 7 },
+        new() { MaxDurationSeconds = 1800, SegmentCount = 9 },
+        new() { MaxDurationSeconds = 3600, SegmentCount = 12 },
+        new() { MaxDurationSeconds = 5400, SegmentCount = 16 },
+        new() { MaxDurationSeconds = decimal.MaxValue, SegmentCount = 20 }
+    ];
+
+    public VideoSamplingTierOptions[] DetailedScanTiers { get; set; } =
+    [
+        new() { MaxDurationSeconds = 30, SegmentCount = 1 },
+        new() { MaxDurationSeconds = 60, SegmentCount = 5 },
+        new() { MaxDurationSeconds = 300, SegmentCount = 8 },
+        new() { MaxDurationSeconds = 900, SegmentCount = 12 },
+        new() { MaxDurationSeconds = 1800, SegmentCount = 16 },
+        new() { MaxDurationSeconds = 3600, SegmentCount = 20 },
+        new() { MaxDurationSeconds = 5400, SegmentCount = 24 },
+        new() { MaxDurationSeconds = decimal.MaxValue, SegmentCount = 30 }
+    ];
 }
