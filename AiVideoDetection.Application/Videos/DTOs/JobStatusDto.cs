@@ -6,11 +6,15 @@ public class JobStatusDto
 
     public long VideoId { get; init; }
 
+    public string OriginalName { get; init; } = string.Empty;
+
     public string Status { get; init; } = string.Empty;
 
     public int Progress { get; init; }
 
     public string? CurrentStep { get; init; }
+
+    public string? LastCheckpoint { get; init; }
 
     public string? ScanMode { get; init; }
 

@@ -13,5 +13,13 @@ public interface IAuthService
 
     Task<ApiResponse<bool>> LogoutAsync(RefreshTokenRequest request, CancellationToken cancellationToken = default);
 
+    Task<ApiResponse<bool>> ForgotPasswordAsync(ForgotPasswordRequest request, CancellationToken cancellationToken = default);
+
+    Task<ApiResponse<bool>> ResetPasswordAsync(ResetPasswordRequest request, CancellationToken cancellationToken = default);
+
+    Task<ApiResponse<bool>> ConfirmEmailAsync(ConfirmEmailRequest request, CancellationToken cancellationToken = default);
+
+    Task<ApiResponse<bool>> ResendEmailConfirmationAsync(ResendEmailConfirmationRequest request, CancellationToken cancellationToken = default);
+
     Task<ApiResponse<CurrentUserResponse>> GetCurrentUserAsync(long userId, CancellationToken cancellationToken = default);
 }

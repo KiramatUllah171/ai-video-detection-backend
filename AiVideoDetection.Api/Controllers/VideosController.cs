@@ -35,6 +35,7 @@ public class VideosController(
     }
 
     [HttpGet("history")]
+    [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
     [ProducesResponseType(typeof(ApiResponse<PagedResponse<VideoHistoryItemDto>>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<PagedResponse<VideoHistoryItemDto>>), StatusCodes.Status401Unauthorized)]
     public async Task<ActionResult<ApiResponse<PagedResponse<VideoHistoryItemDto>>>> History(
@@ -49,6 +50,8 @@ public class VideosController(
         }
 
         var response = await videoService.GetHistoryAsync(currentUserId, page, pageSize, status, cancellationToken);
+        Response.Headers.CacheControl = "no-store, no-cache, max-age=0";
+        Response.Headers.Pragma = "no-cache";
         return Ok(response);
     }
 
@@ -163,6 +166,52 @@ public class VideosController(
         }
 
         var response = await videoService.CancelAnalysisAsync(videoId, currentUserId, cancellationToken);
+        if (response.Success)
+        {
+            return Ok(response);
+        }
+
+        return response.Message.Contains("not found", StringComparison.OrdinalIgnoreCase)
+            ? NotFound(response)
+            : BadRequest(response);
+    }
+
+    [HttpPost("{videoId:long}/pause-analysis")]
+    [ProducesResponseType(typeof(ApiResponse<JobStatusDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<JobStatusDto>), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ApiResponse<JobStatusDto>), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ApiResponse<JobStatusDto>), StatusCodes.Status401Unauthorized)]
+    public async Task<ActionResult<ApiResponse<JobStatusDto>>> PauseAnalysis(long videoId, CancellationToken cancellationToken)
+    {
+        if (!TryGetCurrentUserId(out var currentUserId))
+        {
+            return Unauthorized(ApiResponse<JobStatusDto>.ErrorResponse("Unauthorized."));
+        }
+
+        var response = await videoService.PauseAnalysisAsync(videoId, currentUserId, cancellationToken);
+        if (response.Success)
+        {
+            return Ok(response);
+        }
+
+        return response.Message.Contains("not found", StringComparison.OrdinalIgnoreCase)
+            ? NotFound(response)
+            : BadRequest(response);
+    }
+
+    [HttpPost("{videoId:long}/resume-analysis")]
+    [ProducesResponseType(typeof(ApiResponse<JobStatusDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<JobStatusDto>), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ApiResponse<JobStatusDto>), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ApiResponse<JobStatusDto>), StatusCodes.Status401Unauthorized)]
+    public async Task<ActionResult<ApiResponse<JobStatusDto>>> ResumeAnalysis(long videoId, CancellationToken cancellationToken)
+    {
+        if (!TryGetCurrentUserId(out var currentUserId))
+        {
+            return Unauthorized(ApiResponse<JobStatusDto>.ErrorResponse("Unauthorized."));
+        }
+
+        var response = await videoService.ResumeAnalysisAsync(videoId, currentUserId, cancellationToken);
         if (response.Success)
         {
             return Ok(response);

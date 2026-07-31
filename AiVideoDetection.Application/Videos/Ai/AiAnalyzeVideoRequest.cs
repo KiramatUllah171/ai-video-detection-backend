@@ -6,4 +6,6 @@ public sealed record AiAnalyzeVideoRequest(
     long UserId,
     string ProviderMode,
     string OriginalVideoPath,
-    IReadOnlyList<AiAnalyzeFrameItem> Frames);
+    IReadOnlyList<AiAnalyzeFrameItem> Frames,
+    int? SegmentIndex = null,
+    int? SegmentAttempt = null);

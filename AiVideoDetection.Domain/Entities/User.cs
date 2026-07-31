@@ -24,5 +24,9 @@ public class User
 
     public ICollection<RefreshToken> RefreshTokens { get; set; } = [];
 
+    public ICollection<PasswordResetToken> PasswordResetTokens { get; set; } = [];
+
+    public ICollection<EmailConfirmationToken> EmailConfirmationTokens { get; set; } = [];
+
     public ICollection<Video> Videos { get; set; } = [];
 }

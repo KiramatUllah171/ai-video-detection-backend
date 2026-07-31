@@ -5,6 +5,7 @@ using AiVideoDetection.Domain.Enums;
 using AiVideoDetection.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -13,9 +14,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace AiVideoDetection.Api.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260731145325_AddPasswordResetTokens")]
+    partial class AddPasswordResetTokens
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -657,51 +660,6 @@ namespace AiVideoDetection.Api.Migrations
                         .HasDatabaseName("ux_api_usage_monthly_provider_year_month");
 
                     b.ToTable("api_usage_monthly", (string)null);
-                });
-
-            modelBuilder.Entity("AiVideoDetection.Domain.Entities.EmailConfirmationToken", b =>
-                {
-                    b.Property<long>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint")
-                        .HasColumnName("id");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at")
-                        .HasDefaultValueSql("NOW()");
-
-                    b.Property<DateTimeOffset>("ExpiresAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("expires_at");
-
-                    b.Property<string>("TokenHash")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("token_hash");
-
-                    b.Property<DateTimeOffset?>("UsedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("used_at");
-
-                    b.Property<long>("UserId")
-                        .HasColumnType("bigint")
-                        .HasColumnName("user_id");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("TokenHash")
-                        .IsUnique()
-                        .HasDatabaseName("ux_email_confirmation_tokens_token_hash");
-
-                    b.HasIndex("UserId", "CreatedAt")
-                        .IsDescending(false, true)
-                        .HasDatabaseName("ix_email_confirmation_tokens_user_created");
-
-                    b.ToTable("email_confirmation_tokens", (string)null);
                 });
 
             modelBuilder.Entity("AiVideoDetection.Domain.Entities.EvidenceItem", b =>
@@ -1510,17 +1468,6 @@ namespace AiVideoDetection.Api.Migrations
                     b.Navigation("Video");
                 });
 
-            modelBuilder.Entity("AiVideoDetection.Domain.Entities.EmailConfirmationToken", b =>
-                {
-                    b.HasOne("AiVideoDetection.Domain.Entities.User", "User")
-                        .WithMany("EmailConfirmationTokens")
-                        .HasForeignKey("UserId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("User");
-                });
-
             modelBuilder.Entity("AiVideoDetection.Domain.Entities.EvidenceItem", b =>
                 {
                     b.HasOne("AiVideoDetection.Domain.Entities.AiResult", "AiResult")
@@ -1656,8 +1603,6 @@ namespace AiVideoDetection.Api.Migrations
 
             modelBuilder.Entity("AiVideoDetection.Domain.Entities.User", b =>
                 {
-                    b.Navigation("EmailConfirmationTokens");
-
                     b.Navigation("PasswordResetTokens");
 
                     b.Navigation("RefreshTokens");

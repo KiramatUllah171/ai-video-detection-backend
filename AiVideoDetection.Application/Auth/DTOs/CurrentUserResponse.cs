@@ -11,4 +11,6 @@ public class CurrentUserResponse
     public string Email { get; set; } = string.Empty;
 
     public UserRole Role { get; set; }
+
+    public bool EmailConfirmed { get; set; }
 }

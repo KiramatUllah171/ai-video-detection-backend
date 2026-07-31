@@ -430,6 +430,280 @@ public class VideoServiceTests
     }
 
     [Fact]
+    public async Task RetryClearsStalePauseState()
+    {
+        await using var dbContext = CreateDbContext();
+        dbContext.Users.Add(CreateUser(1, "owner@example.com"));
+        dbContext.Videos.Add(new Video
+        {
+            Id = 10,
+            UserId = 1,
+            OriginalName = "owner.mp4",
+            FileUrl = "videos/1/file.mp4",
+            FileSize = 100,
+            Status = VideoStatus.Failed,
+            AnalysisJobs =
+            [
+                new AnalysisJob
+                {
+                    Status = JobStatus.Failed,
+                    RetryCount = 1,
+                    MaxRetryCount = 3,
+                    PauseRequested = true,
+                    PauseRequestedAt = DateTimeOffset.UtcNow.AddMinutes(-4),
+                    PausedAt = DateTimeOffset.UtcNow.AddMinutes(-3),
+                    PausedFromStage = "Detailed scan",
+                    LastCheckpoint = "before-segment-2",
+                    ResumeBackgroundJobId = "stale"
+                }
+            ]
+        });
+        await dbContext.SaveChangesAsync();
+        var service = CreateService(dbContext, new FakeObjectStorageService(), new FakeAnalysisJobQueue());
+
+        var response = await service.RetryAnalysisAsync(10, 1);
+
+        Assert.True(response.Success);
+        var retryJob = await dbContext.AnalysisJobs.OrderBy(job => job.Id).LastAsync();
+        Assert.Equal(JobStatus.Queued, retryJob.Status);
+        Assert.False(retryJob.PauseRequested);
+        Assert.Null(retryJob.PauseRequestedAt);
+        Assert.Null(retryJob.PausedAt);
+        Assert.Null(retryJob.PausedFromStage);
+        Assert.Null(retryJob.LastCheckpoint);
+        Assert.Null(retryJob.ResumeBackgroundJobId);
+    }
+
+    [Fact]
+    public async Task PauseProcessingJobPersistsPauseRequestWithoutRetryIncrement()
+    {
+        await using var dbContext = CreateDbContext();
+        dbContext.Users.Add(CreateUser(1, "owner@example.com"));
+        dbContext.Videos.Add(new Video
+        {
+            Id = 10,
+            UserId = 1,
+            OriginalName = "owner.mp4",
+            FileUrl = "videos/1/file.mp4",
+            FileSize = 100,
+            Status = VideoStatus.Processing,
+            AnalysisJobs =
+            [
+                new AnalysisJob
+                {
+                    Id = 20,
+                    Status = JobStatus.Processing,
+                    CurrentStep = "Analyzing segment 2",
+                    Progress = 35,
+                    RetryCount = 1,
+                    MaxRetryCount = 3
+                }
+            ]
+        });
+        await dbContext.SaveChangesAsync();
+        var queue = new FakeAnalysisJobQueue();
+        var service = CreateService(dbContext, new FakeObjectStorageService(), queue);
+
+        var response = await service.PauseAnalysisAsync(10, 1);
+
+        Assert.True(response.Success);
+        Assert.Equal(JobStatus.PauseRequested.ToString(), response.Data!.Status);
+        var job = await dbContext.AnalysisJobs.SingleAsync();
+        Assert.Equal(JobStatus.PauseRequested, job.Status);
+        Assert.True(job.PauseRequested);
+        Assert.NotNull(job.PauseRequestedAt);
+        Assert.Equal(1, job.RetryCount);
+        Assert.Equal(0, queue.EnqueueCalls);
+    }
+
+    [Fact]
+    public async Task PauseQueuedJobPersistsPauseRequest()
+    {
+        await using var dbContext = CreateDbContext();
+        dbContext.Users.Add(CreateUser(1, "owner@example.com"));
+        dbContext.Videos.Add(new Video
+        {
+            Id = 10,
+            UserId = 1,
+            OriginalName = "owner.mp4",
+            FileUrl = "videos/1/file.mp4",
+            FileSize = 100,
+            Status = VideoStatus.Queued,
+            AnalysisJobs =
+            [
+                new AnalysisJob
+                {
+                    Id = 20,
+                    Status = JobStatus.Queued,
+                    CurrentStep = "Waiting for worker",
+                    Progress = 0
+                }
+            ]
+        });
+        await dbContext.SaveChangesAsync();
+        var service = CreateService(dbContext, new FakeObjectStorageService(), new FakeAnalysisJobQueue());
+
+        var response = await service.PauseAnalysisAsync(10, 1);
+
+        Assert.True(response.Success);
+        var job = await dbContext.AnalysisJobs.SingleAsync();
+        Assert.Equal(JobStatus.PauseRequested, job.Status);
+        Assert.True(job.PauseRequested);
+    }
+
+    [Fact]
+    public async Task NonOwnerCannotPauseOrResumeAnotherUsersVideo()
+    {
+        await using var dbContext = CreateDbContext();
+        dbContext.Users.AddRange(CreateUser(1, "owner@example.com"), CreateUser(2, "other@example.com"));
+        dbContext.Videos.Add(new Video
+        {
+            Id = 10,
+            UserId = 1,
+            OriginalName = "owner.mp4",
+            FileUrl = "videos/1/file.mp4",
+            FileSize = 100,
+            Status = VideoStatus.Processing,
+            AnalysisJobs = [new AnalysisJob { Id = 20, Status = JobStatus.Processing }]
+        });
+        await dbContext.SaveChangesAsync();
+        var queue = new FakeAnalysisJobQueue();
+        var service = CreateService(dbContext, new FakeObjectStorageService(), queue);
+
+        var pauseResponse = await service.PauseAnalysisAsync(10, 2);
+        var resumeResponse = await service.ResumeAnalysisAsync(10, 2);
+
+        Assert.False(pauseResponse.Success);
+        Assert.False(resumeResponse.Success);
+        Assert.Equal(JobStatus.Processing, (await dbContext.AnalysisJobs.SingleAsync()).Status);
+        Assert.Equal(0, queue.EnqueueCalls);
+    }
+
+    [Fact]
+    public async Task ResumePausedJobQueuesSameAttemptOnce()
+    {
+        await using var dbContext = CreateDbContext();
+        dbContext.Users.Add(CreateUser(1, "owner@example.com"));
+        dbContext.Videos.Add(new Video
+        {
+            Id = 10,
+            UserId = 1,
+            OriginalName = "owner.mp4",
+            FileUrl = "videos/1/file.mp4",
+            FileSize = 100,
+            Status = VideoStatus.Queued,
+            AnalysisJobs =
+            [
+                new AnalysisJob
+                {
+                    Id = 20,
+                    Status = JobStatus.Paused,
+                    CurrentStep = "Paused before analyzing part 3 of 8",
+                    Progress = 40,
+                    PausedAt = DateTimeOffset.UtcNow.AddMinutes(-2),
+                    PausedFromStage = "Detailed scan",
+                    LastCheckpoint = "before-segment-3"
+                }
+            ]
+        });
+        await dbContext.SaveChangesAsync();
+        var queue = new FakeAnalysisJobQueue();
+        var service = CreateService(dbContext, new FakeObjectStorageService(), queue);
+
+        var firstResponse = await service.ResumeAnalysisAsync(10, 1);
+        var duplicateResponse = await service.ResumeAnalysisAsync(10, 1);
+
+        Assert.True(firstResponse.Success);
+        Assert.True(duplicateResponse.Success);
+        var job = await dbContext.AnalysisJobs.SingleAsync();
+        Assert.Equal(20, job.Id);
+        Assert.Equal(JobStatus.ResumeRequested, job.Status);
+        Assert.False(job.PauseRequested);
+        Assert.Null(job.PauseRequestedAt);
+        Assert.NotNull(job.ResumedAt);
+        Assert.Equal("fake-20", job.ResumeBackgroundJobId);
+        Assert.Equal(1, queue.ResumeCalls);
+        Assert.Equal(1, queue.EnqueueCalls);
+    }
+
+    [Theory]
+    [InlineData(JobStatus.Completed)]
+    [InlineData(JobStatus.Failed)]
+    [InlineData(JobStatus.Cancelled)]
+    [InlineData(JobStatus.Processing)]
+    public async Task InvalidResumeStatesAreRejected(JobStatus status)
+    {
+        await using var dbContext = CreateDbContext();
+        dbContext.Users.Add(CreateUser(1, "owner@example.com"));
+        dbContext.Videos.Add(new Video
+        {
+            Id = 10,
+            UserId = 1,
+            OriginalName = "owner.mp4",
+            FileUrl = "videos/1/file.mp4",
+            FileSize = 100,
+            Status = VideoStatus.Uploaded,
+            AnalysisJobs = [new AnalysisJob { Id = 20, Status = status }]
+        });
+        await dbContext.SaveChangesAsync();
+        var queue = new FakeAnalysisJobQueue();
+        var service = CreateService(dbContext, new FakeObjectStorageService(), queue);
+
+        var response = await service.ResumeAnalysisAsync(10, 1);
+
+        Assert.False(response.Success);
+        Assert.Equal(status, (await dbContext.AnalysisJobs.SingleAsync()).Status);
+        Assert.Equal(0, queue.EnqueueCalls);
+    }
+
+    [Fact]
+    public async Task CancelPausedJobMarksCancelledWithoutRequeueing()
+    {
+        await using var dbContext = CreateDbContext();
+        dbContext.Users.Add(CreateUser(1, "owner@example.com"));
+        dbContext.Videos.Add(new Video
+        {
+            Id = 10,
+            UserId = 1,
+            OriginalName = "owner.mp4",
+            FileUrl = "videos/1/file.mp4",
+            FileSize = 100,
+            Status = VideoStatus.Queued,
+            AnalysisJobs =
+            [
+                new AnalysisJob
+                {
+                    Id = 20,
+                    Status = JobStatus.Paused,
+                    Progress = 55,
+                    PauseRequested = true,
+                    PausedAt = DateTimeOffset.UtcNow,
+                    ResumeBackgroundJobId = "old",
+                    Segments =
+                    [
+                        new AnalysisSegment { SegmentIndex = 0, Status = AnalysisSegmentStatus.Completed },
+                        new AnalysisSegment { SegmentIndex = 1, Status = AnalysisSegmentStatus.Pending }
+                    ]
+                }
+            ]
+        });
+        await dbContext.SaveChangesAsync();
+        var queue = new FakeAnalysisJobQueue();
+        var service = CreateService(dbContext, new FakeObjectStorageService(), queue);
+
+        var response = await service.CancelAnalysisAsync(10, 1);
+
+        Assert.True(response.Success);
+        var job = await dbContext.AnalysisJobs.Include(existingJob => existingJob.Segments).SingleAsync();
+        Assert.Equal(JobStatus.Cancelled, job.Status);
+        Assert.False(job.PauseRequested);
+        Assert.Null(job.PauseRequestedAt);
+        Assert.Null(job.ResumeBackgroundJobId);
+        Assert.Equal(0, queue.EnqueueCalls);
+        Assert.Contains(job.Segments, segment => segment.Status == AnalysisSegmentStatus.Cancelled);
+    }
+
+    [Fact]
     public async Task JobStatusMapsBitMindFailureToSafeUserMessage()
     {
         await using var dbContext = CreateDbContext();
@@ -557,6 +831,8 @@ public class VideoServiceTests
     {
         public int EnqueueCalls { get; private set; }
 
+        public int ResumeCalls { get; private set; }
+
         public string EnqueueAnalysisJob(long jobId)
         {
             EnqueueCalls++;
@@ -565,6 +841,12 @@ public class VideoServiceTests
 
         public string RetryAnalysisJob(long jobId)
         {
+            return EnqueueAnalysisJob(jobId);
+        }
+
+        public string ResumeAnalysisJob(long jobId)
+        {
+            ResumeCalls++;
             return EnqueueAnalysisJob(jobId);
         }
     }

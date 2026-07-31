@@ -26,6 +26,8 @@ public class VideoProcessingOptions
 
     public int SegmentConcurrency { get; set; } = 2;
 
+    public int MaxConcurrentProviderRequests { get; set; } = 2;
+
     public int UserRetryLimit { get; set; } = 3;
 
     public int StaleActiveJobTimeoutMinutes { get; set; } = 30;

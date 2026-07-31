@@ -183,18 +183,32 @@ public class VideoService(
                 CreatedAt = video.CreatedAt,
                 LatestJobId = video.AnalysisJobs
                     .OrderByDescending(job => job.CreatedAt)
+                    .ThenByDescending(job => job.Id)
                     .Select(job => (long?)job.Id)
                     .FirstOrDefault(),
                 LatestJobStatus = video.AnalysisJobs
                     .OrderByDescending(job => job.CreatedAt)
+                    .ThenByDescending(job => job.Id)
                     .Select(job => job.Status.ToString())
                     .FirstOrDefault(),
                 LatestJobProgress = video.AnalysisJobs
                     .OrderByDescending(job => job.CreatedAt)
+                    .ThenByDescending(job => job.Id)
                     .Select(job => (int?)job.Progress)
+                    .FirstOrDefault(),
+                LatestJobUpdatedAt = video.AnalysisJobs
+                    .OrderByDescending(job => job.CreatedAt)
+                    .ThenByDescending(job => job.Id)
+                    .Select(job => (DateTimeOffset?)job.LastActivityAt ?? job.UpdatedAt)
+                    .FirstOrDefault(),
+                CanRetry = video.AnalysisJobs
+                    .OrderByDescending(job => job.CreatedAt)
+                    .ThenByDescending(job => job.Id)
+                    .Select(job => job.Status == JobStatus.Failed && job.RetryCount < job.MaxRetryCount)
                     .FirstOrDefault(),
                 CurrentStep = video.AnalysisJobs
                     .OrderByDescending(job => job.CreatedAt)
+                    .ThenByDescending(job => job.Id)
                     .Select(job => job.CurrentStep)
                     .FirstOrDefault()
             })
@@ -356,6 +370,13 @@ public class VideoService(
             RetryCount = latestJob.RetryCount + 1,
             MaxRetryCount = latestJob.MaxRetryCount,
             ScanMode = latestJob.ScanMode,
+            PauseRequested = false,
+            PauseRequestedAt = null,
+            PausedAt = null,
+            ResumedAt = null,
+            PausedFromStage = null,
+            LastCheckpoint = null,
+            ResumeBackgroundJobId = null,
             LastActivityAt = DateTimeOffset.UtcNow
         };
 
@@ -378,6 +399,195 @@ public class VideoService(
         return ApiResponse<UploadVideoResponse>.SuccessResponse(
             ToUploadResponse(video, job, "Analysis retry queued."),
             "Analysis retry queued.");
+    }
+
+    public async Task<ApiResponse<JobStatusDto>> PauseAnalysisAsync(
+        long videoId,
+        long currentUserId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var transaction = dbContext.Database.IsRelational()
+            ? await dbContext.Database.BeginTransactionAsync(cancellationToken)
+            : null;
+
+        var job = await LoadLatestJobForUserAsync(videoId, currentUserId, cancellationToken);
+        if (job is null)
+        {
+            return ApiResponse<JobStatusDto>.ErrorResponse("Analysis job was not found.");
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        switch (job.Status)
+        {
+            case JobStatus.Queued:
+            case JobStatus.Preparing:
+            case JobStatus.Processing:
+            case JobStatus.Retrying:
+            case JobStatus.Finalizing:
+            case JobStatus.ResumeRequested:
+                job.PauseRequested = true;
+                job.PauseRequestedAt ??= now;
+                job.Status = JobStatus.PauseRequested;
+                job.CurrentStep = "Pausing analysis";
+                job.LastActivityAt = now;
+                job.ResumeBackgroundJobId = null;
+                await dbContext.SaveChangesAsync(cancellationToken);
+                if (transaction is not null)
+                {
+                    await transaction.CommitAsync(cancellationToken);
+                }
+                logger.LogInformation(
+                    "Pause requested for analysis job {JobId} video {VideoId} by user {UserId}.",
+                    job.Id,
+                    videoId,
+                    currentUserId);
+                await jobLogService.LogAsync(job.Id, "PauseRequested", "Information", "Analysis pause was requested by the user.", null, cancellationToken);
+                return ApiResponse<JobStatusDto>.SuccessResponse(MapJob(job), "Pause requested.");
+
+            case JobStatus.PauseRequested:
+                if (transaction is not null)
+                {
+                    await transaction.CommitAsync(cancellationToken);
+                }
+                logger.LogInformation("Duplicate pause request ignored for analysis job {JobId} video {VideoId}.", job.Id, videoId);
+                return ApiResponse<JobStatusDto>.SuccessResponse(MapJob(job), "Pause is already requested.");
+
+            case JobStatus.Paused:
+                if (transaction is not null)
+                {
+                    await transaction.CommitAsync(cancellationToken);
+                }
+                return ApiResponse<JobStatusDto>.SuccessResponse(MapJob(job), "The analysis is already paused.");
+
+            case JobStatus.Completed:
+                logger.LogWarning("Invalid pause transition for completed job {JobId} video {VideoId}.", job.Id, videoId);
+                return ApiResponse<JobStatusDto>.ErrorResponse("The analysis has already completed.");
+
+            case JobStatus.Failed:
+            case JobStatus.Cancelled:
+            case JobStatus.CancelRequested:
+            default:
+                logger.LogWarning("Invalid pause transition for job {JobId} video {VideoId} status {Status}.", job.Id, videoId, job.Status);
+                return ApiResponse<JobStatusDto>.ErrorResponse("This analysis cannot be paused in its current state.");
+        }
+    }
+
+    public async Task<ApiResponse<JobStatusDto>> ResumeAnalysisAsync(
+        long videoId,
+        long currentUserId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var transaction = dbContext.Database.IsRelational()
+            ? await dbContext.Database.BeginTransactionAsync(cancellationToken)
+            : null;
+
+        var job = await LoadLatestJobForUserAsync(videoId, currentUserId, cancellationToken);
+        if (job is null)
+        {
+            return ApiResponse<JobStatusDto>.ErrorResponse("Analysis job was not found.");
+        }
+
+        if (job.Status == JobStatus.Cancelled || job.Status == JobStatus.CancelRequested || job.CancelRequested)
+        {
+            logger.LogWarning("Resume rejected for cancelled job {JobId} video {VideoId}.", job.Id, videoId);
+            return ApiResponse<JobStatusDto>.ErrorResponse("The analysis was cancelled before it could be resumed.");
+        }
+
+        if (job.Status is JobStatus.Completed)
+        {
+            logger.LogWarning("Resume rejected for completed job {JobId} video {VideoId}.", job.Id, videoId);
+            return ApiResponse<JobStatusDto>.ErrorResponse("The analysis has already completed.");
+        }
+
+        if (job.Status is JobStatus.Failed)
+        {
+            logger.LogWarning("Resume rejected for failed job {JobId} video {VideoId}.", job.Id, videoId);
+            return ApiResponse<JobStatusDto>.ErrorResponse("This analysis cannot be resumed in its current state.");
+        }
+
+        if (job.Status == JobStatus.ResumeRequested)
+        {
+            if (transaction is not null)
+            {
+                await transaction.CommitAsync(cancellationToken);
+            }
+            logger.LogInformation("Duplicate resume request prevented for active job {JobId} video {VideoId} status {Status}.", job.Id, videoId, job.Status);
+            return ApiResponse<JobStatusDto>.SuccessResponse(MapJob(job), "The analysis is already queued or processing.");
+        }
+
+        if (job.Status is JobStatus.Queued or JobStatus.Preparing or JobStatus.Processing or JobStatus.Retrying or JobStatus.Finalizing)
+        {
+            logger.LogWarning("Invalid resume transition for active job {JobId} video {VideoId} status {Status}.", job.Id, videoId, job.Status);
+            return ApiResponse<JobStatusDto>.ErrorResponse("This analysis cannot be resumed in its current state.");
+        }
+
+        if (job.Status != JobStatus.Paused)
+        {
+            logger.LogWarning("Invalid resume transition for job {JobId} video {VideoId} status {Status}.", job.Id, videoId, job.Status);
+            return ApiResponse<JobStatusDto>.ErrorResponse("This analysis cannot be resumed in its current state.");
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        if (dbContext.Database.IsRelational())
+        {
+            var updatedRows = await dbContext.AnalysisJobs
+                .Where(existingJob => existingJob.Id == job.Id
+                    && existingJob.Status == JobStatus.Paused
+                    && existingJob.ResumeBackgroundJobId == null)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(existingJob => existingJob.Status, JobStatus.ResumeRequested)
+                    .SetProperty(existingJob => existingJob.PauseRequested, false)
+                    .SetProperty(existingJob => existingJob.PauseRequestedAt, (DateTimeOffset?)null)
+                    .SetProperty(existingJob => existingJob.ResumedAt, now)
+                    .SetProperty(existingJob => existingJob.CurrentStep, "Resuming analysis")
+                    .SetProperty(existingJob => existingJob.LastActivityAt, now)
+                    .SetProperty(existingJob => existingJob.UpdatedAt, now),
+                    cancellationToken);
+            if (updatedRows == 0)
+            {
+                await dbContext.Entry(job).ReloadAsync(cancellationToken);
+                if (transaction is not null)
+                {
+                    await transaction.CommitAsync(cancellationToken);
+                }
+                logger.LogInformation("Duplicate resume request prevented for job {JobId} video {VideoId}.", job.Id, videoId);
+                return ApiResponse<JobStatusDto>.SuccessResponse(MapJob(job), "The analysis is already queued or processing.");
+            }
+
+            await dbContext.Videos
+                .Where(video => video.Id == videoId)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(video => video.Status, VideoStatus.Queued), cancellationToken);
+        }
+
+        job.Status = JobStatus.ResumeRequested;
+        job.PauseRequested = false;
+        job.PauseRequestedAt = null;
+        job.ResumedAt = now;
+        job.ResumeBackgroundJobId = null;
+        job.CurrentStep = "Resuming analysis";
+        job.LastActivityAt = now;
+        if (job.Video is not null)
+        {
+            job.Video.Status = VideoStatus.Queued;
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+        var backgroundJobId = analysisJobQueue.ResumeAnalysisJob(job.Id);
+        job.ResumeBackgroundJobId = backgroundJobId;
+        await dbContext.SaveChangesAsync(cancellationToken);
+        if (transaction is not null)
+        {
+            await transaction.CommitAsync(cancellationToken);
+        }
+
+        logger.LogInformation(
+            "Resume requested for analysis job {JobId} video {VideoId} by user {UserId}; enqueued Hangfire job {BackgroundJobId}.",
+            job.Id,
+            videoId,
+            currentUserId,
+            backgroundJobId);
+        await jobLogService.LogAsync(job.Id, "ResumeRequested", "Information", "Analysis resume was requested by the user.", new { backgroundJobId }, cancellationToken);
+        return ApiResponse<JobStatusDto>.SuccessResponse(MapJob(job), "Analysis resume queued.");
     }
 
     public async Task<ApiResponse<JobStatusDto>> CancelAnalysisAsync(
@@ -412,8 +622,39 @@ public class VideoService(
         }
 
         var now = DateTimeOffset.UtcNow;
+        if (job.Status == JobStatus.Paused)
+        {
+            job.CancelRequested = true;
+            job.CancelRequestedAt ??= now;
+            job.PauseRequested = false;
+            job.PauseRequestedAt = null;
+            job.ResumeBackgroundJobId = null;
+            job.Status = JobStatus.Cancelled;
+            job.CurrentStep = "Analysis cancelled";
+            job.CompletedAt = now;
+            job.LastActivityAt = now;
+            if (job.Video is not null)
+            {
+                job.Video.Status = VideoStatus.Cancelled;
+            }
+
+            foreach (var segment in job.Segments.Where(segment => segment.Status != AnalysisSegmentStatus.Completed))
+            {
+                segment.Status = AnalysisSegmentStatus.Cancelled;
+                segment.LastActivityAt = now;
+            }
+
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await jobLogService.LogAsync(job.Id, "Cancelled", "Information", "Paused analysis was cancelled by the user.", null, cancellationToken);
+            logger.LogInformation("Paused analysis job {JobId} video {VideoId} was cancelled by user {UserId}.", job.Id, videoId, currentUserId);
+            return ApiResponse<JobStatusDto>.SuccessResponse(MapJob(job), "Cancellation requested.");
+        }
+
         job.CancelRequested = true;
         job.CancelRequestedAt ??= now;
+        job.PauseRequested = false;
+        job.PauseRequestedAt = null;
+        job.ResumeBackgroundJobId = null;
         job.LastActivityAt = now;
         job.Status = JobStatus.CancelRequested;
         job.CurrentStep = "Cancelling analysis";
@@ -427,6 +668,20 @@ public class VideoService(
         await jobLogService.LogAsync(job.Id, "CancellationRequested", "Information", "Analysis cancellation was requested by the user.", null, cancellationToken);
 
         return ApiResponse<JobStatusDto>.SuccessResponse(MapJob(job), "Cancellation requested.");
+    }
+
+    private async Task<AnalysisJob?> LoadLatestJobForUserAsync(long videoId, long currentUserId, CancellationToken cancellationToken)
+    {
+        return await dbContext.AnalysisJobs
+            .Include(existingJob => existingJob.Video)
+            .Include(existingJob => existingJob.Segments)
+            .Where(existingJob => existingJob.VideoId == videoId
+                && existingJob.Video.UserId == currentUserId
+                && existingJob.Video.DeletedAt == null
+                && existingJob.Video.Status != VideoStatus.Deleted)
+            .OrderByDescending(existingJob => existingJob.CreatedAt)
+            .ThenByDescending(existingJob => existingJob.Id)
+            .FirstOrDefaultAsync(cancellationToken);
     }
 
     public async Task<ApiResponse<MetadataResultDto>> GetMetadataAsync(
@@ -632,9 +887,11 @@ public class VideoService(
         {
             JobId = job.Id,
             VideoId = job.VideoId,
+            OriginalName = job.Video?.OriginalName ?? string.Empty,
             Status = job.Status.ToString(),
             Progress = job.Progress,
             CurrentStep = job.CurrentStep,
+            LastCheckpoint = job.LastCheckpoint,
             ScanMode = job.ScanMode,
             CompletedSegments = job.CompletedSegments,
             TotalSegments = job.TotalSegments,
@@ -680,7 +937,15 @@ public class VideoService(
 
     private static bool IsActiveJob(AnalysisJob job)
     {
-        return job.Status is JobStatus.Queued or JobStatus.Preparing or JobStatus.Processing or JobStatus.Retrying or JobStatus.Finalizing or JobStatus.CancelRequested;
+        return job.Status is JobStatus.Queued
+            or JobStatus.Preparing
+            or JobStatus.Processing
+            or JobStatus.Retrying
+            or JobStatus.Finalizing
+            or JobStatus.PauseRequested
+            or JobStatus.Paused
+            or JobStatus.ResumeRequested
+            or JobStatus.CancelRequested;
     }
 
     private static string MapErrorCategory(string? errorCode, string? errorMessage)

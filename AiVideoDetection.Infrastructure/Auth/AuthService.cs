@@ -18,10 +18,18 @@ public class AuthService(
     IPasswordHasher passwordHasher,
     IJwtTokenService jwtTokenService,
     IOptions<JwtOptions> jwtOptions,
+    IOptions<PasswordResetOptions> passwordResetOptions,
+    IPasswordResetEmailSender passwordResetEmailSender,
+    IEmailConfirmationSender emailConfirmationSender,
     ILogger<AuthService> logger) : IAuthService
 {
     private const string InvalidLoginMessage = "Invalid email or password.";
+    private const string ForgotPasswordMessage = "If an account exists for this email address, a password-reset link has been sent.";
+    private const string InvalidResetTokenMessage = "The password-reset link is invalid or has expired.";
+    private const string ResendConfirmationMessage = "If the account exists and still needs confirmation, a verification link has been sent.";
+    private const string InvalidConfirmationTokenMessage = "The email confirmation link is invalid or has expired.";
     private readonly JwtOptions _jwtOptions = jwtOptions.Value;
+    private readonly PasswordResetOptions _passwordResetOptions = passwordResetOptions.Value;
 
     public async Task<ApiResponse<AuthResponse>> SignupAsync(
         SignupRequest request,
@@ -52,6 +60,7 @@ public class AuthService(
         await dbContext.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation("User signup succeeded for user id {UserId}.", user.Id);
+        await CreateAndSendEmailConfirmationAsync(user, cancellationToken);
 
         var response = await CreateAuthResponseAsync(user, ipAddress, cancellationToken);
         return ApiResponse<AuthResponse>.SuccessResponse(response, "Signup successful.");
@@ -133,6 +142,136 @@ public class AuthService(
         return ApiResponse<bool>.SuccessResponse(true, "Logout successful.");
     }
 
+    public async Task<ApiResponse<bool>> ForgotPasswordAsync(
+        ForgotPasswordRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedEmail = NormalizeEmail(request.Email);
+        var user = await dbContext.Users
+            .FirstOrDefaultAsync(existingUser => existingUser.Email == normalizedEmail, cancellationToken);
+
+        if (user is null || !user.IsActive)
+        {
+            logger.LogInformation("Password reset requested for a non-existent or inactive account.");
+            return ApiResponse<bool>.SuccessResponse(true, ForgotPasswordMessage);
+        }
+
+        var resetToken = GenerateRefreshToken();
+        var resetTokenHash = HashToken(resetToken);
+        var now = DateTimeOffset.UtcNow;
+
+        var outstandingTokens = await dbContext.PasswordResetTokens
+            .Where(token => token.UserId == user.Id && token.UsedAt == null && token.ExpiresAt > now)
+            .ToListAsync(cancellationToken);
+        foreach (var token in outstandingTokens)
+        {
+            token.UsedAt = now;
+        }
+
+        dbContext.PasswordResetTokens.Add(new PasswordResetToken
+        {
+            UserId = user.Id,
+            TokenHash = resetTokenHash,
+            ExpiresAt = now.AddMinutes(Math.Clamp(_passwordResetOptions.TokenLifetimeMinutes, 5, 240))
+        });
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        var resetUrl = BuildPasswordResetUrl(resetToken);
+        await passwordResetEmailSender.SendPasswordResetAsync(user, resetUrl, cancellationToken);
+
+        logger.LogInformation("Password reset email delivery requested for user id {UserId}.", user.Id);
+        return ApiResponse<bool>.SuccessResponse(true, ForgotPasswordMessage);
+    }
+
+    public async Task<ApiResponse<bool>> ResetPasswordAsync(
+        ResetPasswordRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var tokenHash = HashToken(request.Token);
+        var now = DateTimeOffset.UtcNow;
+        var resetToken = await dbContext.PasswordResetTokens
+            .Include(token => token.User)
+            .FirstOrDefaultAsync(token => token.TokenHash == tokenHash, cancellationToken);
+
+        if (resetToken is null || resetToken.UsedAt is not null || resetToken.ExpiresAt <= now)
+        {
+            logger.LogInformation("Password reset rejected because the token is invalid or expired.");
+            return ApiResponse<bool>.ErrorResponse(InvalidResetTokenMessage);
+        }
+
+        if (!resetToken.User.IsActive)
+        {
+            logger.LogInformation("Password reset rejected for inactive user id {UserId}.", resetToken.UserId);
+            return ApiResponse<bool>.ErrorResponse(InvalidResetTokenMessage);
+        }
+
+        resetToken.User.PasswordHash = passwordHasher.HashPassword(request.Password);
+        resetToken.UsedAt = now;
+
+        var activeRefreshTokens = await dbContext.RefreshTokens
+            .Where(token => token.UserId == resetToken.UserId && token.RevokedAt == null && token.ExpiresAt > now)
+            .ToListAsync(cancellationToken);
+        foreach (var refreshToken in activeRefreshTokens)
+        {
+            refreshToken.RevokedAt = now;
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        logger.LogInformation("Password reset succeeded for user id {UserId}.", resetToken.UserId);
+        return ApiResponse<bool>.SuccessResponse(true, "Password reset successful.");
+    }
+
+    public async Task<ApiResponse<bool>> ConfirmEmailAsync(
+        ConfirmEmailRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var tokenHash = HashToken(request.Token);
+        var now = DateTimeOffset.UtcNow;
+        var confirmationToken = await dbContext.EmailConfirmationTokens
+            .Include(token => token.User)
+            .FirstOrDefaultAsync(token => token.TokenHash == tokenHash, cancellationToken);
+
+        if (confirmationToken is null || confirmationToken.UsedAt is not null || confirmationToken.ExpiresAt <= now)
+        {
+            logger.LogInformation("Email confirmation rejected because the token is invalid or expired.");
+            return ApiResponse<bool>.ErrorResponse(InvalidConfirmationTokenMessage);
+        }
+
+        if (!confirmationToken.User.IsActive)
+        {
+            logger.LogInformation("Email confirmation rejected for inactive user id {UserId}.", confirmationToken.UserId);
+            return ApiResponse<bool>.ErrorResponse(InvalidConfirmationTokenMessage);
+        }
+
+        confirmationToken.User.EmailConfirmed = true;
+        confirmationToken.UsedAt = now;
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        logger.LogInformation("Email confirmed for user id {UserId}.", confirmationToken.UserId);
+        return ApiResponse<bool>.SuccessResponse(true, "Email confirmed successfully.");
+    }
+
+    public async Task<ApiResponse<bool>> ResendEmailConfirmationAsync(
+        ResendEmailConfirmationRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedEmail = NormalizeEmail(request.Email);
+        var user = await dbContext.Users
+            .FirstOrDefaultAsync(existingUser => existingUser.Email == normalizedEmail, cancellationToken);
+
+        if (user is null || !user.IsActive || user.EmailConfirmed)
+        {
+            logger.LogInformation("Email confirmation resend requested for a non-existent, inactive, or already confirmed account.");
+            return ApiResponse<bool>.SuccessResponse(true, ResendConfirmationMessage);
+        }
+
+        await CreateAndSendEmailConfirmationAsync(user, cancellationToken);
+        logger.LogInformation("Email confirmation resent for user id {UserId}.", user.Id);
+        return ApiResponse<bool>.SuccessResponse(true, ResendConfirmationMessage);
+    }
+
     public async Task<ApiResponse<CurrentUserResponse>> GetCurrentUserAsync(long userId, CancellationToken cancellationToken = default)
     {
         var user = await dbContext.Users
@@ -149,7 +288,8 @@ public class AuthService(
             Id = user.Id,
             Name = user.Name,
             Email = user.Email,
-            Role = user.Role
+            Role = user.Role,
+            EmailConfirmed = user.EmailConfirmed
         };
 
         return ApiResponse<CurrentUserResponse>.SuccessResponse(response);
@@ -187,8 +327,54 @@ public class AuthService(
 
     private static string HashRefreshToken(string refreshToken)
     {
-        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(refreshToken));
+        return HashToken(refreshToken);
+    }
+
+    private static string HashToken(string token)
+    {
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(token));
         return Convert.ToHexString(bytes);
+    }
+
+    private string BuildPasswordResetUrl(string resetToken)
+    {
+        var baseUrl = string.IsNullOrWhiteSpace(_passwordResetOptions.FrontendBaseUrl)
+            ? "http://localhost:5173"
+            : _passwordResetOptions.FrontendBaseUrl.TrimEnd('/');
+        return $"{baseUrl}/reset-password?token={Uri.EscapeDataString(resetToken)}";
+    }
+
+    private async Task CreateAndSendEmailConfirmationAsync(User user, CancellationToken cancellationToken)
+    {
+        var confirmationToken = GenerateRefreshToken();
+        var confirmationTokenHash = HashToken(confirmationToken);
+        var now = DateTimeOffset.UtcNow;
+
+        var outstandingTokens = await dbContext.EmailConfirmationTokens
+            .Where(token => token.UserId == user.Id && token.UsedAt == null && token.ExpiresAt > now)
+            .ToListAsync(cancellationToken);
+        foreach (var token in outstandingTokens)
+        {
+            token.UsedAt = now;
+        }
+
+        dbContext.EmailConfirmationTokens.Add(new EmailConfirmationToken
+        {
+            UserId = user.Id,
+            TokenHash = confirmationTokenHash,
+            ExpiresAt = now.AddHours(Math.Clamp(_passwordResetOptions.EmailConfirmationTokenLifetimeHours, 1, 168))
+        });
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+        await emailConfirmationSender.SendEmailConfirmationAsync(user, BuildEmailConfirmationUrl(confirmationToken), cancellationToken);
+    }
+
+    private string BuildEmailConfirmationUrl(string confirmationToken)
+    {
+        var baseUrl = string.IsNullOrWhiteSpace(_passwordResetOptions.FrontendBaseUrl)
+            ? "http://localhost:5173"
+            : _passwordResetOptions.FrontendBaseUrl.TrimEnd('/');
+        return $"{baseUrl}/confirm-email?token={Uri.EscapeDataString(confirmationToken)}";
     }
 
     private static IPAddress? ParseIpAddress(string? ipAddress)

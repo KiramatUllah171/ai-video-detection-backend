@@ -15,6 +15,10 @@ public class AuthController(
     IValidator<SignupRequest> signupValidator,
     IValidator<LoginRequest> loginValidator,
     IValidator<RefreshTokenRequest> refreshTokenValidator,
+    IValidator<ForgotPasswordRequest> forgotPasswordValidator,
+    IValidator<ResetPasswordRequest> resetPasswordValidator,
+    IValidator<ConfirmEmailRequest> confirmEmailValidator,
+    IValidator<ResendEmailConfirmationRequest> resendEmailConfirmationValidator,
     IWebHostEnvironment environment) : ControllerBase
 {
     private const string RefreshTokenCookieName = "ai_video_refresh";
@@ -86,6 +90,70 @@ public class AuthController(
 
         var response = await authService.LogoutAsync(request, cancellationToken);
         ClearRefreshTokenCookie();
+        return ToActionResult(response);
+    }
+
+    [HttpPost("forgot-password")]
+    [AllowAnonymous]
+    [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<ApiResponse<bool>>> ForgotPassword(ForgotPasswordRequest request, CancellationToken cancellationToken)
+    {
+        var validationResponse = await ValidateAsync<ForgotPasswordRequest, bool>(forgotPasswordValidator, request, cancellationToken);
+        if (validationResponse is not null)
+        {
+            return BadRequest(validationResponse);
+        }
+
+        var response = await authService.ForgotPasswordAsync(request, cancellationToken);
+        return ToActionResult(response);
+    }
+
+    [HttpPost("reset-password")]
+    [AllowAnonymous]
+    [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<ApiResponse<bool>>> ResetPassword(ResetPasswordRequest request, CancellationToken cancellationToken)
+    {
+        var validationResponse = await ValidateAsync<ResetPasswordRequest, bool>(resetPasswordValidator, request, cancellationToken);
+        if (validationResponse is not null)
+        {
+            return BadRequest(validationResponse);
+        }
+
+        var response = await authService.ResetPasswordAsync(request, cancellationToken);
+        return ToActionResult(response);
+    }
+
+    [HttpPost("confirm-email")]
+    [AllowAnonymous]
+    [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<ApiResponse<bool>>> ConfirmEmail(ConfirmEmailRequest request, CancellationToken cancellationToken)
+    {
+        var validationResponse = await ValidateAsync<ConfirmEmailRequest, bool>(confirmEmailValidator, request, cancellationToken);
+        if (validationResponse is not null)
+        {
+            return BadRequest(validationResponse);
+        }
+
+        var response = await authService.ConfirmEmailAsync(request, cancellationToken);
+        return ToActionResult(response);
+    }
+
+    [HttpPost("resend-confirmation-email")]
+    [AllowAnonymous]
+    [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<ApiResponse<bool>>> ResendEmailConfirmation(ResendEmailConfirmationRequest request, CancellationToken cancellationToken)
+    {
+        var validationResponse = await ValidateAsync<ResendEmailConfirmationRequest, bool>(resendEmailConfirmationValidator, request, cancellationToken);
+        if (validationResponse is not null)
+        {
+            return BadRequest(validationResponse);
+        }
+
+        var response = await authService.ResendEmailConfirmationAsync(request, cancellationToken);
         return ToActionResult(response);
     }
 

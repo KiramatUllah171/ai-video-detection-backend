@@ -127,6 +127,132 @@ public class VideoProcessingServiceTests
     }
 
     [Fact]
+    public async Task PauseRequestedJobExitsGracefullyAsPaused()
+    {
+        await using var dbContext = CreateDbContext();
+        var job = await SeedQueuedJobAsync(dbContext);
+        job.Status = JobStatus.PauseRequested;
+        job.PauseRequested = true;
+        job.PauseRequestedAt = DateTimeOffset.UtcNow;
+        job.Progress = 55;
+        job.RetryCount = 2;
+        job.ScanMode = "Detailed Scan";
+        job.TotalSegments = 2;
+        job.CompletedSegments = 1;
+        dbContext.AnalysisSegments.AddRange(
+            new AnalysisSegment
+            {
+                AnalysisJob = job,
+                VideoId = job.VideoId,
+                SegmentIndex = 1,
+                Status = AnalysisSegmentStatus.Completed,
+                Duration = 3,
+                Progress = 100
+            },
+            new AnalysisSegment
+            {
+                AnalysisJob = job,
+                VideoId = job.VideoId,
+                SegmentIndex = 2,
+                Status = AnalysisSegmentStatus.Preparing,
+                Duration = 3,
+                Progress = 30
+            });
+        await dbContext.SaveChangesAsync();
+        var metadata = new FakeMetadataExtractionService();
+        var service = CreateService(
+            dbContext,
+            new FakeObjectStorageService(),
+            metadata,
+            new FakeFrameExtractionService(),
+            CreateWorkRoot());
+
+        await service.ProcessAnalysisJobAsync(job.Id);
+
+        var savedJob = await dbContext.AnalysisJobs
+            .Include(existingJob => existingJob.Video)
+            .Include(existingJob => existingJob.Segments)
+            .SingleAsync();
+        Assert.Equal(JobStatus.Paused, savedJob.Status);
+        Assert.Equal(VideoStatus.Queued, savedJob.Video.Status);
+        Assert.False(savedJob.PauseRequested);
+        Assert.NotNull(savedJob.PausedAt);
+        Assert.Equal("Before starting analysis", savedJob.LastCheckpoint);
+        Assert.Equal(55, savedJob.Progress);
+        Assert.Equal(2, savedJob.RetryCount);
+        Assert.Null(savedJob.ErrorCode);
+        Assert.Equal(0, metadata.CallCount);
+        Assert.Contains(savedJob.Segments, segment => segment.SegmentIndex == 1 && segment.Status == AnalysisSegmentStatus.Completed);
+        Assert.Contains(savedJob.Segments, segment => segment.SegmentIndex == 2 && segment.Status == AnalysisSegmentStatus.Pending);
+    }
+
+    [Fact]
+    public async Task ResumeProcessesOnlyIncompleteSegments()
+    {
+        await using var dbContext = CreateDbContext();
+        var job = await SeedQueuedJobAsync(dbContext);
+        job.Status = JobStatus.ResumeRequested;
+        job.Progress = 55;
+        job.ScanMode = "Smart Scan";
+        job.TotalSegments = 2;
+        job.CompletedSegments = 1;
+        job.TotalDurationSeconds = 6;
+        job.AnalyzedCoverageSeconds = 3;
+        job.PausedAt = DateTimeOffset.UtcNow.AddMinutes(-2);
+        dbContext.AnalysisSegments.AddRange(
+            new AnalysisSegment
+            {
+                AnalysisJob = job,
+                VideoId = job.VideoId,
+                SegmentIndex = 1,
+                StartTime = 0,
+                EndTime = 3,
+                Duration = 3,
+                Status = AnalysisSegmentStatus.Completed,
+                Progress = 100,
+                AttemptCount = 1,
+                AiScore = 0.10m,
+                Confidence = 0.90m,
+                ResultJson = "{}"
+            },
+            new AnalysisSegment
+            {
+                AnalysisJob = job,
+                VideoId = job.VideoId,
+                SegmentIndex = 2,
+                StartTime = 3,
+                EndTime = 6,
+                Duration = 3,
+                Status = AnalysisSegmentStatus.Pending,
+                Progress = 0
+            });
+        await dbContext.SaveChangesAsync();
+        var aiClient = new FakeAiInferenceClient();
+        var service = CreateService(
+            dbContext,
+            new FakeObjectStorageService(),
+            new FakeMetadataExtractionService(),
+            new FakeFrameExtractionService(),
+            CreateWorkRoot(),
+            aiClient);
+
+        await service.ProcessAnalysisJobAsync(job.Id);
+
+        var savedJob = await dbContext.AnalysisJobs
+            .Include(existingJob => existingJob.Segments)
+            .SingleAsync();
+        Assert.Equal(JobStatus.Completed, savedJob.Status);
+        Assert.Equal(2, savedJob.CompletedSegments);
+        Assert.Equal(1, aiClient.VideoAnalyzeCalls);
+        Assert.Contains(savedJob.Segments, segment => segment.SegmentIndex == 1
+            && segment.Status == AnalysisSegmentStatus.Completed
+            && segment.AttemptCount == 1);
+        Assert.Contains(savedJob.Segments, segment => segment.SegmentIndex == 2
+            && segment.Status == AnalysisSegmentStatus.Completed
+            && segment.AttemptCount == 1);
+    }
+
+    [Fact]
     public async Task AiServiceFailureMarksJobFailed()
     {
         await using var dbContext = CreateDbContext();
@@ -385,6 +511,8 @@ public class VideoProcessingServiceTests
 
     private sealed class FakeAiInferenceClient : IAiInferenceClient
     {
+        public int VideoAnalyzeCalls { get; private set; }
+
         public Task<AiAnalyzeFramesResponse> AnalyzeFramesAsync(
             AiAnalyzeFramesRequest request,
             CancellationToken cancellationToken = default)
@@ -421,6 +549,7 @@ public class VideoProcessingServiceTests
             AiAnalyzeVideoRequest request,
             CancellationToken cancellationToken = default)
         {
+            VideoAnalyzeCalls++;
             return AnalyzeFramesAsync(
                 new AiAnalyzeFramesRequest(request.VideoId, request.JobId, request.Frames),
                 cancellationToken);

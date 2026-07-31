@@ -61,6 +61,18 @@ public static class DependencyInjection
                 }));
 
         services.Configure<JwtOptions>(configuration.GetSection(JwtOptions.SectionName));
+        services.Configure<PasswordResetOptions>(configuration.GetSection(PasswordResetOptions.SectionName));
+        services.PostConfigure<PasswordResetOptions>(options =>
+        {
+            var smtpPassword = Environment.GetEnvironmentVariable("PasswordReset__Password")
+                ?? Environment.GetEnvironmentVariable("GMAIL_APP_PASSWORD")
+                ?? Environment.GetEnvironmentVariable("SMTP_PASSWORD");
+            if (!string.IsNullOrWhiteSpace(smtpPassword))
+            {
+                options.Password = smtpPassword;
+                options.SmtpPassword = smtpPassword;
+            }
+        });
         services.AddOptions<VideoUploadOptions>()
             .Bind(configuration.GetSection(VideoUploadOptions.SectionName))
             .Validate(options => options.MaxFileSizeBytes == 524_288_000, "VideoUpload:MaxFileSizeBytes must be 524288000.")
@@ -72,6 +84,7 @@ public static class DependencyInjection
             .Validate(options => options.SmartScanClipDurationSeconds > 0, "Smart scan clip duration must be positive.")
             .Validate(options => options.MaxSegmentCount is >= 1 and <= 100, "Max segment count must be 1-100.")
             .Validate(options => options.SegmentConcurrency is >= 1 and <= 8, "Segment concurrency must be 1-8.")
+            .Validate(options => options.MaxConcurrentProviderRequests is >= 1 and <= 32, "Max concurrent provider requests must be 1-32.")
             .Validate(options => options.MinimumRequiredCoverageRatio is > 0 and <= 1, "Minimum coverage ratio must be between 0 and 1.")
             .ValidateOnStart();
         services.Configure<AiServiceOptions>(configuration.GetSection(AiServiceOptions.SectionName));
@@ -95,11 +108,23 @@ public static class DependencyInjection
         services.Configure<ScoringOptions>(configuration.GetSection(ScoringOptions.SectionName));
         services.Configure<InternalMatchingOptions>(configuration.GetSection(InternalMatchingOptions.SectionName));
         services.Configure<LocalStorageOptions>(configuration.GetSection(LocalStorageOptions.SectionName));
-        services.AddHttpClient("AiService");
+        services.AddHttpClient("AiService", (serviceProvider, client) =>
+            {
+                var aiOptions = serviceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<AiServiceOptions>>().Value;
+                client.BaseAddress = new Uri(aiOptions.BaseUrl.TrimEnd('/') + "/");
+                client.Timeout = TimeSpan.FromSeconds(Math.Clamp(aiOptions.TimeoutSeconds, 1, 600));
+                if (!string.IsNullOrWhiteSpace(aiOptions.ApiKey))
+                {
+                    client.DefaultRequestHeaders.Add("X-AI-Service-Key", aiOptions.ApiKey);
+                }
+            })
+            .SetHandlerLifetime(TimeSpan.FromMinutes(10));
 
         services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<IJwtTokenService, JwtTokenService>();
         services.AddScoped<IPasswordHasher, PasswordHasher>();
+        services.AddScoped<IPasswordResetEmailSender, SmtpAuthEmailSender>();
+        services.AddScoped<IEmailConfirmationSender, SmtpAuthEmailSender>();
         services.AddScoped<IObjectStorageService, LocalObjectStorageService>();
         services.AddScoped<IVideoService, VideoService>();
         services.AddScoped<IJobService, JobService>();
@@ -112,6 +137,7 @@ public static class DependencyInjection
         services.AddScoped<IFfmpegToolLocator, FfmpegToolLocator>();
         services.AddScoped<IVideoProcessingToolValidator, VideoProcessingToolValidator>();
         services.AddScoped<IAiInferenceClient, PythonAiInferenceClient>();
+        services.AddSingleton<IProviderRequestGate, ProviderRequestGate>();
         services.AddScoped<IFinalScoringService, FinalScoringService>();
         services.AddScoped<IEvidenceGenerationService, EvidenceGenerationService>();
         services.AddScoped<IPerceptualHashProvider, PlaceholderPerceptualHashProvider>();
