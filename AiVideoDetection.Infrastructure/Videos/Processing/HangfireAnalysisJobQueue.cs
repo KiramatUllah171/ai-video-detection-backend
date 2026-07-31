@@ -16,4 +16,9 @@ public class HangfireAnalysisJobQueue(IBackgroundJobClient backgroundJobClient) 
     {
         return EnqueueAnalysisJob(jobId);
     }
+
+    public string ResumeAnalysisJob(long jobId)
+    {
+        return EnqueueAnalysisJob(jobId);
+    }
 }

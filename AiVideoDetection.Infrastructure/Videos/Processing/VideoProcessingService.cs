@@ -55,6 +55,12 @@ public class VideoProcessingService(
             return;
         }
 
+        if (job.Status == JobStatus.Paused)
+        {
+            logger.LogInformation("Analysis job {JobId} is paused. Skipping until the user resumes it.", jobId);
+            return;
+        }
+
         if (job.Status == JobStatus.Processing
             && job.UpdatedAt > DateTimeOffset.UtcNow.AddMinutes(-10))
         {
@@ -72,21 +78,23 @@ public class VideoProcessingService(
 
         try
         {
+            await CheckForPauseOrCancellationAsync(job, "Before starting analysis", cancellationToken);
             await StartProcessingAsync(job, cancellationToken);
 
             Directory.CreateDirectory(workDirectory);
             var sourcePath = Path.Combine(workDirectory, $"source{job.Video.FileExtension ?? ".video"}");
 
-            await ThrowIfCancellationRequestedAsync(job, cancellationToken);
+            await CheckForPauseOrCancellationAsync(job, "Before preparing source video", cancellationToken);
             await UpdateProgressAsync(job, 10, "Preparing video", cancellationToken);
             await objectStorageService.DownloadToAsync(job.Video.FileUrl, sourcePath, cancellationToken);
             await jobLogService.LogAsync(job.Id, "PreparingVideo", "Information", "Source video prepared for processing.", null, cancellationToken);
 
             var input = new VideoProcessingInput(job.Id, job.VideoId, sourcePath, workDirectory, job.Video.DurationSeconds);
 
-            await ThrowIfCancellationRequestedAsync(job, cancellationToken);
+            await CheckForPauseOrCancellationAsync(job, "Before metadata extraction", cancellationToken);
             await UpdateProgressAsync(job, 18, "Preparing video", cancellationToken);
             var metadata = await metadataExtractionService.ExtractMetadataAsync(input, cancellationToken);
+            await CheckForPauseOrCancellationAsync(job, "After metadata extraction", cancellationToken);
             await SaveMetadataAsync(job.Video, metadata, cancellationToken);
             await jobLogService.LogAsync(job.Id, "MetadataExtraction", "Information", "Video metadata extracted.", new
             {
@@ -101,19 +109,24 @@ public class VideoProcessingService(
 
             ValidateMetadata(metadata);
 
-            await ThrowIfCancellationRequestedAsync(job, cancellationToken);
+            await CheckForPauseOrCancellationAsync(job, "Before thumbnail generation", cancellationToken);
             await UpdateProgressAsync(job, 22, "Preparing video", cancellationToken);
             var thumbnail = await frameExtractionService.GenerateThumbnailAsync(input, cancellationToken);
+            await CheckForPauseOrCancellationAsync(job, "After thumbnail generation", cancellationToken);
             await UploadThumbnailAsync(job.Video, thumbnail, cancellationToken);
             await jobLogService.LogAsync(job.Id, "ThumbnailGeneration", "Information", "Video thumbnail generated.", new
             {
                 thumbnail.TimestampSeconds
             }, cancellationToken);
 
+            await CheckForPauseOrCancellationAsync(job, "Before frame extraction", cancellationToken);
             var frames = await frameExtractionService.ExtractFramesAsync(input, cancellationToken);
+            await CheckForPauseOrCancellationAsync(job, "After frame extraction", cancellationToken);
             await UploadFramesAsync(job.VideoId, frames, metadata.Resolution, cancellationToken);
 
+            await CheckForPauseOrCancellationAsync(job, "Before scan segment planning", cancellationToken);
             var segments = await GetOrCreateSegmentsAsync(job, input.DurationSeconds!.Value, cancellationToken);
+            await CheckForPauseOrCancellationAsync(job, "After scan segment planning", cancellationToken);
             await jobLogService.LogAsync(job.Id, "SmartScanPlanned", "Information", "Smart Scan timeline plan created.", new
             {
                 segmentCount = segments.Count,
@@ -122,8 +135,10 @@ public class VideoProcessingService(
             }, cancellationToken);
 
             await ProcessSegmentsAsync(job, segments, sourcePath, workDirectory, cancellationToken);
+            await CheckForPauseOrCancellationAsync(job, "After scan segments", cancellationToken);
             var aiResponse = BuildAggregateResponse(job, segments);
 
+            await CheckForPauseOrCancellationAsync(job, "Before final score calculation", cancellationToken);
             var metadataWarnings = ParseMetadataWarnings(await dbContext.MetadataResults
                 .AsNoTracking()
                 .Where(result => result.VideoId == job.VideoId)
@@ -152,6 +167,7 @@ public class VideoProcessingService(
                     null,
                     null,
                     aiResponse.FrameReliabilityScore));
+            await CheckForPauseOrCancellationAsync(job, "After final score calculation", cancellationToken);
             await UpdateProgressAsync(job, 92, "Generating final result", cancellationToken);
             await jobLogService.LogAsync(job.Id, "ScoringCompleted", "Information", "Final scoring completed.", new
             {
@@ -160,8 +176,10 @@ public class VideoProcessingService(
                 label = scoringResult.Label.ToString()
             }, cancellationToken);
 
+            await CheckForPauseOrCancellationAsync(job, "Before saving AI result", cancellationToken);
             var aiResult = await SaveAiResultAsync(job.VideoId, aiResponse, scoringResult, cancellationToken);
             await UpdateProgressAsync(job, 96, "Generating final result", cancellationToken);
+            await CheckForPauseOrCancellationAsync(job, "Before evidence generation", cancellationToken);
             var evidenceItems = evidenceGenerationService.GenerateEvidence(new EvidenceGenerationInput(
                 aiResponse.ModelVersion,
                 aiResponse.Frames,
@@ -170,6 +188,7 @@ public class VideoProcessingService(
                 scoringResult,
                 aiResponse.ModelDisagreement,
                 aiResponse.StrongFrameEvidence));
+            await CheckForPauseOrCancellationAsync(job, "After evidence generation", cancellationToken);
             await ReplaceEvidenceItemsAsync(aiResult, evidenceItems, cancellationToken);
             await jobLogService.LogAsync(job.Id, "EvidenceGenerated", "Information", "Evidence items generated.", new
             {
@@ -178,7 +197,7 @@ public class VideoProcessingService(
 
             await RunInternalMatchingAsync(job, cancellationToken);
 
-            await ThrowIfCancellationRequestedAsync(job, cancellationToken);
+            await CheckForPauseOrCancellationAsync(job, "Before marking completed", cancellationToken);
             job.Status = JobStatus.Completed;
             job.Progress = 100;
             job.CurrentStep = CompletedStep;
@@ -189,6 +208,11 @@ public class VideoProcessingService(
             await dbContext.SaveChangesAsync(cancellationToken);
 
             await jobLogService.LogAsync(job.Id, "Completed", "Information", CompletedStep, null, cancellationToken);
+        }
+        catch (AnalysisPausedException exception)
+        {
+            logger.LogInformation(exception, "Analysis job {JobId} paused at checkpoint {Checkpoint}.", job.Id, job.LastCheckpoint);
+            return;
         }
         catch (ProcessingException exception)
         {
@@ -321,9 +345,11 @@ public class VideoProcessingService(
         string workDirectory,
         CancellationToken cancellationToken)
     {
+        await CheckForPauseOrCancellationAsync(job, "Before resolving provider mode", cancellationToken);
         var providerMode = await ResolveProviderModeAsync(job, cancellationToken);
         foreach (var segment in segments.Where(segment => segment.Status != AnalysisSegmentStatus.Completed))
         {
+            await CheckForPauseOrCancellationAsync(job, $"Before analyzing part {segment.SegmentIndex} of {segments.Count}", cancellationToken);
             await ProcessSegmentAsync(job, segment, sourcePath, workDirectory, providerMode, cancellationToken);
         }
         var refreshed = await dbContext.AnalysisSegments
@@ -345,9 +371,8 @@ public class VideoProcessingService(
         string providerMode,
         CancellationToken cancellationToken)
     {
-        await ThrowIfCancellationRequestedAsync(job, cancellationToken);
+        await CheckForPauseOrCancellationAsync(job, $"Before preparing part {segment.SegmentIndex} of {job.TotalSegments}", cancellationToken);
         segment.Status = AnalysisSegmentStatus.Preparing;
-        segment.AttemptCount++;
         segment.StartedAt ??= DateTimeOffset.UtcNow;
         segment.LastActivityAt = DateTimeOffset.UtcNow;
         await dbContext.SaveChangesAsync(cancellationToken);
@@ -357,16 +382,21 @@ public class VideoProcessingService(
         var clipPath = Path.Combine(segmentDirectory, $"segment_{segment.SegmentIndex:000}.mp4");
         try
         {
+            await CheckForPauseOrCancellationAsync(job, $"Before extracting part {segment.SegmentIndex} of {job.TotalSegments}", cancellationToken);
             await ExtractSegmentClipAsync(sourcePath, clipPath, segment.StartTime, segment.Duration, cancellationToken);
+            await CheckForPauseOrCancellationAsync(job, $"After extracting part {segment.SegmentIndex} of {job.TotalSegments}", cancellationToken);
             segment.LocalTemporaryPath = clipPath;
             segment.Status = AnalysisSegmentStatus.Analyzing;
             segment.Progress = 50;
             segment.LastActivityAt = DateTimeOffset.UtcNow;
             await dbContext.SaveChangesAsync(cancellationToken);
 
-            await ThrowIfCancellationRequestedAsync(job, cancellationToken);
+            await CheckForPauseOrCancellationAsync(job, $"Before provider request for part {segment.SegmentIndex} of {job.TotalSegments}", cancellationToken);
+            segment.AttemptCount++;
+            segment.LastActivityAt = DateTimeOffset.UtcNow;
+            await dbContext.SaveChangesAsync(cancellationToken);
             var response = await aiInferenceClient.AnalyzeVideoAsync(
-                new AiAnalyzeVideoRequest(job.VideoId, job.Id, job.Video.UserId, providerMode, clipPath, []),
+                new AiAnalyzeVideoRequest(job.VideoId, job.Id, job.Video.UserId, providerMode, clipPath, [], segment.SegmentIndex, segment.AttemptCount),
                 cancellationToken);
 
             segment.AiScore = response.OverallAiScore;
@@ -379,6 +409,7 @@ public class VideoProcessingService(
             segment.LastActivityAt = DateTimeOffset.UtcNow;
             await dbContext.SaveChangesAsync(cancellationToken);
             await UpdateSegmentProgressAsync(job.Id, cancellationToken);
+            await CheckForPauseOrCancellationAsync(job, $"After provider response for part {segment.SegmentIndex} of {job.TotalSegments}", cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -498,18 +529,78 @@ public class VideoProcessingService(
         await dbContext.SaveChangesAsync(cancellationToken);
     }
 
-    private async Task ThrowIfCancellationRequestedAsync(AnalysisJob job, CancellationToken cancellationToken)
+    private async Task CheckForPauseOrCancellationAsync(
+        AnalysisJob job,
+        string checkpoint,
+        CancellationToken cancellationToken)
+    {
+        await dbContext.Entry(job).ReloadAsync(cancellationToken);
+        job.LastCheckpoint = checkpoint;
+        job.LastActivityAt = DateTimeOffset.UtcNow;
+
+        if (job.CancelRequested || job.Status == JobStatus.CancelRequested)
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+            throw new ProcessingException("CANCELLED", "Analysis was cancelled.");
+        }
+
+        if (job.PauseRequested || job.Status == JobStatus.PauseRequested)
+        {
+            await MarkPausedAsync(job, checkpoint, cancellationToken);
+            throw new AnalysisPausedException("Analysis paused.");
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task MarkPausedAsync(AnalysisJob job, string checkpoint, CancellationToken cancellationToken)
     {
         await dbContext.Entry(job).ReloadAsync(cancellationToken);
         if (job.CancelRequested || job.Status == JobStatus.CancelRequested)
         {
             throw new ProcessingException("CANCELLED", "Analysis was cancelled.");
         }
+
+        var now = DateTimeOffset.UtcNow;
+        job.Status = JobStatus.Paused;
+        job.PauseRequested = false;
+        job.PausedAt ??= now;
+        job.PausedFromStage = checkpoint;
+        job.LastCheckpoint = checkpoint;
+        job.CurrentStep = BuildPausedCurrentStep(job, checkpoint);
+        job.LastActivityAt = now;
+        job.ResumeBackgroundJobId = null;
+        if (job.Video is not null)
+        {
+            job.Video.Status = VideoStatus.Queued;
+        }
+
+        var activeSegments = await dbContext.AnalysisSegments
+            .Where(segment => segment.AnalysisJobId == job.Id
+                && (segment.Status == AnalysisSegmentStatus.Preparing || segment.Status == AnalysisSegmentStatus.Analyzing))
+            .ToListAsync(cancellationToken);
+        foreach (var segment in activeSegments)
+        {
+            segment.Status = AnalysisSegmentStatus.Pending;
+            segment.Progress = Math.Clamp(segment.Progress, 0, 50);
+            segment.LastActivityAt = now;
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+        logger.LogInformation(
+            "Analysis job {JobId} video {VideoId} reached safe pause checkpoint {Checkpoint}.",
+            job.Id,
+            job.VideoId,
+            checkpoint);
+        await jobLogService.LogAsync(job.Id, "Paused", "Information", "Analysis paused at a safe checkpoint.", new { checkpoint }, cancellationToken);
     }
 
     private async Task MarkCancelledAsync(AnalysisJob job, CancellationToken cancellationToken)
     {
         job.Status = JobStatus.Cancelled;
+        job.PauseRequested = false;
+        job.PauseRequestedAt = null;
+        job.ResumeBackgroundJobId = null;
         job.CurrentStep = "Analysis cancelled";
         job.CompletedAt = DateTimeOffset.UtcNow;
         job.LastActivityAt = DateTimeOffset.UtcNow;
@@ -536,6 +627,16 @@ public class VideoProcessingService(
         segment.Status = AnalysisSegmentStatus.Cancelled;
         segment.LastActivityAt = DateTimeOffset.UtcNow;
         await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    private static string BuildPausedCurrentStep(AnalysisJob job, string checkpoint)
+    {
+        if (!string.IsNullOrWhiteSpace(job.ScanMode) && job.TotalSegments > 0)
+        {
+            return $"Paused during {job.ScanMode.ToLowerInvariant()}";
+        }
+
+        return $"Paused at {checkpoint.ToLowerInvariant()}";
     }
 
     private static void ValidateMetadata(ExtractedMetadataResult metadata)
@@ -594,17 +695,21 @@ public class VideoProcessingService(
 
         try
         {
+            await CheckForPauseOrCancellationAsync(job, "Before internal frame matching", cancellationToken);
             await UpdateProgressAsync(job, 92, "Generating frame hashes", cancellationToken);
             await jobLogService.LogAsync(job.Id, "FrameHashGenerationStarted", "Information", "Frame hash generation started.", null, cancellationToken);
             var hashes = await frameHashService.GenerateHashesForVideoAsync(job.VideoId, cancellationToken);
+            await CheckForPauseOrCancellationAsync(job, "After frame hash generation", cancellationToken);
             await jobLogService.LogAsync(job.Id, "FrameHashGenerationCompleted", "Information", "Frame hash generation completed.", new
             {
                 hashCount = hashes.Count
             }, cancellationToken);
 
+            await CheckForPauseOrCancellationAsync(job, "Before internal video matching", cancellationToken);
             await UpdateProgressAsync(job, 96, "Checking internal video matches", cancellationToken);
             await jobLogService.LogAsync(job.Id, "InternalMatchingStarted", "Information", "Internal video matching started.", null, cancellationToken);
             var matches = await internalVideoMatchingService.MatchVideoAsync(job.VideoId, cancellationToken);
+            await CheckForPauseOrCancellationAsync(job, "After internal video matching", cancellationToken);
             await jobLogService.LogAsync(
                 job.Id,
                 matches.Count == 0 ? "InternalMatchingNoMatches" : "InternalMatchingCompleted",
@@ -613,7 +718,7 @@ public class VideoProcessingService(
                 new { matchCount = matches.Count },
                 cancellationToken);
         }
-        catch (Exception exception) when (!_internalMatchingOptions.FailJobOnMatchingError)
+        catch (Exception exception) when (exception is not AnalysisPausedException and not ProcessingException && !_internalMatchingOptions.FailJobOnMatchingError)
         {
             logger.LogWarning(exception, "Internal matching failed for analysis job {JobId}, but the job will continue.", job.Id);
             await jobLogService.LogAsync(
@@ -624,7 +729,7 @@ public class VideoProcessingService(
                 new { errorCode = "INTERNAL_MATCHING_FAILED" },
                 cancellationToken);
         }
-        catch (Exception exception)
+        catch (Exception exception) when (exception is not AnalysisPausedException and not ProcessingException)
         {
             logger.LogError(exception, "Internal matching failed for analysis job {JobId}.", job.Id);
             await MarkFailedAsync(
@@ -1137,20 +1242,24 @@ public class VideoProcessingService(
 
     private async Task StartProcessingAsync(AnalysisJob job, CancellationToken cancellationToken)
     {
+        var isResuming = job.Status == JobStatus.ResumeRequested || job.PausedAt is not null || job.Progress > 0;
         job.Status = JobStatus.Processing;
-        job.Progress = 5;
-        job.CurrentStep = "Preparing video for processing";
+        job.Progress = isResuming ? Math.Max(job.Progress, 5) : 5;
+        job.CurrentStep = isResuming ? "Resuming analysis" : "Preparing video for processing";
         job.StartedAt ??= DateTimeOffset.UtcNow;
         job.CompletedAt = null;
         job.FailedAt = null;
         job.FailedStage = null;
         job.ErrorCode = null;
         job.ErrorMessage = null;
+        job.PauseRequested = false;
+        job.PauseRequestedAt = null;
+        job.ResumeBackgroundJobId = null;
         job.LastActivityAt = DateTimeOffset.UtcNow;
         job.Video.Status = VideoStatus.Processing;
 
         await dbContext.SaveChangesAsync(cancellationToken);
-        await jobLogService.LogAsync(job.Id, "PreparingVideo", "Information", "Analysis job started.", null, cancellationToken);
+        await jobLogService.LogAsync(job.Id, isResuming ? "ProcessingResumed" : "PreparingVideo", "Information", isResuming ? "Analysis processing resumed." : "Analysis job started.", null, cancellationToken);
     }
 
     private async Task UpdateProgressAsync(

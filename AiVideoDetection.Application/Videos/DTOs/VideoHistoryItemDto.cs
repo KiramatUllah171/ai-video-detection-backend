@@ -22,5 +22,9 @@ public class VideoHistoryItemDto
 
     public int? LatestJobProgress { get; init; }
 
+    public DateTimeOffset? LatestJobUpdatedAt { get; init; }
+
+    public bool CanRetry { get; init; }
+
     public string? CurrentStep { get; init; }
 }

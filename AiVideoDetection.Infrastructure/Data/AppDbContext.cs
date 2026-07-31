@@ -13,6 +13,10 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
 
+    public DbSet<PasswordResetToken> PasswordResetTokens => Set<PasswordResetToken>();
+
+    public DbSet<EmailConfirmationToken> EmailConfirmationTokens => Set<EmailConfirmationToken>();
+
     public DbSet<Video> Videos => Set<Video>();
 
     public DbSet<AnalysisJob> AnalysisJobs => Set<AnalysisJob>();
@@ -78,6 +82,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
         ConfigureUser(modelBuilder);
         ConfigureRefreshToken(modelBuilder);
+        ConfigurePasswordResetToken(modelBuilder);
+        ConfigureEmailConfirmationToken(modelBuilder);
         ConfigureVideo(modelBuilder);
         ConfigureAnalysisJob(modelBuilder);
         ConfigureAnalysisSegment(modelBuilder);
@@ -119,6 +125,22 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         }
 
         foreach (var entry in ChangeTracker.Entries<RefreshToken>())
+        {
+            if (entry.State == EntityState.Added && entry.Entity.CreatedAt == default)
+            {
+                entry.Entity.CreatedAt = now;
+            }
+        }
+
+        foreach (var entry in ChangeTracker.Entries<PasswordResetToken>())
+        {
+            if (entry.State == EntityState.Added && entry.Entity.CreatedAt == default)
+            {
+                entry.Entity.CreatedAt = now;
+            }
+        }
+
+        foreach (var entry in ChangeTracker.Entries<EmailConfirmationToken>())
         {
             if (entry.State == EntityState.Added && entry.Entity.CreatedAt == default)
             {
@@ -387,6 +409,100 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         });
     }
 
+    private static void ConfigurePasswordResetToken(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<PasswordResetToken>(entity =>
+        {
+            entity.ToTable("password_reset_tokens");
+
+            entity.HasKey(token => token.Id);
+
+            entity.Property(token => token.Id)
+                .HasColumnName("id")
+                .UseIdentityByDefaultColumn();
+
+            entity.Property(token => token.UserId)
+                .HasColumnName("user_id")
+                .IsRequired();
+
+            entity.Property(token => token.TokenHash)
+                .HasColumnName("token_hash")
+                .IsRequired();
+
+            entity.Property(token => token.ExpiresAt)
+                .HasColumnName("expires_at")
+                .IsRequired();
+
+            entity.Property(token => token.UsedAt)
+                .HasColumnName("used_at");
+
+            entity.Property(token => token.CreatedAt)
+                .HasColumnName("created_at")
+                .HasDefaultValueSql("NOW()")
+                .IsRequired();
+
+            entity.HasOne(token => token.User)
+                .WithMany(user => user.PasswordResetTokens)
+                .HasForeignKey(token => token.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasIndex(token => token.TokenHash)
+                .IsUnique()
+                .HasDatabaseName("ux_password_reset_tokens_token_hash");
+
+            entity.HasIndex(token => new { token.UserId, token.CreatedAt })
+                .IsDescending(false, true)
+                .HasDatabaseName("ix_password_reset_tokens_user_created");
+        });
+    }
+
+    private static void ConfigureEmailConfirmationToken(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<EmailConfirmationToken>(entity =>
+        {
+            entity.ToTable("email_confirmation_tokens");
+
+            entity.HasKey(token => token.Id);
+
+            entity.Property(token => token.Id)
+                .HasColumnName("id")
+                .UseIdentityByDefaultColumn();
+
+            entity.Property(token => token.UserId)
+                .HasColumnName("user_id")
+                .IsRequired();
+
+            entity.Property(token => token.TokenHash)
+                .HasColumnName("token_hash")
+                .IsRequired();
+
+            entity.Property(token => token.ExpiresAt)
+                .HasColumnName("expires_at")
+                .IsRequired();
+
+            entity.Property(token => token.UsedAt)
+                .HasColumnName("used_at");
+
+            entity.Property(token => token.CreatedAt)
+                .HasColumnName("created_at")
+                .HasDefaultValueSql("NOW()")
+                .IsRequired();
+
+            entity.HasOne(token => token.User)
+                .WithMany(user => user.EmailConfirmationTokens)
+                .HasForeignKey(token => token.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasIndex(token => token.TokenHash)
+                .IsUnique()
+                .HasDatabaseName("ux_email_confirmation_tokens_token_hash");
+
+            entity.HasIndex(token => new { token.UserId, token.CreatedAt })
+                .IsDescending(false, true)
+                .HasDatabaseName("ix_email_confirmation_tokens_user_created");
+        });
+    }
+
     private static void ConfigureVideo(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<Video>(entity =>
@@ -534,6 +650,32 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
             entity.Property(job => job.CancelRequestedAt)
                 .HasColumnName("cancel_requested_at");
+
+            entity.Property(job => job.PauseRequested)
+                .HasColumnName("pause_requested")
+                .HasDefaultValue(false)
+                .IsRequired();
+
+            entity.Property(job => job.PauseRequestedAt)
+                .HasColumnName("pause_requested_at");
+
+            entity.Property(job => job.PausedAt)
+                .HasColumnName("paused_at");
+
+            entity.Property(job => job.ResumedAt)
+                .HasColumnName("resumed_at");
+
+            entity.Property(job => job.PausedFromStage)
+                .HasColumnName("paused_from_stage")
+                .HasMaxLength(200);
+
+            entity.Property(job => job.LastCheckpoint)
+                .HasColumnName("last_checkpoint")
+                .HasMaxLength(200);
+
+            entity.Property(job => job.ResumeBackgroundJobId)
+                .HasColumnName("resume_background_job_id")
+                .HasMaxLength(100);
 
             entity.Property(job => job.ScanMode)
                 .HasColumnName("scan_mode")

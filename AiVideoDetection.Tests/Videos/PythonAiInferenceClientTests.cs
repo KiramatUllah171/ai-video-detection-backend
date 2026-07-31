@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using AiVideoDetection.Application.Videos.Ai;
+using AiVideoDetection.Application.Videos.Interfaces;
 using AiVideoDetection.Application.Videos.Options;
 using AiVideoDetection.Infrastructure.Videos.Ai;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -112,6 +113,45 @@ public class PythonAiInferenceClientTests
     }
 
     [Fact]
+    public async Task AnalyzeVideoRetriesTransientProviderFailures()
+    {
+        var handler = new SequenceResponseHandler(
+            new HttpResponseMessage(HttpStatusCode.TooManyRequests)
+            {
+                Content = JsonContent("""{"success":false,"error_code":"BITMIND_RATE_LIMITED","message":"busy"}""")
+            },
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent("""
+                {
+                  "video_id": 123,
+                  "job_id": 456,
+                  "model_version": "bitmind-oracle-v1-sn34",
+                  "overall_ai_score": 0.60,
+                  "real_probability": 0.40,
+                  "overall_confidence": 0.70,
+                  "label_hint": "Suspicious",
+                  "frames": [],
+                  "notes": [],
+                  "provider": "BitMind",
+                  "provider_mode": "bitmind"
+                }
+                """)
+            });
+        var client = CreateClient(handler, new AiServiceOptions
+        {
+            BaseUrl = "http://localhost:8000",
+            TransientRetryCount = 1,
+            TransientRetryBackoffSeconds = 1
+        });
+
+        var response = await client.AnalyzeVideoAsync(new AiAnalyzeVideoRequest(123, 456, 7, "bitmind", "source.mp4", [], 2, 1));
+
+        Assert.Equal("BitMind", response.Provider);
+        Assert.Equal(2, handler.CallCount);
+    }
+
+    [Fact]
     public async Task SendsConfiguredAiServiceApiKeyHeader()
     {
         var handler = new StaticResponseHandler(new HttpResponseMessage(HttpStatusCode.OK)
@@ -155,6 +195,16 @@ public class PythonAiInferenceClientTests
         return new PythonAiInferenceClient(
             new FakeHttpClientFactory(new HttpClient(handler)),
             Options.Create(options),
+            new FakeProviderRequestGate(),
+            NullLogger<PythonAiInferenceClient>.Instance);
+    }
+
+    private static PythonAiInferenceClient CreateClient(HttpMessageHandler handler, AiServiceOptions options)
+    {
+        return new PythonAiInferenceClient(
+            new FakeHttpClientFactory(new HttpClient(handler)),
+            Options.Create(options),
+            new FakeProviderRequestGate(),
             NullLogger<PythonAiInferenceClient>.Instance);
     }
 
@@ -179,6 +229,28 @@ public class PythonAiInferenceClientTests
         }
     }
 
+    private sealed class FakeProviderRequestGate : IProviderRequestGate
+    {
+        public Task<IAsyncDisposable> EnterAsync(
+            long videoId,
+            long jobId,
+            int? segmentIndex,
+            int? segmentAttempt,
+            string providerMode,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<IAsyncDisposable>(new Releaser());
+        }
+
+        private sealed class Releaser : IAsyncDisposable
+        {
+            public ValueTask DisposeAsync()
+            {
+                return ValueTask.CompletedTask;
+            }
+        }
+    }
+
     private sealed class StaticResponseHandler(HttpResponseMessage response) : HttpMessageHandler
     {
         public HttpRequestMessage? LastRequest { get; private set; }
@@ -189,6 +261,22 @@ public class PythonAiInferenceClientTests
         {
             LastRequest = request;
             return Task.FromResult(response);
+        }
+    }
+
+    private sealed class SequenceResponseHandler(params HttpResponseMessage[] responses) : HttpMessageHandler
+    {
+        private int _index;
+
+        public int CallCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            CallCount++;
+            var index = Math.Min(_index++, responses.Length - 1);
+            return Task.FromResult(responses[index]);
         }
     }
 }

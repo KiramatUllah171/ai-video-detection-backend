@@ -1,7 +1,9 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using AiVideoDetection.Application.Videos.Ai;
 using AiVideoDetection.Application.Videos.Interfaces;
 using AiVideoDetection.Application.Videos.Options;
@@ -13,9 +15,13 @@ namespace AiVideoDetection.Infrastructure.Videos.Ai;
 public class PythonAiInferenceClient(
     IHttpClientFactory httpClientFactory,
     IOptions<AiServiceOptions> options,
+    IProviderRequestGate providerRequestGate,
     ILogger<PythonAiInferenceClient> logger) : IAiInferenceClient
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly Regex SensitiveFieldRegex = new(
+        "(\"(?:api[_-]?key|access[_-]?token|token|authorization|secret)\"\\s*:\\s*\")[^\"]+\"",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private readonly AiServiceOptions _options = options.Value;
 
     public async Task<AiAnalyzeFramesResponse> AnalyzeFramesAsync(
@@ -115,55 +121,128 @@ public class PythonAiInferenceClient(
                     frame.ImageBase64))
                 .ToList());
 
-        try
+        var maxAttempts = Math.Max(1, _options.TransientRetryCount + 1);
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
-            logger.LogInformation(
-                "Calling AI service endpoint {Endpoint} using provider mode {ProviderMode} for video {VideoId} job {JobId}.",
-                _options.AnalyzeVideoPath,
-                request.ProviderMode,
+            await using var lease = await providerRequestGate.EnterAsync(
                 request.VideoId,
-                request.JobId);
-            using var response = await client.PostAsJsonAsync(_options.AnalyzeVideoPath, payload, JsonOptions, cancellationToken);
-            if (!response.IsSuccessStatusCode)
+                request.JobId,
+                request.SegmentIndex,
+                request.SegmentAttempt,
+                request.ProviderMode,
+                cancellationToken);
+            var started = Stopwatch.GetTimestamp();
+            try
             {
-                var errorJson = await response.Content.ReadAsStringAsync(cancellationToken);
-                var errorResponse = TryDeserializeError(errorJson);
-                logger.LogWarning(
-                    "AI video service returned non-success status {StatusCode} with error {ErrorCode} for video {VideoId} job {JobId}.",
-                    response.StatusCode,
-                    errorResponse?.ErrorCode,
+                logger.LogInformation(
+                    "Calling AI service endpoint {Endpoint} using provider mode {ProviderMode} for video {VideoId} job {JobId} segment {SegmentIndex} provider attempt {ProviderAttempt}/{MaxProviderAttempts}.",
+                    _options.AnalyzeVideoPath,
+                    request.ProviderMode,
                     request.VideoId,
-                    request.JobId);
-                throw new AiServiceException(
-                    errorResponse?.ErrorCode ?? (response.StatusCode == HttpStatusCode.Unauthorized ? "AI_SERVICE_UNAUTHORIZED" : "AI_VIDEO_SERVICE_UNAVAILABLE"),
-                    errorResponse is null
-                        ? response.StatusCode == HttpStatusCode.Unauthorized
-                            ? "AI analysis service is not accepting backend requests."
-                            : "AI video analysis service is currently unavailable."
-                        : SafeMessage(errorResponse.ErrorCode, errorResponse.Message));
-            }
+                    request.JobId,
+                    request.SegmentIndex,
+                    attempt,
+                    maxAttempts);
+                using var response = await client.PostAsJsonAsync(_options.AnalyzeVideoPath, payload, JsonOptions, cancellationToken);
+                var elapsedMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+                if (!response.IsSuccessStatusCode)
+                {
+                    var errorJson = await response.Content.ReadAsStringAsync(cancellationToken);
+                    var errorResponse = TryDeserializeError(errorJson);
+                    var errorCode = MapVideoServiceErrorCode(response.StatusCode, errorResponse?.ErrorCode);
+                    logger.LogWarning(
+                        "AI video service returned non-success status {StatusCode} with error {ErrorCode} for video {VideoId} job {JobId} segment {SegmentIndex} segment attempt {SegmentAttempt} provider attempt {ProviderAttempt}/{MaxProviderAttempts} after {ElapsedMilliseconds} ms. Response summary: {ResponseSummary}",
+                        (int)response.StatusCode,
+                        errorCode,
+                        request.VideoId,
+                        request.JobId,
+                        request.SegmentIndex,
+                        request.SegmentAttempt,
+                        attempt,
+                        maxAttempts,
+                        Math.Round(elapsedMs),
+                        SummarizeProviderError(errorJson));
 
-            var rawJson = await response.Content.ReadAsStringAsync(cancellationToken);
-            var serviceResponse = JsonSerializer.Deserialize<AnalyzeFramesHttpResponse>(rawJson, JsonOptions);
-            if (serviceResponse is null)
+                    if (IsTransientStatusCode(response.StatusCode) && attempt < maxAttempts)
+                    {
+                        await DelayBeforeRetryAsync(response, attempt, cancellationToken);
+                        continue;
+                    }
+
+                    throw new AiServiceException(
+                        errorCode,
+                        errorResponse is null
+                            ? SafeMessage(errorCode, string.Empty)
+                            : SafeMessage(errorResponse.ErrorCode, errorResponse.Message));
+                }
+
+                var rawJson = await response.Content.ReadAsStringAsync(cancellationToken);
+                var serviceResponse = JsonSerializer.Deserialize<AnalyzeFramesHttpResponse>(rawJson, JsonOptions);
+                if (serviceResponse is null)
+                {
+                    throw new AiServiceException("AI_SERVICE_INVALID_RESPONSE", "AI analysis service returned an invalid response.");
+                }
+
+                logger.LogInformation(
+                    "AI video service completed for video {VideoId} job {JobId} segment {SegmentIndex} segment attempt {SegmentAttempt} provider attempt {ProviderAttempt}/{MaxProviderAttempts} in {ElapsedMilliseconds} ms.",
+                    request.VideoId,
+                    request.JobId,
+                    request.SegmentIndex,
+                    request.SegmentAttempt,
+                    attempt,
+                    maxAttempts,
+                    Math.Round(elapsedMs));
+                return serviceResponse.ToApplicationResponse(rawJson);
+            }
+            catch (TaskCanceledException exception) when (!cancellationToken.IsCancellationRequested)
             {
-                throw new AiServiceException("AI_SERVICE_INVALID_RESPONSE", "AI analysis service returned an invalid response.");
-            }
+                var elapsedMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+                logger.LogWarning(
+                    exception,
+                    "AI video service timed out for video {VideoId} job {JobId} segment {SegmentIndex} segment attempt {SegmentAttempt} provider attempt {ProviderAttempt}/{MaxProviderAttempts} after {ElapsedMilliseconds} ms.",
+                    request.VideoId,
+                    request.JobId,
+                    request.SegmentIndex,
+                    request.SegmentAttempt,
+                    attempt,
+                    maxAttempts,
+                    Math.Round(elapsedMs));
+                if (attempt < maxAttempts)
+                {
+                    await DelayBeforeRetryAsync(null, attempt, cancellationToken);
+                    continue;
+                }
 
-            return serviceResponse.ToApplicationResponse(rawJson);
+                throw new AiServiceException("AI_SERVICE_TIMEOUT", "AI analysis service timed out. Please try again later.", exception);
+            }
+            catch (HttpRequestException exception)
+            {
+                var elapsedMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+                logger.LogWarning(
+                    exception,
+                    "AI video service request failed for video {VideoId} job {JobId} segment {SegmentIndex} segment attempt {SegmentAttempt} provider attempt {ProviderAttempt}/{MaxProviderAttempts} after {ElapsedMilliseconds} ms.",
+                    request.VideoId,
+                    request.JobId,
+                    request.SegmentIndex,
+                    request.SegmentAttempt,
+                    attempt,
+                    maxAttempts,
+                    Math.Round(elapsedMs));
+                if (attempt < maxAttempts)
+                {
+                    await DelayBeforeRetryAsync(null, attempt, cancellationToken);
+                    continue;
+                }
+
+                throw new AiServiceException("AI_SERVICE_UNAVAILABLE", "AI analysis service is currently unavailable. Please try again later.", exception);
+            }
+            catch (JsonException exception)
+            {
+                throw new AiServiceException("AI_SERVICE_INVALID_RESPONSE", "AI analysis service returned an invalid response.", exception);
+            }
         }
-        catch (TaskCanceledException exception) when (!cancellationToken.IsCancellationRequested)
-        {
-            throw new AiServiceException("AI_SERVICE_TIMEOUT", "AI analysis service timed out. Please try again later.", exception);
-        }
-        catch (HttpRequestException exception)
-        {
-            throw new AiServiceException("AI_SERVICE_UNAVAILABLE", "AI analysis service is currently unavailable. Please try again later.", exception);
-        }
-        catch (JsonException exception)
-        {
-            throw new AiServiceException("AI_SERVICE_INVALID_RESPONSE", "AI analysis service returned an invalid response.", exception);
-        }
+
+        throw new AiServiceException("AI_VIDEO_SERVICE_UNAVAILABLE", "External video analysis is temporarily unavailable.");
     }
 
     public async Task<bool> HealthCheckAsync(CancellationToken cancellationToken = default)
@@ -183,7 +262,7 @@ public class PythonAiInferenceClient(
     private HttpClient CreateClient()
     {
         var client = httpClientFactory.CreateClient("AiService");
-        client.BaseAddress = new Uri(_options.BaseUrl.TrimEnd('/') + "/");
+        client.BaseAddress ??= new Uri(_options.BaseUrl.TrimEnd('/') + "/");
         client.Timeout = TimeSpan.FromSeconds(Math.Clamp(_options.TimeoutSeconds, 1, 600));
         if (!string.IsNullOrWhiteSpace(_options.ApiKey))
         {
@@ -192,6 +271,58 @@ public class PythonAiInferenceClient(
         }
 
         return client;
+    }
+
+    private async Task DelayBeforeRetryAsync(HttpResponseMessage? response, int attempt, CancellationToken cancellationToken)
+    {
+        var retryAfter = response?.Headers.RetryAfter?.Delta;
+        var delay = retryAfter is { TotalSeconds: > 0 }
+            ? retryAfter.Value
+            : TimeSpan.FromSeconds(Math.Max(1, _options.TransientRetryBackoffSeconds) * attempt);
+        await Task.Delay(delay, cancellationToken);
+    }
+
+    private static bool IsTransientStatusCode(HttpStatusCode statusCode)
+    {
+        return statusCode is HttpStatusCode.RequestTimeout
+            or HttpStatusCode.TooManyRequests
+            or HttpStatusCode.InternalServerError
+            or HttpStatusCode.BadGateway
+            or HttpStatusCode.ServiceUnavailable
+            or HttpStatusCode.GatewayTimeout;
+    }
+
+    private static string MapVideoServiceErrorCode(HttpStatusCode statusCode, string? providerErrorCode)
+    {
+        if (!string.IsNullOrWhiteSpace(providerErrorCode))
+        {
+            return providerErrorCode;
+        }
+
+        return statusCode switch
+        {
+            HttpStatusCode.Unauthorized => "AI_SERVICE_UNAUTHORIZED",
+            HttpStatusCode.Forbidden => "AI_SERVICE_UNAUTHORIZED",
+            HttpStatusCode.RequestTimeout => "AI_SERVICE_TIMEOUT",
+            HttpStatusCode.TooManyRequests => "BITMIND_RATE_LIMITED",
+            HttpStatusCode.BadRequest => "AI_SERVICE_INVALID_REQUEST",
+            HttpStatusCode.InternalServerError or HttpStatusCode.BadGateway or HttpStatusCode.ServiceUnavailable or HttpStatusCode.GatewayTimeout => "AI_VIDEO_SERVICE_UNAVAILABLE",
+            _ => "AI_VIDEO_SERVICE_UNAVAILABLE"
+        };
+    }
+
+    private static string SummarizeProviderError(string? errorJson)
+    {
+        if (string.IsNullOrWhiteSpace(errorJson))
+        {
+            return "empty";
+        }
+
+        var sanitized = errorJson
+            .Replace("\r", " ", StringComparison.Ordinal)
+            .Replace("\n", " ", StringComparison.Ordinal);
+        sanitized = SensitiveFieldRegex.Replace(sanitized, "$1[redacted]\"");
+        return sanitized.Length <= 300 ? sanitized : sanitized[..300];
     }
 
     private sealed record AnalyzeFramesHttpRequest(
@@ -330,6 +461,7 @@ public class PythonAiInferenceClient(
             "BITMIND_UNAVAILABLE" => "External video analysis is temporarily unavailable.",
             "AI_SERVICE_UNAUTHORIZED" => "AI analysis service is not accepting backend requests.",
             "AI_SERVICE_TIMEOUT" => "The external analysis service took too long to respond. Please retry.",
+            "AI_SERVICE_INVALID_REQUEST" => "External video analysis could not accept the prepared video segment.",
             "AI_VIDEO_SERVICE_UNAVAILABLE" => "External video analysis is temporarily unavailable.",
             _ => string.IsNullOrWhiteSpace(fallback) ? "AI analysis could not be completed for this video." : fallback
         };

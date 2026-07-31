@@ -28,6 +28,20 @@ public class AnalysisJob
 
     public DateTimeOffset? CancelRequestedAt { get; set; }
 
+    public bool PauseRequested { get; set; }
+
+    public DateTimeOffset? PauseRequestedAt { get; set; }
+
+    public DateTimeOffset? PausedAt { get; set; }
+
+    public DateTimeOffset? ResumedAt { get; set; }
+
+    public string? PausedFromStage { get; set; }
+
+    public string? LastCheckpoint { get; set; }
+
+    public string? ResumeBackgroundJobId { get; set; }
+
     public string? ScanMode { get; set; }
 
     public int CompletedSegments { get; set; }
