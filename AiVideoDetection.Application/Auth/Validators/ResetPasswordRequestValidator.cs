@@ -12,8 +12,7 @@ public class ResetPasswordRequestValidator : AbstractValidator<ResetPasswordRequ
             .MaximumLength(512);
 
         RuleFor(request => request.Password)
-            .NotEmpty()
-            .MinimumLength(8);
+            .StrongPassword();
 
         RuleFor(request => request.ConfirmPassword)
             .Equal(request => request.Password)

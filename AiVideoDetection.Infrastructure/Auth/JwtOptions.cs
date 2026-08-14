@@ -12,5 +12,14 @@ public class JwtOptions
 
     public int AccessTokenMinutes { get; set; } = 15;
 
+    public int? RefreshTokenMinutes { get; set; }
+
     public int RefreshTokenDays { get; set; } = 7;
+
+    public TimeSpan GetRefreshTokenLifetime()
+    {
+        return RefreshTokenMinutes.HasValue
+            ? TimeSpan.FromMinutes(Math.Max(1, RefreshTokenMinutes.Value))
+            : TimeSpan.FromDays(Math.Max(1, RefreshTokenDays));
+    }
 }

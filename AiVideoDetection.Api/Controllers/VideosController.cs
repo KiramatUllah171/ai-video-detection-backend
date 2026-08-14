@@ -12,6 +12,7 @@ namespace AiVideoDetection.Api.Controllers;
 [Route("api/videos")]
 public class VideosController(
     IVideoService videoService,
+    IAnalysisReportService analysisReportService,
     IInternalVideoMatchingService internalVideoMatchingService) : ControllerBase
 {
     [HttpPost("upload")]
@@ -113,6 +114,29 @@ public class VideosController(
 
         var response = await videoService.GetAnalysisAsync(videoId, currentUserId, cancellationToken);
         return response.Success ? Ok(response) : NotFound(response);
+    }
+
+    [HttpGet("{videoId:long}/report/pdf")]
+    [Produces("application/pdf")]
+    [ProducesResponseType(typeof(FileContentResult), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<AnalysisReportFile>), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ApiResponse<AnalysisReportFile>), StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> DownloadPdfReport(long videoId, CancellationToken cancellationToken)
+    {
+        if (!TryGetCurrentUserId(out var currentUserId))
+        {
+            return Unauthorized(ApiResponse<AnalysisReportFile>.ErrorResponse("Unauthorized."));
+        }
+
+        var response = await analysisReportService.GeneratePdfAsync(videoId, currentUserId, cancellationToken);
+        if (!response.Success || response.Data is null)
+        {
+            return NotFound(response);
+        }
+
+        Response.Headers.CacheControl = "no-store, no-cache, max-age=0";
+        Response.Headers.Pragma = "no-cache";
+        return File(response.Data.Content, response.Data.ContentType, response.Data.FileName);
     }
 
     [HttpPost("{videoId:long}/reanalyze")]

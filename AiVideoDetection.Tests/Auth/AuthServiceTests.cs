@@ -60,14 +60,14 @@ public class AuthServiceTests
         var reset = await authService.ResetPasswordAsync(new ResetPasswordRequest
         {
             Token = resetToken,
-            Password = "NewPassword123",
-            ConfirmPassword = "NewPassword123"
+            Password = "NewPassword123!",
+            ConfirmPassword = "NewPassword123!"
         });
 
         Assert.True(reset.Success);
         var user = await dbContext.Users.SingleAsync(user => user.Email == "reset@example.com");
-        Assert.True(passwordHasher.VerifyPassword("NewPassword123", user.PasswordHash));
-        Assert.False(passwordHasher.VerifyPassword("Password123", user.PasswordHash));
+        Assert.True(passwordHasher.VerifyPassword("NewPassword123!", user.PasswordHash));
+        Assert.False(passwordHasher.VerifyPassword("Password123!", user.PasswordHash));
         Assert.NotNull(await dbContext.PasswordResetTokens.SingleAsync(token => token.UserId == user.Id && token.UsedAt != null));
     }
 
@@ -84,14 +84,14 @@ public class AuthServiceTests
         var first = await authService.ResetPasswordAsync(new ResetPasswordRequest
         {
             Token = resetToken,
-            Password = "NewPassword123",
-            ConfirmPassword = "NewPassword123"
+            Password = "NewPassword123!",
+            ConfirmPassword = "NewPassword123!"
         });
         var second = await authService.ResetPasswordAsync(new ResetPasswordRequest
         {
             Token = resetToken,
-            Password = "AnotherPassword123",
-            ConfirmPassword = "AnotherPassword123"
+            Password = "AnotherPassword123!",
+            ConfirmPassword = "AnotherPassword123!"
         });
 
         Assert.True(first.Success);
@@ -113,8 +113,8 @@ public class AuthServiceTests
         await authService.ResetPasswordAsync(new ResetPasswordRequest
         {
             Token = resetToken,
-            Password = "NewPassword123",
-            ConfirmPassword = "NewPassword123"
+            Password = "NewPassword123!",
+            ConfirmPassword = "NewPassword123!"
         });
         var afterUse = await authService.CheckPasswordResetAsync(new ConfirmEmailRequest { Token = resetToken });
 
@@ -215,7 +215,7 @@ public class AuthServiceTests
         await authService.SignupAsync(ValidSignupRequest("login-confirm@example.com"));
 
         var beforeConfirmation = await authService.LoginAsync(
-            new LoginRequest { Email = "login-confirm@example.com", Password = "Password123" },
+            new LoginRequest { Email = "login-confirm@example.com", Password = "Password123!" },
             null);
 
         Assert.False(beforeConfirmation.Success);
@@ -226,7 +226,7 @@ public class AuthServiceTests
         Assert.True(confirmation.Success);
 
         var afterConfirmation = await authService.LoginAsync(
-            new LoginRequest { Email = "login-confirm@example.com", Password = "Password123" },
+            new LoginRequest { Email = "login-confirm@example.com", Password = "Password123!" },
             null);
 
         Assert.True(afterConfirmation.Success);
@@ -245,10 +245,10 @@ public class AuthServiceTests
         await authService.ConfirmEmailAsync(new ConfirmEmailRequest { Token = confirmationToken });
 
         var missingEmail = await authService.LoginAsync(
-            new LoginRequest { Email = "missing-login@example.com", Password = "Password123" },
+            new LoginRequest { Email = "missing-login@example.com", Password = "Password123!" },
             null);
         var wrongPassword = await authService.LoginAsync(
-            new LoginRequest { Email = "specific-login@example.com", Password = "WrongPassword123" },
+            new LoginRequest { Email = "specific-login@example.com", Password = "WrongPassword123!" },
             null);
 
         Assert.False(missingEmail.Success);
@@ -337,8 +337,8 @@ public class AuthServiceTests
         {
             Name = "Test User",
             Email = email,
-            Password = "Password123",
-            ConfirmPassword = "Password123"
+            Password = "Password123!",
+            ConfirmPassword = "Password123!"
         };
     }
 

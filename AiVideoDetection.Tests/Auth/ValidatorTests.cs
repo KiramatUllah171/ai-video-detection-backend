@@ -30,12 +30,49 @@ public class ValidatorTests
         Assert.False(result.IsValid);
     }
 
+    [Theory]
+    [InlineData("password1!")]
+    [InlineData("Password!")]
+    [InlineData("Password1")]
+    public void SignupValidator_RejectsWeakPasswordCombinations(string password)
+    {
+        var validator = new SignupRequestValidator();
+        var request = ValidSignupRequest();
+        request.Password = password;
+        request.ConfirmPassword = password;
+
+        var result = validator.Validate(request);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, error => error.PropertyName == nameof(SignupRequest.Password));
+    }
+
+    [Theory]
+    [InlineData("password1!")]
+    [InlineData("Password!")]
+    [InlineData("Password1")]
+    public void ResetPasswordValidator_RejectsWeakPasswordCombinations(string password)
+    {
+        var validator = new ResetPasswordRequestValidator();
+        var request = new ResetPasswordRequest
+        {
+            Token = "valid-reset-token",
+            Password = password,
+            ConfirmPassword = password
+        };
+
+        var result = validator.Validate(request);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, error => error.PropertyName == nameof(ResetPasswordRequest.Password));
+    }
+
     [Fact]
     public void SignupValidator_RejectsMismatchedConfirmPassword()
     {
         var validator = new SignupRequestValidator();
         var request = ValidSignupRequest();
-        request.ConfirmPassword = "DifferentPassword1";
+        request.ConfirmPassword = "DifferentPassword1!";
 
         var result = validator.Validate(request);
 
@@ -61,8 +98,8 @@ public class ValidatorTests
         {
             Name = "Test User",
             Email = "test@example.com",
-            Password = "Password123",
-            ConfirmPassword = "Password123"
+            Password = "Password123!",
+            ConfirmPassword = "Password123!"
         };
     }
 }
