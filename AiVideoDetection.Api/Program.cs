@@ -106,6 +106,9 @@ builder.Services.AddCors(options =>
 builder.Services.AddAuthorization(options =>
 {
     options.AddPolicy("AdminOnly", policy => policy.RequireRole("Admin"));
+    options.AddPolicy("EmailConfirmed", policy => policy
+        .RequireAuthenticatedUser()
+        .RequireClaim("email_confirmed", "true"));
 });
 
 var app = builder.Build();

@@ -25,18 +25,17 @@ public class AuthController(
 
     [HttpPost("signup")]
     [AllowAnonymous]
-    [ProducesResponseType(typeof(ApiResponse<AuthResponse>), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(ApiResponse<AuthResponse>), StatusCodes.Status400BadRequest)]
-    public async Task<ActionResult<ApiResponse<AuthResponse>>> Signup(SignupRequest request, CancellationToken cancellationToken)
+    [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<ApiResponse<bool>>> Signup(SignupRequest request, CancellationToken cancellationToken)
     {
-        var validationResponse = await ValidateAsync<SignupRequest, AuthResponse>(signupValidator, request, cancellationToken);
+        var validationResponse = await ValidateAsync<SignupRequest, bool>(signupValidator, request, cancellationToken);
         if (validationResponse is not null)
         {
             return BadRequest(validationResponse);
         }
 
-        var response = await authService.SignupAsync(request, GetIpAddress(), cancellationToken);
-        AttachRefreshTokenCookie(response);
+        var response = await authService.SignupAsync(request, cancellationToken);
         return ToActionResult(response);
     }
 
@@ -125,6 +124,22 @@ public class AuthController(
         return ToActionResult(response);
     }
 
+    [HttpPost("check-password-reset")]
+    [AllowAnonymous]
+    [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<ApiResponse<bool>>> CheckPasswordReset(ConfirmEmailRequest request, CancellationToken cancellationToken)
+    {
+        var validationResponse = await ValidateAsync<ConfirmEmailRequest, bool>(confirmEmailValidator, request, cancellationToken);
+        if (validationResponse is not null)
+        {
+            return BadRequest(validationResponse);
+        }
+
+        var response = await authService.CheckPasswordResetAsync(request, cancellationToken);
+        return ToActionResult(response);
+    }
+
     [HttpPost("confirm-email")]
     [AllowAnonymous]
     [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status200OK)]
@@ -138,6 +153,38 @@ public class AuthController(
         }
 
         var response = await authService.ConfirmEmailAsync(request, cancellationToken);
+        return ToActionResult(response);
+    }
+
+    [HttpPost("check-email-confirmation")]
+    [AllowAnonymous]
+    [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<ApiResponse<bool>>> CheckEmailConfirmation(ConfirmEmailRequest request, CancellationToken cancellationToken)
+    {
+        var validationResponse = await ValidateAsync<ConfirmEmailRequest, bool>(confirmEmailValidator, request, cancellationToken);
+        if (validationResponse is not null)
+        {
+            return BadRequest(validationResponse);
+        }
+
+        var response = await authService.CheckEmailConfirmationAsync(request, cancellationToken);
+        return ToActionResult(response);
+    }
+
+    [HttpPost("decline-email-confirmation")]
+    [AllowAnonymous]
+    [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<ApiResponse<bool>>> DeclineEmailConfirmation(ConfirmEmailRequest request, CancellationToken cancellationToken)
+    {
+        var validationResponse = await ValidateAsync<ConfirmEmailRequest, bool>(confirmEmailValidator, request, cancellationToken);
+        if (validationResponse is not null)
+        {
+            return BadRequest(validationResponse);
+        }
+
+        var response = await authService.DeclineEmailConfirmationAsync(request, cancellationToken);
         return ToActionResult(response);
     }
 
@@ -158,7 +205,7 @@ public class AuthController(
     }
 
     [HttpGet("me")]
-    [Authorize]
+    [Authorize(Policy = "EmailConfirmed")]
     [ProducesResponseType(typeof(ApiResponse<CurrentUserResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<CurrentUserResponse>), StatusCodes.Status401Unauthorized)]
     public async Task<ActionResult<ApiResponse<CurrentUserResponse>>> Me(CancellationToken cancellationToken)
@@ -173,7 +220,7 @@ public class AuthController(
     }
 
     [HttpGet("admin-check")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Policy = "EmailConfirmed", Roles = "Admin")]
     [ProducesResponseType(typeof(ApiResponse<string>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<string>), StatusCodes.Status403Forbidden)]
     public ActionResult<ApiResponse<string>> AdminCheck()

@@ -30,7 +30,8 @@ public class JwtTokenService(IOptions<JwtOptions> jwtOptions) : IJwtTokenService
             new(ClaimTypes.Email, user.Email),
             new(JwtRegisteredClaimNames.Name, user.Name),
             new(ClaimTypes.Name, user.Name),
-            new(ClaimTypes.Role, user.Role.ToString())
+            new(ClaimTypes.Role, user.Role.ToString()),
+            new("email_confirmed", user.EmailConfirmed ? "true" : "false")
         };
 
         var token = new JwtSecurityToken(

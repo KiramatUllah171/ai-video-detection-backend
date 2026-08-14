@@ -8,7 +8,7 @@ using Microsoft.AspNetCore.Mvc;
 namespace AiVideoDetection.Api.Controllers;
 
 [ApiController]
-[Authorize]
+[Authorize(Policy = "EmailConfirmed")]
 [Route("api/jobs")]
 public class JobsController(IJobService jobService) : ControllerBase
 {
