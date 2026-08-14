@@ -23,17 +23,20 @@ public class AuthService(
     IEmailConfirmationSender emailConfirmationSender,
     ILogger<AuthService> logger) : IAuthService
 {
-    private const string InvalidLoginMessage = "Invalid email or password.";
-    private const string ForgotPasswordMessage = "If an account exists for this email address, a password-reset link has been sent.";
-    private const string InvalidResetTokenMessage = "The password-reset link is invalid or has expired.";
-    private const string ResendConfirmationMessage = "If the account exists and still needs confirmation, a verification link has been sent.";
-    private const string InvalidConfirmationTokenMessage = "The email confirmation link is invalid or has expired.";
+    private const string EmailNotFoundMessage = "We could not find an account with this email address.";
+    private const string InvalidPasswordMessage = "The password you entered is incorrect. Please try again.";
+    private const string ForgotPasswordMessage = "If an eligible account exists for this email address, a secure password reset link has been sent.";
+    private const string InvalidResetTokenMessage = "This password reset link is invalid or has expired. Please request a new link.";
+    private const string UsedResetTokenMessage = "This password reset link has already been used. Please request a new reset link if you need to change your password again.";
+    private const string ResendConfirmationMessage = "If this account exists and still needs verification, a new email confirmation link has been sent.";
+    private const string InvalidConfirmationTokenMessage = "This email confirmation link is invalid, expired, or has already been handled. Please request a new verification link if needed.";
+    private const string ConfirmationTokenAlreadyUsedMessage = "This email confirmation link has already been used.";
+    private const string EmailNotConfirmedMessage = "Please confirm your email address before signing in.";
     private readonly JwtOptions _jwtOptions = jwtOptions.Value;
     private readonly PasswordResetOptions _passwordResetOptions = passwordResetOptions.Value;
 
-    public async Task<ApiResponse<AuthResponse>> SignupAsync(
+    public async Task<ApiResponse<bool>> SignupAsync(
         SignupRequest request,
-        string? ipAddress,
         CancellationToken cancellationToken = default)
     {
         var normalizedEmail = NormalizeEmail(request.Email);
@@ -43,7 +46,7 @@ public class AuthService(
         if (emailExists)
         {
             logger.LogInformation("Signup rejected because email already exists.");
-            return ApiResponse<AuthResponse>.ErrorResponse("Email is already registered.");
+            return ApiResponse<bool>.ErrorResponse("This email address is already registered. Please sign in or use another email address.");
         }
 
         var user = new User
@@ -62,8 +65,7 @@ public class AuthService(
         logger.LogInformation("User signup succeeded for user id {UserId}.", user.Id);
         await CreateAndSendEmailConfirmationAsync(user, cancellationToken);
 
-        var response = await CreateAuthResponseAsync(user, ipAddress, cancellationToken);
-        return ApiResponse<AuthResponse>.SuccessResponse(response, "Signup successful.");
+        return ApiResponse<bool>.SuccessResponse(true, "Account created successfully. Please confirm your email address before signing in.");
     }
 
     public async Task<ApiResponse<AuthResponse>> LoginAsync(
@@ -75,10 +77,16 @@ public class AuthService(
         var user = await dbContext.Users
             .FirstOrDefaultAsync(existingUser => existingUser.Email == normalizedEmail, cancellationToken);
 
-        if (user is null || !passwordHasher.VerifyPassword(request.Password, user.PasswordHash))
+        if (user is null)
         {
-            logger.LogInformation("Login failed.");
-            return ApiResponse<AuthResponse>.ErrorResponse(InvalidLoginMessage);
+            logger.LogInformation("Login failed because the email address was not found.");
+            return ApiResponse<AuthResponse>.ErrorResponse(EmailNotFoundMessage);
+        }
+
+        if (!passwordHasher.VerifyPassword(request.Password, user.PasswordHash))
+        {
+            logger.LogInformation("Login failed because the password was incorrect for user id {UserId}.", user.Id);
+            return ApiResponse<AuthResponse>.ErrorResponse(InvalidPasswordMessage);
         }
 
         if (!user.IsActive)
@@ -87,10 +95,16 @@ public class AuthService(
             return ApiResponse<AuthResponse>.ErrorResponse("User account is inactive.");
         }
 
+        if (!user.EmailConfirmed)
+        {
+            logger.LogInformation("Login rejected because email is not confirmed for user id {UserId}.", user.Id);
+            return ApiResponse<AuthResponse>.ErrorResponse(EmailNotConfirmedMessage);
+        }
+
         logger.LogInformation("Login succeeded for user id {UserId}.", user.Id);
 
         var response = await CreateAuthResponseAsync(user, ipAddress, cancellationToken);
-        return ApiResponse<AuthResponse>.SuccessResponse(response, "Login successful.");
+        return ApiResponse<AuthResponse>.SuccessResponse(response, "Signed in successfully.");
     }
 
     public async Task<ApiResponse<AuthResponse>> RefreshAsync(
@@ -113,6 +127,12 @@ public class AuthService(
         {
             logger.LogInformation("Refresh token request rejected for inactive user id {UserId}.", refreshToken.UserId);
             return ApiResponse<AuthResponse>.ErrorResponse("User account is inactive.");
+        }
+
+        if (!refreshToken.User.EmailConfirmed)
+        {
+            logger.LogInformation("Refresh token request rejected because email is not confirmed for user id {UserId}.", refreshToken.UserId);
+            return ApiResponse<AuthResponse>.ErrorResponse(EmailNotConfirmedMessage);
         }
 
         refreshToken.RevokedAt = DateTimeOffset.UtcNow;
@@ -194,10 +214,16 @@ public class AuthService(
             .Include(token => token.User)
             .FirstOrDefaultAsync(token => token.TokenHash == tokenHash, cancellationToken);
 
-        if (resetToken is null || resetToken.UsedAt is not null || resetToken.ExpiresAt <= now)
+        if (resetToken is null || resetToken.ExpiresAt <= now)
         {
             logger.LogInformation("Password reset rejected because the token is invalid or expired.");
             return ApiResponse<bool>.ErrorResponse(InvalidResetTokenMessage);
+        }
+
+        if (resetToken.UsedAt is not null)
+        {
+            logger.LogInformation("Password reset rejected because the token was already used for user id {UserId}.", resetToken.UserId);
+            return ApiResponse<bool>.ErrorResponse(UsedResetTokenMessage);
         }
 
         if (!resetToken.User.IsActive)
@@ -220,7 +246,33 @@ public class AuthService(
         await dbContext.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation("Password reset succeeded for user id {UserId}.", resetToken.UserId);
-        return ApiResponse<bool>.SuccessResponse(true, "Password reset successful.");
+        return ApiResponse<bool>.SuccessResponse(true, "Your password has been reset successfully.");
+    }
+
+    public async Task<ApiResponse<bool>> CheckPasswordResetAsync(
+        ConfirmEmailRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var tokenHash = HashToken(request.Token);
+        var now = DateTimeOffset.UtcNow;
+        var resetToken = await dbContext.PasswordResetTokens
+            .Include(token => token.User)
+            .AsNoTracking()
+            .FirstOrDefaultAsync(token => token.TokenHash == tokenHash, cancellationToken);
+
+        if (resetToken is null || resetToken.ExpiresAt <= now || !resetToken.User.IsActive)
+        {
+            logger.LogInformation("Password reset status checked for invalid or expired token.");
+            return ApiResponse<bool>.SuccessResponse(false, InvalidResetTokenMessage);
+        }
+
+        if (resetToken.UsedAt is not null)
+        {
+            logger.LogInformation("Password reset status checked for already used token for user id {UserId}.", resetToken.UserId);
+            return ApiResponse<bool>.SuccessResponse(false, UsedResetTokenMessage);
+        }
+
+        return ApiResponse<bool>.SuccessResponse(true, "This password reset link is ready to use.");
     }
 
     public async Task<ApiResponse<bool>> ConfirmEmailAsync(
@@ -233,10 +285,16 @@ public class AuthService(
             .Include(token => token.User)
             .FirstOrDefaultAsync(token => token.TokenHash == tokenHash, cancellationToken);
 
-        if (confirmationToken is null || confirmationToken.UsedAt is not null || confirmationToken.ExpiresAt <= now)
+        if (confirmationToken is null || confirmationToken.ExpiresAt <= now)
         {
             logger.LogInformation("Email confirmation rejected because the token is invalid or expired.");
             return ApiResponse<bool>.ErrorResponse(InvalidConfirmationTokenMessage);
+        }
+
+        if (confirmationToken.UsedAt is not null)
+        {
+            logger.LogInformation("Email confirmation skipped because the token was already used for user id {UserId}.", confirmationToken.UserId);
+            return ApiResponse<bool>.SuccessResponse(true, ConfirmationTokenAlreadyUsedMessage);
         }
 
         if (!confirmationToken.User.IsActive)
@@ -250,7 +308,77 @@ public class AuthService(
         await dbContext.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation("Email confirmed for user id {UserId}.", confirmationToken.UserId);
-        return ApiResponse<bool>.SuccessResponse(true, "Email confirmed successfully.");
+        return ApiResponse<bool>.SuccessResponse(true, "Your email address has been confirmed successfully.");
+    }
+
+    public async Task<ApiResponse<bool>> CheckEmailConfirmationAsync(
+        ConfirmEmailRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var tokenHash = HashToken(request.Token);
+        var now = DateTimeOffset.UtcNow;
+        var confirmationToken = await dbContext.EmailConfirmationTokens
+            .Include(token => token.User)
+            .AsNoTracking()
+            .FirstOrDefaultAsync(token => token.TokenHash == tokenHash, cancellationToken);
+
+        if (confirmationToken is null || confirmationToken.ExpiresAt <= now || !confirmationToken.User.IsActive)
+        {
+            logger.LogInformation("Email confirmation status checked for invalid, expired, or handled token.");
+            return ApiResponse<bool>.SuccessResponse(false, "This verification request is invalid, expired, or has already been handled.");
+        }
+
+        if (confirmationToken.UsedAt is not null)
+        {
+            logger.LogInformation("Email confirmation status checked for already used token for user id {UserId}.", confirmationToken.UserId);
+            return ApiResponse<bool>.SuccessResponse(false, ConfirmationTokenAlreadyUsedMessage);
+        }
+
+        if (confirmationToken.User.EmailConfirmed)
+        {
+            logger.LogInformation("Email confirmation status checked for already confirmed user id {UserId}.", confirmationToken.UserId);
+            return ApiResponse<bool>.SuccessResponse(false, "This email address is already confirmed.");
+        }
+
+        return ApiResponse<bool>.SuccessResponse(true, "This verification request is ready to confirm.");
+    }
+
+    public async Task<ApiResponse<bool>> DeclineEmailConfirmationAsync(
+        ConfirmEmailRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var tokenHash = HashToken(request.Token);
+        var now = DateTimeOffset.UtcNow;
+        var confirmationToken = await dbContext.EmailConfirmationTokens
+            .Include(token => token.User)
+            .FirstOrDefaultAsync(token => token.TokenHash == tokenHash, cancellationToken);
+
+        if (confirmationToken is null || confirmationToken.ExpiresAt <= now)
+        {
+            logger.LogInformation("Email confirmation decline ignored because the token is invalid or expired.");
+            return ApiResponse<bool>.SuccessResponse(true, "This verification request is invalid, expired, or has already been handled.");
+        }
+
+        if (confirmationToken.UsedAt is not null)
+        {
+            logger.LogInformation("Email confirmation decline ignored because the token was already used for user id {UserId}.", confirmationToken.UserId);
+            return ApiResponse<bool>.SuccessResponse(true, "This verification request has already been handled.");
+        }
+
+        if (confirmationToken.User.EmailConfirmed)
+        {
+            logger.LogInformation("Email confirmation decline ignored because user id {UserId} is already confirmed.", confirmationToken.UserId);
+            return ApiResponse<bool>.SuccessResponse(true, "This email address is already confirmed.");
+        }
+
+        confirmationToken.UsedAt = now;
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        logger.LogInformation("Deleting unconfirmed user id {UserId} after email holder declined confirmation.", confirmationToken.UserId);
+        dbContext.Users.Remove(confirmationToken.User);
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        return ApiResponse<bool>.SuccessResponse(true, "This verification request was declined. The unconfirmed account has been removed.");
     }
 
     public async Task<ApiResponse<bool>> ResendEmailConfirmationAsync(

@@ -5,7 +5,7 @@ namespace AiVideoDetection.Application.Auth.Interfaces;
 
 public interface IAuthService
 {
-    Task<ApiResponse<AuthResponse>> SignupAsync(SignupRequest request, string? ipAddress, CancellationToken cancellationToken = default);
+    Task<ApiResponse<bool>> SignupAsync(SignupRequest request, CancellationToken cancellationToken = default);
 
     Task<ApiResponse<AuthResponse>> LoginAsync(LoginRequest request, string? ipAddress, CancellationToken cancellationToken = default);
 
@@ -17,7 +17,13 @@ public interface IAuthService
 
     Task<ApiResponse<bool>> ResetPasswordAsync(ResetPasswordRequest request, CancellationToken cancellationToken = default);
 
+    Task<ApiResponse<bool>> CheckPasswordResetAsync(ConfirmEmailRequest request, CancellationToken cancellationToken = default);
+
     Task<ApiResponse<bool>> ConfirmEmailAsync(ConfirmEmailRequest request, CancellationToken cancellationToken = default);
+
+    Task<ApiResponse<bool>> CheckEmailConfirmationAsync(ConfirmEmailRequest request, CancellationToken cancellationToken = default);
+
+    Task<ApiResponse<bool>> DeclineEmailConfirmationAsync(ConfirmEmailRequest request, CancellationToken cancellationToken = default);
 
     Task<ApiResponse<bool>> ResendEmailConfirmationAsync(ResendEmailConfirmationRequest request, CancellationToken cancellationToken = default);
 

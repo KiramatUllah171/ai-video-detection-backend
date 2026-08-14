@@ -17,8 +17,8 @@ public class AuthServiceTests
         await using var dbContext = CreateDbContext();
         var authService = CreateAuthService(dbContext);
 
-        var first = await authService.SignupAsync(ValidSignupRequest("duplicate@example.com"), null);
-        var second = await authService.SignupAsync(ValidSignupRequest("DUPLICATE@example.com"), null);
+        var first = await authService.SignupAsync(ValidSignupRequest("duplicate@example.com"));
+        var second = await authService.SignupAsync(ValidSignupRequest("DUPLICATE@example.com"));
 
         Assert.True(first.Success);
         Assert.False(second.Success);
@@ -44,7 +44,7 @@ public class AuthServiceTests
         var passwordHasher = new PasswordHasher();
         var emailSender = new TestPasswordResetEmailSender();
         var authService = CreateAuthService(dbContext, emailSender, passwordHasher);
-        var signup = await authService.SignupAsync(ValidSignupRequest("reset@example.com"), null);
+        var signup = await authService.SignupAsync(ValidSignupRequest("reset@example.com"));
         Assert.True(signup.Success);
 
         var forgot = await authService.ForgotPasswordAsync(new ForgotPasswordRequest { Email = "reset@example.com" });
@@ -72,13 +72,80 @@ public class AuthServiceTests
     }
 
     [Fact]
+    public async Task ResetPasswordAsync_ReturnsMeaningfulMessageForUsedLink()
+    {
+        await using var dbContext = CreateDbContext();
+        var emailSender = new TestPasswordResetEmailSender();
+        var authService = CreateAuthService(dbContext, emailSender);
+        await authService.SignupAsync(ValidSignupRequest("used-reset@example.com"));
+        await authService.ForgotPasswordAsync(new ForgotPasswordRequest { Email = "used-reset@example.com" });
+        var resetToken = ExtractToken(emailSender.ResetUrls.Single());
+
+        var first = await authService.ResetPasswordAsync(new ResetPasswordRequest
+        {
+            Token = resetToken,
+            Password = "NewPassword123",
+            ConfirmPassword = "NewPassword123"
+        });
+        var second = await authService.ResetPasswordAsync(new ResetPasswordRequest
+        {
+            Token = resetToken,
+            Password = "AnotherPassword123",
+            ConfirmPassword = "AnotherPassword123"
+        });
+
+        Assert.True(first.Success);
+        Assert.False(second.Success);
+        Assert.Contains("already been used", second.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CheckPasswordResetAsync_ReturnsReadyOnlyForUnusedLink()
+    {
+        await using var dbContext = CreateDbContext();
+        var emailSender = new TestPasswordResetEmailSender();
+        var authService = CreateAuthService(dbContext, emailSender);
+        await authService.SignupAsync(ValidSignupRequest("check-reset@example.com"));
+        await authService.ForgotPasswordAsync(new ForgotPasswordRequest { Email = "check-reset@example.com" });
+        var resetToken = ExtractToken(emailSender.ResetUrls.Single());
+
+        var beforeUse = await authService.CheckPasswordResetAsync(new ConfirmEmailRequest { Token = resetToken });
+        await authService.ResetPasswordAsync(new ResetPasswordRequest
+        {
+            Token = resetToken,
+            Password = "NewPassword123",
+            ConfirmPassword = "NewPassword123"
+        });
+        var afterUse = await authService.CheckPasswordResetAsync(new ConfirmEmailRequest { Token = resetToken });
+
+        Assert.True(beforeUse.Success);
+        Assert.True(beforeUse.Data);
+        Assert.True(afterUse.Success);
+        Assert.False(afterUse.Data);
+        Assert.Contains("already been used", afterUse.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task SignupAsync_DoesNotCreateAuthenticatedSession()
+    {
+        await using var dbContext = CreateDbContext();
+        var authService = CreateAuthService(dbContext);
+
+        var signup = await authService.SignupAsync(ValidSignupRequest("pending@example.com"));
+
+        Assert.True(signup.Success);
+        Assert.True(signup.Data);
+        Assert.Empty(dbContext.RefreshTokens);
+    }
+
+    [Fact]
     public async Task SignupAsync_SendsEmailConfirmationLink()
     {
         await using var dbContext = CreateDbContext();
         var emailSender = new TestPasswordResetEmailSender();
         var authService = CreateAuthService(dbContext, emailSender);
 
-        var signup = await authService.SignupAsync(ValidSignupRequest("confirm@example.com"), null);
+        var signup = await authService.SignupAsync(ValidSignupRequest("confirm@example.com"));
 
         Assert.True(signup.Success);
         Assert.Single(emailSender.ConfirmationUrls);
@@ -91,7 +158,7 @@ public class AuthServiceTests
         await using var dbContext = CreateDbContext();
         var emailSender = new TestPasswordResetEmailSender();
         var authService = CreateAuthService(dbContext, emailSender);
-        await authService.SignupAsync(ValidSignupRequest("confirm-token@example.com"), null);
+        await authService.SignupAsync(ValidSignupRequest("confirm-token@example.com"));
         var confirmationToken = ExtractToken(emailSender.ConfirmationUrls.Single());
 
         var response = await authService.ConfirmEmailAsync(new ConfirmEmailRequest { Token = confirmationToken });
@@ -100,6 +167,121 @@ public class AuthServiceTests
         var user = await dbContext.Users.SingleAsync(user => user.Email == "confirm-token@example.com");
         Assert.True(user.EmailConfirmed);
         Assert.NotNull(await dbContext.EmailConfirmationTokens.SingleAsync(token => token.UserId == user.Id && token.UsedAt != null));
+    }
+
+    [Fact]
+    public async Task CheckEmailConfirmationAsync_ReturnsReadyOnlyForUnusedToken()
+    {
+        await using var dbContext = CreateDbContext();
+        var emailSender = new TestPasswordResetEmailSender();
+        var authService = CreateAuthService(dbContext, emailSender);
+        await authService.SignupAsync(ValidSignupRequest("status@example.com"));
+        var confirmationToken = ExtractToken(emailSender.ConfirmationUrls.Single());
+
+        var beforeUse = await authService.CheckEmailConfirmationAsync(new ConfirmEmailRequest { Token = confirmationToken });
+        await authService.ConfirmEmailAsync(new ConfirmEmailRequest { Token = confirmationToken });
+        var afterUse = await authService.CheckEmailConfirmationAsync(new ConfirmEmailRequest { Token = confirmationToken });
+
+        Assert.True(beforeUse.Success);
+        Assert.True(beforeUse.Data);
+        Assert.True(afterUse.Success);
+        Assert.False(afterUse.Data);
+        Assert.Contains("already been used", afterUse.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ConfirmEmailAsync_ReturnsAlreadyUsedMessageForUsedLink()
+    {
+        await using var dbContext = CreateDbContext();
+        var emailSender = new TestPasswordResetEmailSender();
+        var authService = CreateAuthService(dbContext, emailSender);
+        await authService.SignupAsync(ValidSignupRequest("used-link@example.com"));
+        var confirmationToken = ExtractToken(emailSender.ConfirmationUrls.Single());
+
+        var first = await authService.ConfirmEmailAsync(new ConfirmEmailRequest { Token = confirmationToken });
+        var second = await authService.ConfirmEmailAsync(new ConfirmEmailRequest { Token = confirmationToken });
+
+        Assert.True(first.Success);
+        Assert.True(second.Success);
+        Assert.Contains("already been used", second.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task LoginAsync_RequiresConfirmedEmail()
+    {
+        await using var dbContext = CreateDbContext();
+        var emailSender = new TestPasswordResetEmailSender();
+        var authService = CreateAuthService(dbContext, emailSender);
+        await authService.SignupAsync(ValidSignupRequest("login-confirm@example.com"));
+
+        var beforeConfirmation = await authService.LoginAsync(
+            new LoginRequest { Email = "login-confirm@example.com", Password = "Password123" },
+            null);
+
+        Assert.False(beforeConfirmation.Success);
+        Assert.Empty(dbContext.RefreshTokens);
+
+        var confirmationToken = ExtractToken(emailSender.ConfirmationUrls.Single());
+        var confirmation = await authService.ConfirmEmailAsync(new ConfirmEmailRequest { Token = confirmationToken });
+        Assert.True(confirmation.Success);
+
+        var afterConfirmation = await authService.LoginAsync(
+            new LoginRequest { Email = "login-confirm@example.com", Password = "Password123" },
+            null);
+
+        Assert.True(afterConfirmation.Success);
+        Assert.NotNull(afterConfirmation.Data);
+        Assert.Single(dbContext.RefreshTokens);
+    }
+
+    [Fact]
+    public async Task LoginAsync_ReturnsSpecificMessagesForEmailAndPasswordFailures()
+    {
+        await using var dbContext = CreateDbContext();
+        var emailSender = new TestPasswordResetEmailSender();
+        var authService = CreateAuthService(dbContext, emailSender);
+        await authService.SignupAsync(ValidSignupRequest("specific-login@example.com"));
+        var confirmationToken = ExtractToken(emailSender.ConfirmationUrls.Single());
+        await authService.ConfirmEmailAsync(new ConfirmEmailRequest { Token = confirmationToken });
+
+        var missingEmail = await authService.LoginAsync(
+            new LoginRequest { Email = "missing-login@example.com", Password = "Password123" },
+            null);
+        var wrongPassword = await authService.LoginAsync(
+            new LoginRequest { Email = "specific-login@example.com", Password = "WrongPassword123" },
+            null);
+
+        Assert.False(missingEmail.Success);
+        Assert.Contains("email address", missingEmail.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.False(wrongPassword.Success);
+        Assert.Contains("password", wrongPassword.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task DeclineEmailConfirmationAsync_RemovesUnconfirmedAccount()
+    {
+        await using var dbContext = CreateDbContext();
+        var emailSender = new TestPasswordResetEmailSender();
+        var authService = CreateAuthService(dbContext, emailSender);
+        await authService.SignupAsync(ValidSignupRequest("not-me@example.com"));
+        var confirmationToken = ExtractToken(emailSender.ConfirmationUrls.Single());
+
+        var decline = await authService.DeclineEmailConfirmationAsync(new ConfirmEmailRequest { Token = confirmationToken });
+
+        Assert.True(decline.Success);
+        Assert.Empty(dbContext.Users);
+        Assert.Empty(dbContext.EmailConfirmationTokens);
+
+        var repeatDecline = await authService.DeclineEmailConfirmationAsync(new ConfirmEmailRequest { Token = confirmationToken });
+        Assert.True(repeatDecline.Success);
+        Assert.Contains("handled", repeatDecline.Message, StringComparison.OrdinalIgnoreCase);
+
+        var status = await authService.CheckEmailConfirmationAsync(new ConfirmEmailRequest { Token = confirmationToken });
+        Assert.True(status.Success);
+        Assert.False(status.Data);
+
+        var signupAgain = await authService.SignupAsync(ValidSignupRequest("not-me@example.com"));
+        Assert.True(signupAgain.Success);
     }
 
     [Fact]

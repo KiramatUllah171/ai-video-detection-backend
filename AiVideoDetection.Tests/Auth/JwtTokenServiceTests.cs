@@ -25,12 +25,14 @@ public class JwtTokenServiceTests
             Id = 1,
             Name = "Admin User",
             Email = "admin@example.com",
-            Role = UserRole.Admin
+            Role = UserRole.Admin,
+            EmailConfirmed = true
         };
 
         var (token, _) = service.GenerateAccessToken(user);
         var jwt = new JwtSecurityTokenHandler().ReadJwtToken(token);
 
         Assert.Contains(jwt.Claims, claim => claim.Type == ClaimTypes.Role && claim.Value == "Admin");
+        Assert.Contains(jwt.Claims, claim => claim.Type == "email_confirmed" && claim.Value == "true");
     }
 }
