@@ -2,9 +2,11 @@ using System.Security.Claims;
 using AiVideoDetection.Application.Auth.DTOs;
 using AiVideoDetection.Application.Auth.Interfaces;
 using AiVideoDetection.Application.Common;
+using AiVideoDetection.Infrastructure.Auth;
 using FluentValidation;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 
 namespace AiVideoDetection.Api.Controllers;
 
@@ -19,9 +21,11 @@ public class AuthController(
     IValidator<ResetPasswordRequest> resetPasswordValidator,
     IValidator<ConfirmEmailRequest> confirmEmailValidator,
     IValidator<ResendEmailConfirmationRequest> resendEmailConfirmationValidator,
-    IWebHostEnvironment environment) : ControllerBase
+    IWebHostEnvironment environment,
+    IOptions<JwtOptions> jwtOptions) : ControllerBase
 {
     private const string RefreshTokenCookieName = "ai_video_refresh";
+    private readonly JwtOptions _jwtOptions = jwtOptions.Value;
 
     [HttpPost("signup")]
     [AllowAnonymous]
@@ -260,7 +264,7 @@ public class AuthController(
                 HttpOnly = true,
                 Secure = !environment.IsDevelopment(),
                 SameSite = SameSiteMode.Lax,
-                Expires = DateTimeOffset.UtcNow.AddDays(7)
+                Expires = DateTimeOffset.UtcNow.Add(_jwtOptions.GetRefreshTokenLifetime())
             });
         response.Data.RefreshToken = string.Empty;
     }

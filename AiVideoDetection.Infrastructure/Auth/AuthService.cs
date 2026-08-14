@@ -433,7 +433,7 @@ public class AuthService(
         {
             UserId = user.Id,
             TokenHash = refreshTokenHash,
-            ExpiresAt = DateTimeOffset.UtcNow.AddDays(_jwtOptions.RefreshTokenDays),
+            ExpiresAt = DateTimeOffset.UtcNow.Add(_jwtOptions.GetRefreshTokenLifetime()),
             CreatedByIp = ParseIpAddress(ipAddress)
         });
 

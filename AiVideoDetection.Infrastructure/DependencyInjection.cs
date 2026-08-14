@@ -9,6 +9,7 @@ using AiVideoDetection.Infrastructure.Videos;
 using AiVideoDetection.Infrastructure.Videos.Ai;
 using AiVideoDetection.Infrastructure.Videos.Matching;
 using AiVideoDetection.Infrastructure.Videos.Processing;
+using AiVideoDetection.Infrastructure.Videos.Reports;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -127,6 +128,7 @@ public static class DependencyInjection
         services.AddScoped<IEmailConfirmationSender, SmtpAuthEmailSender>();
         services.AddScoped<IObjectStorageService, LocalObjectStorageService>();
         services.AddScoped<IVideoService, VideoService>();
+        services.AddScoped<IAnalysisReportService, AnalysisReportService>();
         services.AddScoped<IJobService, JobService>();
         services.AddScoped<IAnalysisJobQueue, HangfireAnalysisJobQueue>();
         services.AddScoped<IVideoProcessingService, VideoProcessingService>();
@@ -179,7 +181,7 @@ public static class DependencyInjection
                     ValidIssuer = jwtOptions.Issuer,
                     ValidAudience = jwtOptions.Audience,
                     IssuerSigningKey = signingKey,
-                    ClockSkew = TimeSpan.FromMinutes(1)
+                    ClockSkew = TimeSpan.Zero
                 };
             });
     }

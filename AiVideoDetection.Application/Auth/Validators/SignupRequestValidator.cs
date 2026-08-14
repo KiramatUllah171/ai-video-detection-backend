@@ -17,8 +17,7 @@ public class SignupRequestValidator : AbstractValidator<SignupRequest>
             .MaximumLength(320);
 
         RuleFor(request => request.Password)
-            .NotEmpty()
-            .MinimumLength(8);
+            .StrongPassword();
 
         RuleFor(request => request.ConfirmPassword)
             .Equal(request => request.Password)
