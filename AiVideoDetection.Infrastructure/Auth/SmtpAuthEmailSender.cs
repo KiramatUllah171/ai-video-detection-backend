@@ -17,11 +17,11 @@ public class SmtpAuthEmailSender(
     {
         return SendSmtpAsync(
             user,
-            "Reset your AI Video Detection password",
+            "Reset your sachvideoai password",
             $"""
 Hello {user.Name},
 
-We received a request to reset the password for your AI Video Detection account.
+We received a request to reset the password for your sachvideoai account.
 
 Use the secure link below to choose a new password:
 
@@ -30,7 +30,7 @@ Use the secure link below to choose a new password:
 For your security, this link will expire automatically. If you did not request a password reset, you can safely ignore this email and your password will remain unchanged.
 
 Regards,
-AI Video Detection Team
+sachvideoai Team
 """,
             "Password reset email sent for user id {UserId}.",
             cancellationToken);
@@ -40,11 +40,11 @@ AI Video Detection Team
     {
         return SendSmtpAsync(
             user,
-            "Confirm your AI Video Detection email address",
+            "Confirm your sachvideoai email address",
             $"""
 Hello {user.Name},
 
-Thank you for creating an AI Video Detection account.
+Thank you for creating a sachvideoai account.
 
 Please confirm your email address using the secure link below:
 
@@ -53,7 +53,7 @@ Please confirm your email address using the secure link below:
 For your security, this link will expire automatically. If you did not create this account, you can safely ignore this email.
 
 Regards,
-AI Video Detection Team
+sachvideoai Team
 """,
             "Email confirmation email sent for user id {UserId}.",
             cancellationToken);

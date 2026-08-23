@@ -39,7 +39,7 @@ builder.Services.AddSwaggerGen(options =>
 {
     options.SwaggerDoc("v1", new OpenApiInfo
     {
-        Title = "AI Video Detection API",
+        Title = "sachvideoai API",
         Version = "v1"
     });
 

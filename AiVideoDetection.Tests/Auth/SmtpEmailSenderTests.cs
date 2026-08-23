@@ -21,7 +21,7 @@ public class SmtpEmailSenderTests
                 Username = "kiramatullahcomputer@gmail.com",
                 Password = "",
                 SenderEmail = "kiramatullahcomputer@gmail.com",
-                SenderName = "AI Video Detection"
+                SenderName = "sachvideoai"
             }),
             NullLogger<SmtpAuthEmailSender>.Instance);
 
@@ -42,7 +42,7 @@ public class SmtpEmailSenderTests
                 Username = "kiramatullahcomputer@gmail.com",
                 Password = "not-used",
                 SenderEmail = "kiramatullahcomputer@gmail.com",
-                SenderName = "AI Video Detection"
+                SenderName = "sachvideoai"
             }),
             NullLogger<SmtpAuthEmailSender>.Instance);
 

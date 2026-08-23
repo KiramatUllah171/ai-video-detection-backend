@@ -12,7 +12,7 @@ set "PasswordReset__UseStartTls=true"
 set "PasswordReset__UseSsl=false"
 set "PasswordReset__Username=kiramatullahcomputer@gmail.com"
 set "PasswordReset__SenderEmail=kiramatullahcomputer@gmail.com"
-set "PasswordReset__SenderName=AI Video Detection"
+set "PasswordReset__SenderName=sachvideoai"
 set "PasswordReset__FrontendBaseUrl=http://localhost:5173"
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\Ensure-BackendPortFree.ps1" -Port 5166

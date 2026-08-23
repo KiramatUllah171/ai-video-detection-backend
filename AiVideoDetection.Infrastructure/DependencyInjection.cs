@@ -1,6 +1,8 @@
+using AiVideoDetection.Application.Admin.Interfaces;
 using AiVideoDetection.Application.Auth.Interfaces;
 using AiVideoDetection.Application.Videos.Interfaces;
 using AiVideoDetection.Application.Videos.Options;
+using AiVideoDetection.Infrastructure.Admin;
 using AiVideoDetection.Domain.Enums;
 using AiVideoDetection.Infrastructure.Auth;
 using AiVideoDetection.Infrastructure.Data;
@@ -122,6 +124,7 @@ public static class DependencyInjection
             .SetHandlerLifetime(TimeSpan.FromMinutes(10));
 
         services.AddScoped<IAuthService, AuthService>();
+        services.AddScoped<IAdminDashboardService, AdminDashboardService>();
         services.AddScoped<IJwtTokenService, JwtTokenService>();
         services.AddScoped<IPasswordHasher, PasswordHasher>();
         services.AddScoped<IPasswordResetEmailSender, SmtpAuthEmailSender>();

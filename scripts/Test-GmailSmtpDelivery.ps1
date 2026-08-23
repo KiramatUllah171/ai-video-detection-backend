@@ -27,10 +27,10 @@ $message = [System.Net.Mail.MailMessage]::new()
 $client = $null
 
 try {
-    $message.From = [System.Net.Mail.MailAddress]::new($from, "AI Video Detection")
+    $message.From = [System.Net.Mail.MailAddress]::new($from, "sachvideoai")
     $message.To.Add($To)
-    $message.Subject = "AI Video Detection SMTP verification"
-    $message.Body = "This is a real SMTP delivery test from AI Video Detection."
+    $message.Subject = "sachvideoai SMTP verification"
+    $message.Body = "This is a real SMTP delivery test from sachvideoai."
     $message.IsBodyHtml = $false
 
     $client = [System.Net.Mail.SmtpClient]::new("smtp.gmail.com", 587)
