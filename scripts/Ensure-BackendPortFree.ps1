@@ -29,6 +29,6 @@ foreach ($processId in $processIds) {
         Write-Error "Port $Port is already used by PID $processId ($($process.Name)). Stop that process or choose another backend port."
     }
 
-    Write-Host "Stopping existing AI Video Detection backend on port $Port (PID $processId)."
+    Write-Host "Stopping existing sachvideoai backend on port $Port (PID $processId)."
     Stop-Process -Id $processId -Force
 }
