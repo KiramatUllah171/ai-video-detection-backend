@@ -79,6 +79,8 @@ public static class DependencyInjection
         services.AddOptions<VideoUploadOptions>()
             .Bind(configuration.GetSection(VideoUploadOptions.SectionName))
             .Validate(options => options.MaxFileSizeBytes == 524_288_000, "VideoUpload:MaxFileSizeBytes must be 524288000.")
+            .Validate(options => options.SmartScanMaxFileSizeBytes == 209_715_200, "VideoUpload:SmartScanMaxFileSizeBytes must be 209715200.")
+            .Validate(options => options.DetailedScanMaxFileSizeBytes == 524_288_000, "VideoUpload:DetailedScanMaxFileSizeBytes must be 524288000.")
             .Validate(options => options.UploadChunkSizeBytes is >= 5_242_880 and <= 20_971_520, "VideoUpload:UploadChunkSizeBytes must be 5-20 MB.")
             .Validate(options => options.AllowedExtensions.Length > 0 && options.AllowedContentTypes.Length > 0, "VideoUpload allowed types must be configured.")
             .ValidateOnStart();

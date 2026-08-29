@@ -1,5 +1,6 @@
 using AiVideoDetection.Application.Videos.DTOs;
 using AiVideoDetection.Application.Videos.Options;
+using AiVideoDetection.Domain.Enums;
 using FluentValidation;
 using Microsoft.Extensions.Options;
 
@@ -30,8 +31,8 @@ public class UploadVideoRequestValidator : AbstractValidator<UploadVideoRequest>
                 RuleFor(request => request.File!.Length)
                     .GreaterThan(0)
                     .WithMessage("The uploaded file is empty.")
-                    .LessThanOrEqualTo(_options.MaxFileSizeBytes)
-                    .WithMessage("The maximum allowed video size is 500 MB.");
+                    .Must((request, length) => length <= GetMaxFileSizeBytes(request.AnalysisMode))
+                    .WithMessage(request => GetMaxFileSizeMessage(request.AnalysisMode));
 
                 RuleFor(request => request.File!)
                     .Must(HaveAllowedExtension)
@@ -92,5 +93,25 @@ public class UploadVideoRequestValidator : AbstractValidator<UploadVideoRequest>
 
         return ExtensionContentTypes.TryGetValue(extension, out var allowedForExtension)
             && allowedForExtension.Contains(file.ContentType, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private long GetMaxFileSizeBytes(AnalysisMode analysisMode)
+    {
+        var modeLimit = analysisMode == AnalysisMode.Detailed
+            ? _options.DetailedScanMaxFileSizeBytes
+            : _options.SmartScanMaxFileSizeBytes;
+
+        return Math.Min(_options.MaxFileSizeBytes, modeLimit);
+    }
+
+    private string GetMaxFileSizeMessage(AnalysisMode analysisMode)
+    {
+        var scanName = analysisMode == AnalysisMode.Detailed ? "Detailed Scan" : "Smart Scan";
+        return $"The maximum allowed video size for {scanName} is {ToMegabytes(GetMaxFileSizeBytes(analysisMode))} MB.";
+    }
+
+    private static long ToMegabytes(long bytes)
+    {
+        return bytes / 1_048_576;
     }
 }

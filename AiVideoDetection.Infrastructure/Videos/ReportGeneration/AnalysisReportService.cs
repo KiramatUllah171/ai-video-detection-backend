@@ -14,7 +14,7 @@ namespace AiVideoDetection.Infrastructure.Videos.Reports;
 
 public class AnalysisReportService(AppDbContext dbContext) : IAnalysisReportService
 {
-    private const string ProductName = "sachvideoai";
+    private const string ProductName = "SachAI";
     private const decimal PercentageScale = 100m;
 
     public async Task<ApiResponse<AnalysisReportFile>> GeneratePdfAsync(
@@ -1367,7 +1367,7 @@ internal sealed class ReportPdfDocument
         footer.Append(ReportColor.Border.StrokeCommand());
         footer.Append("0.6 w 48 42 m 547 42 l S\n");
         footer.Append(ReportColor.Muted.TextCommand());
-        footer.Append("BT /F1 8 Tf 48 26 Td (sachvideoai - probability-based report) Tj ET\n");
+        footer.Append("BT /F1 8 Tf 48 26 Td (SachAI - probability-based report) Tj ET\n");
         footer.Append("BT /F1 8 Tf 500 26 Td (Page ")
             .Append(pageNumber.ToString(CultureInfo.InvariantCulture))
             .Append(" of ")

@@ -1,6 +1,7 @@
 using AiVideoDetection.Application.Videos.DTOs;
 using AiVideoDetection.Application.Videos.Options;
 using AiVideoDetection.Application.Videos.Validators;
+using AiVideoDetection.Domain.Enums;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Options;
 
@@ -8,9 +9,13 @@ namespace AiVideoDetection.Tests.Videos;
 
 public class UploadVideoRequestValidatorTests
 {
+    private const int OneMegabyte = 1_048_576;
+
     private readonly UploadVideoRequestValidator _validator = new(Options.Create(new VideoUploadOptions
     {
-        MaxFileSizeBytes = 10,
+        MaxFileSizeBytes = 10 * OneMegabyte,
+        SmartScanMaxFileSizeBytes = 10 * OneMegabyte,
+        DetailedScanMaxFileSizeBytes = 10 * OneMegabyte,
         AllowedExtensions = [".mp4"],
         AllowedContentTypes = ["video/mp4", "application/octet-stream"]
     }));
@@ -77,7 +82,9 @@ public class UploadVideoRequestValidatorTests
     {
         var validator = new UploadVideoRequestValidator(Options.Create(new VideoUploadOptions
         {
-            MaxFileSizeBytes = 10,
+            MaxFileSizeBytes = 10 * OneMegabyte,
+            SmartScanMaxFileSizeBytes = 10 * OneMegabyte,
+            DetailedScanMaxFileSizeBytes = 10 * OneMegabyte,
             AllowedExtensions = [".avi", ".mkv"],
             AllowedContentTypes =
             [
@@ -107,7 +114,9 @@ public class UploadVideoRequestValidatorTests
     {
         var validator = new UploadVideoRequestValidator(Options.Create(new VideoUploadOptions
         {
-            MaxFileSizeBytes = 10,
+            MaxFileSizeBytes = 10 * OneMegabyte,
+            SmartScanMaxFileSizeBytes = 10 * OneMegabyte,
+            DetailedScanMaxFileSizeBytes = 10 * OneMegabyte,
             AllowedExtensions = [".mp4", ".mkv"],
             AllowedContentTypes = ["video/mp4", "video/x-matroska"]
         }));
@@ -127,12 +136,56 @@ public class UploadVideoRequestValidatorTests
     {
         var result = await _validator.ValidateAsync(new UploadVideoRequest
         {
-            File = CreateFile("sample.mp4", "video/mp4", 11),
+            File = CreateFile("sample.mp4", "video/mp4", 11 * OneMegabyte),
             ConsentAccepted = true
         });
 
         Assert.False(result.IsValid);
-        Assert.Contains(result.Errors, error => error.ErrorMessage == "The maximum allowed video size is 500 MB.");
+        Assert.Contains(result.Errors, error => error.ErrorMessage == "The maximum allowed video size for Smart Scan is 10 MB.");
+    }
+
+    [Fact]
+    public async Task AppliesDetailedScanLimitWhenDetailedModeSelected()
+    {
+        var validator = new UploadVideoRequestValidator(Options.Create(new VideoUploadOptions
+        {
+            MaxFileSizeBytes = 20 * OneMegabyte,
+            SmartScanMaxFileSizeBytes = 10 * OneMegabyte,
+            DetailedScanMaxFileSizeBytes = 20 * OneMegabyte,
+            AllowedExtensions = [".mp4"],
+            AllowedContentTypes = ["video/mp4"]
+        }));
+
+        var result = await validator.ValidateAsync(new UploadVideoRequest
+        {
+            File = CreateFile("sample.mp4", "video/mp4", 15 * OneMegabyte),
+            ConsentAccepted = true,
+            AnalysisMode = AnalysisMode.Detailed
+        });
+
+        Assert.True(result.IsValid);
+    }
+
+    [Fact]
+    public async Task AppliesSmartScanLimitByDefault()
+    {
+        var validator = new UploadVideoRequestValidator(Options.Create(new VideoUploadOptions
+        {
+            MaxFileSizeBytes = 20 * OneMegabyte,
+            SmartScanMaxFileSizeBytes = 10 * OneMegabyte,
+            DetailedScanMaxFileSizeBytes = 20 * OneMegabyte,
+            AllowedExtensions = [".mp4"],
+            AllowedContentTypes = ["video/mp4"]
+        }));
+
+        var result = await validator.ValidateAsync(new UploadVideoRequest
+        {
+            File = CreateFile("sample.mp4", "video/mp4", 15 * OneMegabyte),
+            ConsentAccepted = true
+        });
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, error => error.ErrorMessage == "The maximum allowed video size for Smart Scan is 10 MB.");
     }
 
     private static IFormFile CreateFile(string fileName, string contentType, int bytes)

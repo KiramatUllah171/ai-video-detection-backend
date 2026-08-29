@@ -773,9 +773,19 @@ public class VideoService(
             .OrderByDescending(aiResult => aiResult.CreatedAt)
             .FirstOrDefaultAsync(cancellationToken);
 
-        return result is null
-            ? ApiResponse<AnalysisResultDto>.ErrorResponse("Analysis result is not available yet.")
-            : ApiResponse<AnalysisResultDto>.SuccessResponse(new AnalysisResultDto
+        if (result is null)
+        {
+            return ApiResponse<AnalysisResultDto>.ErrorResponse("Analysis result is not available yet.");
+        }
+
+        var scanMode = await dbContext.AnalysisJobs
+            .AsNoTracking()
+            .Where(job => job.VideoId == videoId)
+            .OrderByDescending(job => job.CreatedAt)
+            .Select(job => job.ScanMode)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return ApiResponse<AnalysisResultDto>.SuccessResponse(new AnalysisResultDto
             {
                 VideoId = result.VideoId,
                 AiResultId = result.Id,
@@ -796,6 +806,7 @@ public class VideoService(
                 Warnings = GetRawStringArray(result.RawModelOutputJson, "warnings"),
                 Provider = SanitizeProviderValue(result.Provider) ?? "Internal",
                 ProviderMode = SanitizeProviderValue(result.ProviderMode) ?? "internal",
+                ScanMode = SanitizeProviderValue(scanMode),
                 FinalDecisionSource = SanitizeProviderValue(result.FinalDecisionSource) ?? "Internal",
                 ExternalProviderName = SanitizeProviderValue(result.ExternalProviderName),
                 ExternalProviderStatus = result.ExternalProviderStatus,
