@@ -26,7 +26,7 @@ public class PasswordResetOptions
 
     public string SenderEmail { get; set; } = "kiramatullahcomputer@gmail.com";
 
-    public string SenderName { get; set; } = "sachvideoai";
+    public string SenderName { get; set; } = "SachAI";
 
     public string? SmtpHost { get; set; }
 
@@ -40,5 +40,5 @@ public class PasswordResetOptions
 
     public string FromEmail { get; set; } = "no-reply@ai-video-detection.local";
 
-    public string FromName { get; set; } = "sachvideoai";
+    public string FromName { get; set; } = "SachAI";
 }

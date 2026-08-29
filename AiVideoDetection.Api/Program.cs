@@ -39,7 +39,7 @@ builder.Services.AddSwaggerGen(options =>
 {
     options.SwaggerDoc("v1", new OpenApiInfo
     {
-        Title = "sachvideoai API",
+        Title = "SachAI API",
         Version = "v1"
     });
 
@@ -122,6 +122,7 @@ using (var scope = app.Services.CreateScope())
     _ = await toolValidator.ValidateAsync();
 }
 
+app.UseMiddleware<ApiResponseLocalizationMiddleware>();
 app.UseMiddleware<GlobalExceptionHandlingMiddleware>();
 
 if (app.Environment.IsDevelopment())

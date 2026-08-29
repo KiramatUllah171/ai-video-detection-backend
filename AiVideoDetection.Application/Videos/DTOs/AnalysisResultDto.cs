@@ -40,6 +40,8 @@ public class AnalysisResultDto
 
     public string ProviderMode { get; init; } = "local";
 
+    public string? ScanMode { get; init; }
+
     public string FinalDecisionSource { get; init; } = "Local";
 
     public string? ExternalProviderName { get; init; }

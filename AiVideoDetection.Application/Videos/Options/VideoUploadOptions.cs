@@ -6,6 +6,10 @@ public class VideoUploadOptions
 
     public long MaxFileSizeBytes { get; set; } = 524_288_000;
 
+    public long SmartScanMaxFileSizeBytes { get; set; } = 209_715_200;
+
+    public long DetailedScanMaxFileSizeBytes { get; set; } = 524_288_000;
+
     public long UploadChunkSizeBytes { get; set; } = 15_728_640;
 
     public string[] AllowedExtensions { get; set; } = [".mp4", ".mov", ".avi", ".mkv", ".webm"];
