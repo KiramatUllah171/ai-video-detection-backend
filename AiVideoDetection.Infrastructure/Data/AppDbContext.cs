@@ -43,6 +43,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
     public DbSet<ApiUsageMonthly> ApiUsageMonthly => Set<ApiUsageMonthly>();
 
+    public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -97,6 +99,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         ConfigureSourceMatch(modelBuilder);
         ConfigureAiProviderRequest(modelBuilder);
         ConfigureApiUsageMonthly(modelBuilder);
+        ConfigureAuditLog(modelBuilder);
     }
 
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
@@ -298,6 +301,14 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             {
                 entry.Property(usage => usage.CreatedAt).IsModified = false;
                 entry.Entity.UpdatedAt = now;
+            }
+        }
+
+        foreach (var entry in ChangeTracker.Entries<AuditLog>())
+        {
+            if (entry.State == EntityState.Added && entry.Entity.CreatedAt == default)
+            {
+                entry.Entity.CreatedAt = now;
             }
         }
 
@@ -589,6 +600,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.HasIndex(video => video.Status)
                 .HasDatabaseName("ix_videos_status");
 
+            entity.HasIndex(video => video.RetentionDeleteAt)
+                .HasDatabaseName("ix_videos_retention_delete_at");
+
             entity.HasIndex(video => video.Sha256Hash)
                 .HasDatabaseName("ix_videos_sha256_hash");
         });
@@ -795,6 +809,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
                 .IsUnique()
                 .HasDatabaseName("ux_analysis_segments_job_index");
             entity.HasIndex(segment => segment.Status).HasDatabaseName("ix_analysis_segments_status");
+            entity.HasIndex(segment => segment.CreatedAt).HasDatabaseName("ix_analysis_segments_created_at");
         });
     }
 
@@ -903,6 +918,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.HasIndex(frame => new { frame.VideoId, frame.FrameIndex })
                 .IsUnique()
                 .HasDatabaseName("ux_video_frames_video_id_frame_index");
+
+            entity.HasIndex(frame => frame.CreatedAt)
+                .HasDatabaseName("ix_video_frames_created_at");
         });
     }
 
@@ -1067,6 +1085,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.HasIndex(result => result.Label).HasDatabaseName("ix_ai_results_label");
             entity.HasIndex(result => result.ModelVersionId).HasDatabaseName("ix_ai_results_model_version_id");
             entity.HasIndex(result => result.Provider).HasDatabaseName("ix_ai_results_provider");
+            entity.HasIndex(result => result.CreatedAt).HasDatabaseName("ix_ai_results_created_at");
         });
     }
 
@@ -1101,6 +1120,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.HasOne(request => request.User).WithMany().HasForeignKey(request => request.UserId).OnDelete(DeleteBehavior.Cascade);
             entity.HasIndex(request => new { request.VideoId, request.CreatedAt }).IsDescending(false, true).HasDatabaseName("ix_ai_provider_requests_video_created");
             entity.HasIndex(request => new { request.ProviderName, request.ProviderJobId }).HasDatabaseName("ix_ai_provider_requests_provider_job");
+            entity.HasIndex(request => request.CreatedAt).HasDatabaseName("ix_ai_provider_requests_created_at");
         });
     }
 
@@ -1121,6 +1141,55 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.Property(usage => usage.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("NOW()").IsRequired();
             entity.Property(usage => usage.UpdatedAt).HasColumnName("updated_at").HasDefaultValueSql("NOW()").IsRequired();
             entity.HasIndex(usage => new { usage.ProviderName, usage.Year, usage.Month }).IsUnique().HasDatabaseName("ux_api_usage_monthly_provider_year_month");
+        });
+    }
+
+    private static void ConfigureAuditLog(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<AuditLog>(entity =>
+        {
+            entity.ToTable("audit_logs");
+            entity.HasKey(log => log.Id);
+
+            entity.Property(log => log.Id).HasColumnName("id").UseIdentityByDefaultColumn();
+            entity.Property(log => log.UserId).HasColumnName("user_id");
+            entity.Property(log => log.UserName).HasColumnName("user_name").HasMaxLength(200);
+            entity.Property(log => log.UserEmail).HasColumnName("user_email").HasMaxLength(320);
+            entity.Property(log => log.Category).HasColumnName("category").HasMaxLength(80).IsRequired();
+            entity.Property(log => log.Action).HasColumnName("action").HasMaxLength(120).IsRequired();
+            entity.Property(log => log.Severity).HasColumnName("severity").HasMaxLength(40).IsRequired();
+            entity.Property(log => log.Message).HasColumnName("message").HasMaxLength(1000).IsRequired();
+            entity.Property(log => log.ResourceType).HasColumnName("resource_type").HasMaxLength(80);
+            entity.Property(log => log.ResourceId).HasColumnName("resource_id").HasMaxLength(120);
+            entity.Property(log => log.HttpMethod).HasColumnName("http_method").HasMaxLength(20);
+            entity.Property(log => log.Path).HasColumnName("path").HasMaxLength(500);
+            entity.Property(log => log.StatusCode).HasColumnName("status_code");
+            entity.Property(log => log.IpAddress).HasColumnName("ip_address").HasColumnType("inet");
+            entity.Property(log => log.UserAgent).HasColumnName("user_agent").HasMaxLength(500);
+            entity.Property(log => log.DetailsJson).HasColumnName("details_json").HasColumnType("jsonb");
+            entity.Property(log => log.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("NOW()").IsRequired();
+
+            entity.HasOne(log => log.User)
+                .WithMany()
+                .HasForeignKey(log => log.UserId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            entity.HasIndex(log => log.CreatedAt)
+                .IsDescending(true)
+                .HasDatabaseName("ix_audit_logs_created_at");
+            entity.HasIndex(log => new { log.UserId, log.CreatedAt })
+                .IsDescending(false, true)
+                .HasDatabaseName("ix_audit_logs_user_created");
+            entity.HasIndex(log => new { log.Category, log.CreatedAt })
+                .IsDescending(false, true)
+                .HasDatabaseName("ix_audit_logs_category_created");
+            entity.HasIndex(log => new { log.Severity, log.CreatedAt })
+                .IsDescending(false, true)
+                .HasDatabaseName("ix_audit_logs_severity_created");
+            entity.HasIndex(log => log.UserEmail)
+                .HasDatabaseName("ix_audit_logs_user_email");
+            entity.HasIndex(log => log.UserName)
+                .HasDatabaseName("ix_audit_logs_user_name");
         });
     }
 
@@ -1163,6 +1232,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.HasIndex(evidence => evidence.AiResultId).HasDatabaseName("ix_evidence_items_ai_result_id");
             entity.HasIndex(evidence => evidence.VideoFrameId).HasDatabaseName("ix_evidence_items_video_frame_id");
             entity.HasIndex(evidence => evidence.Severity).HasDatabaseName("ix_evidence_items_severity");
+            entity.HasIndex(evidence => evidence.CreatedAt).HasDatabaseName("ix_evidence_items_created_at");
         });
     }
 
@@ -1259,6 +1329,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
                 .HasDatabaseName("ix_source_matches_video_rank");
             entity.HasIndex(match => match.UploadDatetime)
                 .HasDatabaseName("ix_source_matches_upload_datetime");
+
+            entity.HasIndex(match => match.CreatedAt)
+                .HasDatabaseName("ix_source_matches_created_at");
         });
     }
 }

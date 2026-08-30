@@ -417,9 +417,17 @@ public sealed class AdminDashboardService(AppDbContext dbContext) : IAdminDashbo
             })
             .FirstOrDefaultAsync(cancellationToken);
 
-        return video is null
-            ? ApiResponse<AdminVideoFileDto>.ErrorResponse("Video was not found.")
-            : ApiResponse<AdminVideoFileDto>.SuccessResponse(video);
+        if (video is null)
+        {
+            return ApiResponse<AdminVideoFileDto>.ErrorResponse("Video was not found.");
+        }
+
+        if (string.IsNullOrWhiteSpace(video.ObjectKey))
+        {
+            return ApiResponse<AdminVideoFileDto>.ErrorResponse("The original video file is no longer available.");
+        }
+
+        return ApiResponse<AdminVideoFileDto>.SuccessResponse(video);
     }
 
     public async Task<ApiResponse<PagedResponse<AdminJobListItemDto>>> GetJobsAsync(

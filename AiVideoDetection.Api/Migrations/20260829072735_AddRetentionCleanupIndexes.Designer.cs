@@ -5,6 +5,7 @@ using AiVideoDetection.Domain.Enums;
 using AiVideoDetection.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -13,9 +14,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace AiVideoDetection.Api.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260829072735_AddRetentionCleanupIndexes")]
+    partial class AddRetentionCleanupIndexes
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -125,13 +128,13 @@ namespace AiVideoDetection.Api.Migrations
 
                     b.HasIndex("AnalysisJobId");
 
-                    b.HasIndex("CreatedAt")
-                        .HasDatabaseName("ix_ai_provider_requests_created_at");
-
                     b.HasIndex("UserId");
 
                     b.HasIndex("ProviderName", "ProviderJobId")
                         .HasDatabaseName("ix_ai_provider_requests_provider_job");
+
+                    b.HasIndex("CreatedAt")
+                        .HasDatabaseName("ix_ai_provider_requests_created_at");
 
                     b.HasIndex("VideoId", "CreatedAt")
                         .IsDescending(false, true)
@@ -290,9 +293,6 @@ namespace AiVideoDetection.Api.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("CreatedAt")
-                        .HasDatabaseName("ix_ai_results_created_at");
-
                     b.HasIndex("Label")
                         .HasDatabaseName("ix_ai_results_label");
 
@@ -301,6 +301,9 @@ namespace AiVideoDetection.Api.Migrations
 
                     b.HasIndex("Provider")
                         .HasDatabaseName("ix_ai_results_provider");
+
+                    b.HasIndex("CreatedAt")
+                        .HasDatabaseName("ix_ai_results_created_at");
 
                     b.HasIndex("VideoId", "CreatedAt")
                         .IsDescending(false, true)
@@ -582,11 +585,11 @@ namespace AiVideoDetection.Api.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("CreatedAt")
-                        .HasDatabaseName("ix_analysis_segments_created_at");
-
                     b.HasIndex("Status")
                         .HasDatabaseName("ix_analysis_segments_status");
+
+                    b.HasIndex("CreatedAt")
+                        .HasDatabaseName("ix_analysis_segments_created_at");
 
                     b.HasIndex("VideoId");
 
@@ -666,123 +669,6 @@ namespace AiVideoDetection.Api.Migrations
                         .HasDatabaseName("ux_api_usage_monthly_provider_year_month");
 
                     b.ToTable("api_usage_monthly", (string)null);
-                });
-
-            modelBuilder.Entity("AiVideoDetection.Domain.Entities.AuditLog", b =>
-                {
-                    b.Property<long>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint")
-                        .HasColumnName("id");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
-
-                    b.Property<string>("Action")
-                        .IsRequired()
-                        .HasMaxLength(120)
-                        .HasColumnType("character varying(120)")
-                        .HasColumnName("action");
-
-                    b.Property<string>("Category")
-                        .IsRequired()
-                        .HasMaxLength(80)
-                        .HasColumnType("character varying(80)")
-                        .HasColumnName("category");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at")
-                        .HasDefaultValueSql("NOW()");
-
-                    b.Property<string>("DetailsJson")
-                        .HasColumnType("jsonb")
-                        .HasColumnName("details_json");
-
-                    b.Property<string>("HttpMethod")
-                        .HasMaxLength(20)
-                        .HasColumnType("character varying(20)")
-                        .HasColumnName("http_method");
-
-                    b.Property<IPAddress>("IpAddress")
-                        .HasColumnType("inet")
-                        .HasColumnName("ip_address");
-
-                    b.Property<string>("Message")
-                        .IsRequired()
-                        .HasMaxLength(1000)
-                        .HasColumnType("character varying(1000)")
-                        .HasColumnName("message");
-
-                    b.Property<string>("Path")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)")
-                        .HasColumnName("path");
-
-                    b.Property<string>("ResourceId")
-                        .HasMaxLength(120)
-                        .HasColumnType("character varying(120)")
-                        .HasColumnName("resource_id");
-
-                    b.Property<string>("ResourceType")
-                        .HasMaxLength(80)
-                        .HasColumnType("character varying(80)")
-                        .HasColumnName("resource_type");
-
-                    b.Property<string>("Severity")
-                        .IsRequired()
-                        .HasMaxLength(40)
-                        .HasColumnType("character varying(40)")
-                        .HasColumnName("severity");
-
-                    b.Property<int?>("StatusCode")
-                        .HasColumnType("integer")
-                        .HasColumnName("status_code");
-
-                    b.Property<string>("UserAgent")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)")
-                        .HasColumnName("user_agent");
-
-                    b.Property<string>("UserEmail")
-                        .HasMaxLength(320)
-                        .HasColumnType("character varying(320)")
-                        .HasColumnName("user_email");
-
-                    b.Property<long?>("UserId")
-                        .HasColumnType("bigint")
-                        .HasColumnName("user_id");
-
-                    b.Property<string>("UserName")
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)")
-                        .HasColumnName("user_name");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("CreatedAt")
-                        .IsDescending()
-                        .HasDatabaseName("ix_audit_logs_created_at");
-
-                    b.HasIndex("UserEmail")
-                        .HasDatabaseName("ix_audit_logs_user_email");
-
-                    b.HasIndex("UserName")
-                        .HasDatabaseName("ix_audit_logs_user_name");
-
-                    b.HasIndex("Category", "CreatedAt")
-                        .IsDescending(false, true)
-                        .HasDatabaseName("ix_audit_logs_category_created");
-
-                    b.HasIndex("Severity", "CreatedAt")
-                        .IsDescending(false, true)
-                        .HasDatabaseName("ix_audit_logs_severity_created");
-
-                    b.HasIndex("UserId", "CreatedAt")
-                        .IsDescending(false, true)
-                        .HasDatabaseName("ix_audit_logs_user_created");
-
-                    b.ToTable("audit_logs", (string)null);
                 });
 
             modelBuilder.Entity("AiVideoDetection.Domain.Entities.EmailConfirmationToken", b =>
@@ -886,11 +772,11 @@ namespace AiVideoDetection.Api.Migrations
                     b.HasIndex("AiResultId")
                         .HasDatabaseName("ix_evidence_items_ai_result_id");
 
-                    b.HasIndex("CreatedAt")
-                        .HasDatabaseName("ix_evidence_items_created_at");
-
                     b.HasIndex("Severity")
                         .HasDatabaseName("ix_evidence_items_severity");
+
+                    b.HasIndex("CreatedAt")
+                        .HasDatabaseName("ix_evidence_items_created_at");
 
                     b.HasIndex("VideoFrameId")
                         .HasDatabaseName("ix_evidence_items_video_frame_id");
@@ -1317,11 +1203,11 @@ namespace AiVideoDetection.Api.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("CreatedAt")
-                        .HasDatabaseName("ix_source_matches_created_at");
-
                     b.HasIndex("UploadDatetime")
                         .HasDatabaseName("ix_source_matches_upload_datetime");
+
+                    b.HasIndex("CreatedAt")
+                        .HasDatabaseName("ix_source_matches_created_at");
 
                     b.HasIndex("VideoId", "Rank")
                         .HasDatabaseName("ix_source_matches_video_rank");
@@ -1489,11 +1375,11 @@ namespace AiVideoDetection.Api.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("RetentionDeleteAt")
-                        .HasDatabaseName("ix_videos_retention_delete_at");
-
                     b.HasIndex("Sha256Hash")
                         .HasDatabaseName("ix_videos_sha256_hash");
+
+                    b.HasIndex("RetentionDeleteAt")
+                        .HasDatabaseName("ix_videos_retention_delete_at");
 
                     b.HasIndex("Status")
                         .HasDatabaseName("ix_videos_status");
@@ -1553,11 +1439,11 @@ namespace AiVideoDetection.Api.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("CreatedAt")
-                        .HasDatabaseName("ix_video_frames_created_at");
-
                     b.HasIndex("VideoId")
                         .HasDatabaseName("ix_video_frames_video_id");
+
+                    b.HasIndex("CreatedAt")
+                        .HasDatabaseName("ix_video_frames_created_at");
 
                     b.HasIndex("VideoId", "FrameIndex")
                         .IsUnique()
@@ -1646,16 +1532,6 @@ namespace AiVideoDetection.Api.Migrations
                     b.Navigation("AnalysisJob");
 
                     b.Navigation("Video");
-                });
-
-            modelBuilder.Entity("AiVideoDetection.Domain.Entities.AuditLog", b =>
-                {
-                    b.HasOne("AiVideoDetection.Domain.Entities.User", "User")
-                        .WithMany()
-                        .HasForeignKey("UserId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
-                    b.Navigation("User");
                 });
 
             modelBuilder.Entity("AiVideoDetection.Domain.Entities.EmailConfirmationToken", b =>

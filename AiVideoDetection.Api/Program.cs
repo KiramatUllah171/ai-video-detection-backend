@@ -140,7 +140,20 @@ if (!app.Environment.IsDevelopment())
 app.UseCors("ReactFrontend");
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseMiddleware<AuditLogMiddleware>();
 app.MapControllers();
+
+RecurringJob.AddOrUpdate<IRetentionCleanupService>(
+    "cleanup-temporary-video-files",
+    "analysis",
+    service => service.CleanupTemporaryFilesAsync(),
+    Cron.Hourly());
+
+RecurringJob.AddOrUpdate<IRetentionCleanupService>(
+    "cleanup-expired-video-retention-assets",
+    "analysis",
+    service => service.CleanupExpiredRetainedAssetsAsync(),
+    Cron.Hourly());
 
 app.Run();
 

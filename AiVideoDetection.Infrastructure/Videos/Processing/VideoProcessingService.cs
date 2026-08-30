@@ -68,7 +68,10 @@ public class VideoProcessingService(
             return;
         }
 
-        if (job.Video is null || job.Video.DeletedAt is not null || job.Video.Status == VideoStatus.Deleted)
+        if (job.Video is null
+            || job.Video.DeletedAt is not null
+            || job.Video.Status == VideoStatus.Deleted
+            || string.IsNullOrWhiteSpace(job.Video.FileUrl))
         {
             await MarkFailedAsync(job, "PreparingVideo", "VIDEO_NOT_AVAILABLE", "Video is not available for processing.", cancellationToken);
             return;

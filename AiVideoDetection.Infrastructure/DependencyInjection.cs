@@ -11,6 +11,7 @@ using AiVideoDetection.Infrastructure.Videos;
 using AiVideoDetection.Infrastructure.Videos.Ai;
 using AiVideoDetection.Infrastructure.Videos.Matching;
 using AiVideoDetection.Infrastructure.Videos.Processing;
+using AiVideoDetection.Infrastructure.Videos.Retention;
 using AiVideoDetection.Infrastructure.Videos.Reports;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
@@ -91,6 +92,10 @@ public static class DependencyInjection
             .Validate(options => options.SegmentConcurrency is >= 1 and <= 8, "Segment concurrency must be 1-8.")
             .Validate(options => options.MaxConcurrentProviderRequests is >= 1 and <= 32, "Max concurrent provider requests must be 1-32.")
             .Validate(options => options.MinimumRequiredCoverageRatio is > 0 and <= 1, "Minimum coverage ratio must be between 0 and 1.")
+            .Validate(options => options.TemporaryFileRetentionHours >= 1, "Temporary file retention must be at least 1 hour.")
+            .Validate(options => options.OriginalVideoRetentionDays >= 1, "Original video retention must be at least 1 day.")
+            .Validate(options => options.ReportRetention >= options.OriginalVideoRetention, "Report retention must be greater than or equal to original video retention.")
+            .Validate(options => options.DetailedResultRetention >= options.ReportRetention, "Detailed result retention must be greater than or equal to report retention.")
             .ValidateOnStart();
         services.Configure<AiServiceOptions>(configuration.GetSection(AiServiceOptions.SectionName));
         services.PostConfigure<AiServiceOptions>(options =>
@@ -127,6 +132,7 @@ public static class DependencyInjection
 
         services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<IAdminDashboardService, AdminDashboardService>();
+        services.AddScoped<IAuditLogService, AuditLogService>();
         services.AddScoped<IJwtTokenService, JwtTokenService>();
         services.AddScoped<IPasswordHasher, PasswordHasher>();
         services.AddScoped<IPasswordResetEmailSender, SmtpAuthEmailSender>();
@@ -137,6 +143,7 @@ public static class DependencyInjection
         services.AddScoped<IJobService, JobService>();
         services.AddScoped<IAnalysisJobQueue, HangfireAnalysisJobQueue>();
         services.AddScoped<IVideoProcessingService, VideoProcessingService>();
+        services.AddScoped<IRetentionCleanupService, RetentionCleanupService>();
         services.AddScoped<IFrameExtractionService, FrameExtractionService>();
         services.AddScoped<IMetadataExtractionService, MetadataExtractionService>();
         services.AddScoped<IJobLogService, JobLogService>();

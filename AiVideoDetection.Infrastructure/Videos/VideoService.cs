@@ -88,7 +88,8 @@ public class VideoService(
                 FileExtension = extension,
                 FileSize = file.Length,
                 Sha256Hash = sha256Hash,
-                Status = VideoStatus.Uploaded
+                Status = VideoStatus.Uploaded,
+                RetentionDeleteAt = DateTimeOffset.UtcNow.Add(_processingOptions.OriginalVideoRetention)
             };
 
             var job = new AnalysisJob
@@ -157,10 +158,15 @@ public class VideoService(
     {
         page = Math.Max(page, 1);
         pageSize = Math.Clamp(pageSize, 1, 100);
+        var now = DateTimeOffset.UtcNow;
+        var reportCutoff = now.Subtract(_processingOptions.ReportRetention);
 
         var query = dbContext.Videos
             .AsNoTracking()
-            .Where(video => video.UserId == currentUserId && video.DeletedAt == null && video.Status != VideoStatus.Deleted);
+            .Where(video => video.UserId == currentUserId
+                && video.DeletedAt == null
+                && video.Status != VideoStatus.Deleted
+                && (video.FileUrl != string.Empty || video.AiResults.Any(result => result.CreatedAt > reportCutoff)));
 
         if (!string.IsNullOrWhiteSpace(status) && Enum.TryParse<VideoStatus>(status, true, out var parsedStatus))
         {
@@ -181,6 +187,8 @@ public class VideoService(
                 FileExtension = video.FileExtension,
                 Status = video.Status.ToString(),
                 CreatedAt = video.CreatedAt,
+                IsOriginalVideoAvailable = video.FileUrl != string.Empty,
+                IsReportAvailable = video.AiResults.Any(result => result.CreatedAt > reportCutoff),
                 LatestJobId = video.AnalysisJobs
                     .OrderByDescending(job => job.CreatedAt)
                     .ThenByDescending(job => job.Id)
@@ -275,6 +283,11 @@ public class VideoService(
             return ApiResponse<UploadVideoResponse>.ErrorResponse("Video was not found.");
         }
 
+        if (!HasStoredMedia(video))
+        {
+            return ApiResponse<UploadVideoResponse>.ErrorResponse("The original video file is no longer available for reanalysis.");
+        }
+
         var job = new AnalysisJob
         {
             VideoId = video.Id,
@@ -322,6 +335,11 @@ public class VideoService(
         if (video is null)
         {
             return ApiResponse<UploadVideoResponse>.ErrorResponse("Video was not found.");
+        }
+
+        if (!HasStoredMedia(video))
+        {
+            return ApiResponse<UploadVideoResponse>.ErrorResponse("The original video file is no longer available for retry.");
         }
 
         var latestJob = video.AnalysisJobs
@@ -485,6 +503,11 @@ public class VideoService(
         if (job is null)
         {
             return ApiResponse<JobStatusDto>.ErrorResponse("Analysis job was not found.");
+        }
+
+        if (job.Video is null || !HasStoredMedia(job.Video))
+        {
+            return ApiResponse<JobStatusDto>.ErrorResponse("The original video file is no longer available for resume.");
         }
 
         if (job.Status == JobStatus.Cancelled || job.Status == JobStatus.CancelRequested || job.CancelRequested)
@@ -737,7 +760,7 @@ public class VideoService(
 
         var frames = await dbContext.VideoFrames
             .AsNoTracking()
-            .Where(frame => frame.VideoId == videoId)
+            .Where(frame => frame.VideoId == videoId && frame.FrameUrl != string.Empty)
             .OrderBy(frame => frame.FrameIndex)
             .Select(frame => new VideoFrameDto
             {
@@ -944,6 +967,11 @@ public class VideoService(
             MaxRetryCount = job.MaxRetryCount,
             Message = message
         };
+    }
+
+    private static bool HasStoredMedia(Video video)
+    {
+        return !string.IsNullOrWhiteSpace(video.FileUrl);
     }
 
     private static bool IsActiveJob(AnalysisJob job)

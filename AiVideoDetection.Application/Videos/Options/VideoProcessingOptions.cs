@@ -38,7 +38,19 @@ public class VideoProcessingOptions
 
     public int TemporaryFileRetentionHours { get; set; } = 24;
 
-    public int OriginalVideoRetentionDays { get; set; } = 30;
+    public int OriginalVideoRetentionDays { get; set; } = 3;
+
+    public int ReportRetentionDays { get; set; } = 30;
+
+    public int DetailedResultRetentionDays { get; set; } = 30;
+
+    public TimeSpan TemporaryFileRetention => TimeSpan.FromHours(TemporaryFileRetentionHours);
+
+    public TimeSpan OriginalVideoRetention => TimeSpan.FromDays(OriginalVideoRetentionDays);
+
+    public TimeSpan ReportRetention => TimeSpan.FromDays(ReportRetentionDays);
+
+    public TimeSpan DetailedResultRetention => TimeSpan.FromDays(DetailedResultRetentionDays);
 
     public Dictionary<string, int> ProgressStageWeights { get; set; } = new()
     {

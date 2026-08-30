@@ -16,6 +16,10 @@ public class VideoHistoryItemDto
 
     public DateTimeOffset CreatedAt { get; init; }
 
+    public bool IsOriginalVideoAvailable { get; init; }
+
+    public bool IsReportAvailable { get; init; }
+
     public long? LatestJobId { get; init; }
 
     public string? LatestJobStatus { get; init; }
