@@ -117,7 +117,7 @@ public class VideosController(
     }
 
     [HttpGet("{videoId:long}/report/pdf")]
-    [Produces("application/pdf")]
+    [Produces("application/pdf", "application/json")]
     [ProducesResponseType(typeof(FileContentResult), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<AnalysisReportFile>), StatusCodes.Status404NotFound)]
     [ProducesResponseType(typeof(ApiResponse<AnalysisReportFile>), StatusCodes.Status401Unauthorized)]
@@ -131,6 +131,11 @@ public class VideosController(
         var response = await analysisReportService.GeneratePdfAsync(videoId, currentUserId, cancellationToken);
         if (!response.Success || response.Data is null)
         {
+            if (response.Message.Contains("report retention period has ended", StringComparison.OrdinalIgnoreCase))
+            {
+                return StatusCode(StatusCodes.Status410Gone, response);
+            }
+
             return NotFound(response);
         }
 

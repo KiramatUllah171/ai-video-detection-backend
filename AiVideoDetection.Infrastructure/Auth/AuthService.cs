@@ -1,6 +1,9 @@
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using AiVideoDetection.Application.Admin.DTOs;
+using AiVideoDetection.Application.Admin.Interfaces;
 using AiVideoDetection.Application.Auth.DTOs;
 using AiVideoDetection.Application.Auth.Interfaces;
 using AiVideoDetection.Application.Common;
@@ -21,8 +24,10 @@ public class AuthService(
     IOptions<PasswordResetOptions> passwordResetOptions,
     IPasswordResetEmailSender passwordResetEmailSender,
     IEmailConfirmationSender emailConfirmationSender,
+    IAuditLogService auditLogService,
     ILogger<AuthService> logger) : IAuthService
 {
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private const string EmailNotFoundMessage = "We could not find an account with this email address.";
     private const string InvalidPasswordMessage = "The password you entered is incorrect. Please try again.";
     private const string ForgotPasswordMessage = "If an eligible account exists for this email address, a secure password reset link has been sent.";
@@ -46,6 +51,7 @@ public class AuthService(
         if (emailExists)
         {
             logger.LogInformation("Signup rejected because email already exists.");
+            await LogAuthAsync(null, request.Name, normalizedEmail, "SignupRejected", "Warning", "Signup rejected because the email address already exists.", null, cancellationToken);
             return ApiResponse<bool>.ErrorResponse("This email address is already registered. Please sign in or use another email address.");
         }
 
@@ -63,6 +69,7 @@ public class AuthService(
         await dbContext.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation("User signup succeeded for user id {UserId}.", user.Id);
+        await LogAuthAsync(user.Id, user.Name, user.Email, "SignupSucceeded", "Information", "User account was created.", null, cancellationToken);
         await CreateAndSendEmailConfirmationAsync(user, cancellationToken);
 
         return ApiResponse<bool>.SuccessResponse(true, "Account created successfully. Please confirm your email address before signing in.");
@@ -80,30 +87,35 @@ public class AuthService(
         if (user is null)
         {
             logger.LogInformation("Login failed because the email address was not found.");
+            await LogAuthAsync(null, null, normalizedEmail, "LoginFailed", "Warning", "Login failed because the email address was not found.", ipAddress, cancellationToken);
             return ApiResponse<AuthResponse>.ErrorResponse(EmailNotFoundMessage);
         }
 
         if (!passwordHasher.VerifyPassword(request.Password, user.PasswordHash))
         {
             logger.LogInformation("Login failed because the password was incorrect for user id {UserId}.", user.Id);
+            await LogAuthAsync(user.Id, user.Name, user.Email, "LoginFailed", "Warning", "Login failed because the password was incorrect.", ipAddress, cancellationToken);
             return ApiResponse<AuthResponse>.ErrorResponse(InvalidPasswordMessage);
         }
 
         if (!user.IsActive)
         {
             logger.LogInformation("Inactive user login rejected for user id {UserId}.", user.Id);
+            await LogAuthAsync(user.Id, user.Name, user.Email, "LoginRejected", "Warning", "Login rejected because the user account is inactive.", ipAddress, cancellationToken);
             return ApiResponse<AuthResponse>.ErrorResponse("User account is inactive.");
         }
 
         if (!user.EmailConfirmed)
         {
             logger.LogInformation("Login rejected because email is not confirmed for user id {UserId}.", user.Id);
+            await LogAuthAsync(user.Id, user.Name, user.Email, "LoginRejected", "Warning", "Login rejected because the email address is not confirmed.", ipAddress, cancellationToken);
             return ApiResponse<AuthResponse>.ErrorResponse(EmailNotConfirmedMessage);
         }
 
         logger.LogInformation("Login succeeded for user id {UserId}.", user.Id);
 
         var response = await CreateAuthResponseAsync(user, ipAddress, cancellationToken);
+        await LogAuthAsync(user.Id, user.Name, user.Email, "LoginSucceeded", "Information", "User signed in successfully.", ipAddress, cancellationToken);
         return ApiResponse<AuthResponse>.SuccessResponse(response, "Signed in successfully.");
     }
 
@@ -149,6 +161,7 @@ public class AuthService(
     {
         var tokenHash = HashRefreshToken(request.RefreshToken);
         var refreshToken = await dbContext.RefreshTokens
+            .Include(token => token.User)
             .FirstOrDefaultAsync(token => token.TokenHash == tokenHash, cancellationToken);
 
         if (refreshToken is not null && refreshToken.RevokedAt is null)
@@ -157,6 +170,7 @@ public class AuthService(
             await dbContext.SaveChangesAsync(cancellationToken);
 
             logger.LogInformation("Refresh token revoked for user id {UserId}.", refreshToken.UserId);
+            await LogAuthAsync(refreshToken.UserId, refreshToken.User.Name, refreshToken.User.Email, "LogoutSucceeded", "Information", "User signed out successfully.", null, cancellationToken);
         }
 
         return ApiResponse<bool>.SuccessResponse(true, "Logout successful.");
@@ -173,6 +187,7 @@ public class AuthService(
         if (user is null || !user.IsActive)
         {
             logger.LogInformation("Password reset requested for a non-existent or inactive account.");
+            await LogAuthAsync(null, null, normalizedEmail, "PasswordResetRequested", "Warning", "Password reset was requested for an ineligible account.", null, cancellationToken);
             return ApiResponse<bool>.SuccessResponse(true, ForgotPasswordMessage);
         }
 
@@ -201,6 +216,7 @@ public class AuthService(
         await passwordResetEmailSender.SendPasswordResetAsync(user, resetUrl, cancellationToken);
 
         logger.LogInformation("Password reset email delivery requested for user id {UserId}.", user.Id);
+        await LogAuthAsync(user.Id, user.Name, user.Email, "PasswordResetRequested", "Information", "Password reset email was requested.", null, cancellationToken);
         return ApiResponse<bool>.SuccessResponse(true, ForgotPasswordMessage);
     }
 
@@ -217,18 +233,21 @@ public class AuthService(
         if (resetToken is null || resetToken.ExpiresAt <= now)
         {
             logger.LogInformation("Password reset rejected because the token is invalid or expired.");
+            await LogAuthAsync(null, null, null, "PasswordResetRejected", "Warning", "Password reset was rejected because the link is invalid or expired.", null, cancellationToken);
             return ApiResponse<bool>.ErrorResponse(InvalidResetTokenMessage);
         }
 
         if (resetToken.UsedAt is not null)
         {
             logger.LogInformation("Password reset rejected because the token was already used for user id {UserId}.", resetToken.UserId);
+            await LogAuthAsync(resetToken.UserId, resetToken.User.Name, resetToken.User.Email, "PasswordResetRejected", "Warning", "Password reset was rejected because the link was already used.", null, cancellationToken);
             return ApiResponse<bool>.ErrorResponse(UsedResetTokenMessage);
         }
 
         if (!resetToken.User.IsActive)
         {
             logger.LogInformation("Password reset rejected for inactive user id {UserId}.", resetToken.UserId);
+            await LogAuthAsync(resetToken.UserId, resetToken.User.Name, resetToken.User.Email, "PasswordResetRejected", "Warning", "Password reset was rejected because the account is inactive.", null, cancellationToken);
             return ApiResponse<bool>.ErrorResponse(InvalidResetTokenMessage);
         }
 
@@ -246,6 +265,7 @@ public class AuthService(
         await dbContext.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation("Password reset succeeded for user id {UserId}.", resetToken.UserId);
+        await LogAuthAsync(resetToken.UserId, resetToken.User.Name, resetToken.User.Email, "PasswordResetCompleted", "Information", "User password was reset successfully.", null, cancellationToken);
         return ApiResponse<bool>.SuccessResponse(true, "Your password has been reset successfully.");
     }
 
@@ -288,18 +308,21 @@ public class AuthService(
         if (confirmationToken is null || confirmationToken.ExpiresAt <= now)
         {
             logger.LogInformation("Email confirmation rejected because the token is invalid or expired.");
+            await LogAuthAsync(null, null, null, "EmailConfirmationRejected", "Warning", "Email confirmation was rejected because the link is invalid or expired.", null, cancellationToken);
             return ApiResponse<bool>.ErrorResponse(InvalidConfirmationTokenMessage);
         }
 
         if (confirmationToken.UsedAt is not null)
         {
             logger.LogInformation("Email confirmation skipped because the token was already used for user id {UserId}.", confirmationToken.UserId);
+            await LogAuthAsync(confirmationToken.UserId, confirmationToken.User.Name, confirmationToken.User.Email, "EmailConfirmationRejected", "Warning", "Email confirmation was skipped because the link was already used.", null, cancellationToken);
             return ApiResponse<bool>.SuccessResponse(true, ConfirmationTokenAlreadyUsedMessage);
         }
 
         if (!confirmationToken.User.IsActive)
         {
             logger.LogInformation("Email confirmation rejected for inactive user id {UserId}.", confirmationToken.UserId);
+            await LogAuthAsync(confirmationToken.UserId, confirmationToken.User.Name, confirmationToken.User.Email, "EmailConfirmationRejected", "Warning", "Email confirmation was rejected because the account is inactive.", null, cancellationToken);
             return ApiResponse<bool>.ErrorResponse(InvalidConfirmationTokenMessage);
         }
 
@@ -308,6 +331,7 @@ public class AuthService(
         await dbContext.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation("Email confirmed for user id {UserId}.", confirmationToken.UserId);
+        await LogAuthAsync(confirmationToken.UserId, confirmationToken.User.Name, confirmationToken.User.Email, "EmailConfirmed", "Information", "User email address was confirmed.", null, cancellationToken);
         return ApiResponse<bool>.SuccessResponse(true, "Your email address has been confirmed successfully.");
     }
 
@@ -375,6 +399,7 @@ public class AuthService(
         await dbContext.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation("Deleting unconfirmed user id {UserId} after email holder declined confirmation.", confirmationToken.UserId);
+        await LogAuthAsync(confirmationToken.UserId, confirmationToken.User.Name, confirmationToken.User.Email, "EmailConfirmationDeclined", "Information", "Email confirmation was declined and the unconfirmed account was removed.", null, cancellationToken);
         dbContext.Users.Remove(confirmationToken.User);
         await dbContext.SaveChangesAsync(cancellationToken);
 
@@ -397,6 +422,7 @@ public class AuthService(
 
         await CreateAndSendEmailConfirmationAsync(user, cancellationToken);
         logger.LogInformation("Email confirmation resent for user id {UserId}.", user.Id);
+        await LogAuthAsync(user.Id, user.Name, user.Email, "EmailConfirmationResent", "Information", "Email confirmation link was resent.", null, cancellationToken);
         return ApiResponse<bool>.SuccessResponse(true, ResendConfirmationMessage);
     }
 
@@ -515,6 +541,30 @@ public class AuthService(
     private static string NormalizeEmail(string email)
     {
         return email.Trim().ToLowerInvariant();
+    }
+
+    private Task LogAuthAsync(
+        long? userId,
+        string? userName,
+        string? userEmail,
+        string action,
+        string severity,
+        string message,
+        string? ipAddress,
+        CancellationToken cancellationToken)
+    {
+        return auditLogService.LogAsync(new AuditLogCreateDto
+        {
+            UserId = userId,
+            UserName = userName,
+            UserEmail = userEmail,
+            Category = "Authentication",
+            Action = action,
+            Severity = severity,
+            Message = message,
+            IpAddress = ipAddress,
+            DetailsJson = JsonSerializer.Serialize(new { source = "AuthService" }, JsonOptions)
+        }, cancellationToken);
     }
 
     private static UserDto MapUser(User user)

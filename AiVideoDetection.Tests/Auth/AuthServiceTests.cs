@@ -1,3 +1,6 @@
+using AiVideoDetection.Application.Admin.DTOs;
+using AiVideoDetection.Application.Admin.Interfaces;
+using AiVideoDetection.Application.Common;
 using AiVideoDetection.Application.Auth.DTOs;
 using AiVideoDetection.Application.Auth.Interfaces;
 using AiVideoDetection.Domain.Entities;
@@ -328,6 +331,7 @@ public class AuthServiceTests
             Options.Create(new PasswordResetOptions()),
             emailSender ?? new TestPasswordResetEmailSender(),
             emailSender ?? new TestPasswordResetEmailSender(),
+            new NoopAuditLogService(),
             NullLogger<AuthService>.Instance);
     }
 
@@ -359,6 +363,27 @@ public class AuthServiceTests
         {
             ConfirmationUrls.Add(confirmationUrl);
             return Task.CompletedTask;
+        }
+    }
+
+    private sealed class NoopAuditLogService : IAuditLogService
+    {
+        public Task LogAsync(AuditLogCreateDto entry, CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task<ApiResponse<PagedResponse<AdminAuditLogDto>>> GetLogsAsync(
+            int page,
+            int pageSize,
+            string? search,
+            DateTimeOffset? from,
+            DateTimeOffset? to,
+            string? severity,
+            string? category,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(ApiResponse<PagedResponse<AdminAuditLogDto>>.SuccessResponse(new PagedResponse<AdminAuditLogDto>()));
         }
     }
 

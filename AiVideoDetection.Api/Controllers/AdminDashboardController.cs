@@ -13,7 +13,8 @@ namespace AiVideoDetection.Api.Controllers;
 [Route("api/admin")]
 public sealed class AdminDashboardController(
     IAdminDashboardService adminDashboardService,
-    IObjectStorageService objectStorageService) : ControllerBase
+    IObjectStorageService objectStorageService,
+    IAuditLogService auditLogService) : ControllerBase
 {
     [HttpGet("dashboard/summary")]
     [ProducesResponseType(typeof(ApiResponse<AdminDashboardSummaryDto>), StatusCodes.Status200OK)]
@@ -137,6 +138,22 @@ public sealed class AdminDashboardController(
         CancellationToken cancellationToken = default)
     {
         var response = await adminDashboardService.GetProviderRequestUsersAsync(page, pageSize, search, cancellationToken);
+        return Ok(response);
+    }
+
+    [HttpGet("logs")]
+    [ProducesResponseType(typeof(ApiResponse<PagedResponse<AdminAuditLogDto>>), StatusCodes.Status200OK)]
+    public async Task<ActionResult<ApiResponse<PagedResponse<AdminAuditLogDto>>>> Logs(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 10,
+        [FromQuery] string? search = null,
+        [FromQuery] DateTimeOffset? from = null,
+        [FromQuery] DateTimeOffset? to = null,
+        [FromQuery] string? severity = null,
+        [FromQuery] string? category = null,
+        CancellationToken cancellationToken = default)
+    {
+        var response = await auditLogService.GetLogsAsync(page, pageSize, search, from, to, severity, category, cancellationToken);
         return Ok(response);
     }
 

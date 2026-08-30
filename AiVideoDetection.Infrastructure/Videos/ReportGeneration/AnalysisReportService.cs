@@ -5,17 +5,20 @@ using System.Text.Json;
 using AiVideoDetection.Application.Common;
 using AiVideoDetection.Application.Videos.DTOs;
 using AiVideoDetection.Application.Videos.Interfaces;
+using AiVideoDetection.Application.Videos.Options;
 using AiVideoDetection.Domain.Entities;
 using AiVideoDetection.Domain.Enums;
 using AiVideoDetection.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace AiVideoDetection.Infrastructure.Videos.Reports;
 
-public class AnalysisReportService(AppDbContext dbContext) : IAnalysisReportService
+public class AnalysisReportService(AppDbContext dbContext, IOptions<VideoProcessingOptions> options) : IAnalysisReportService
 {
     private const string ProductName = "SachAI";
     private const decimal PercentageScale = 100m;
+    private readonly VideoProcessingOptions _options = options.Value;
 
     public async Task<ApiResponse<AnalysisReportFile>> GeneratePdfAsync(
         long videoId,
@@ -44,6 +47,12 @@ public class AnalysisReportService(AppDbContext dbContext) : IAnalysisReportServ
             return ApiResponse<AnalysisReportFile>.ErrorResponse("Analysis report is not available yet.");
         }
 
+        if (result.CreatedAt <= DateTimeOffset.UtcNow.Subtract(_options.ReportRetention))
+        {
+            return ApiResponse<AnalysisReportFile>.ErrorResponse(
+                $"This report is no longer available because the {FormatRetentionPeriod(_options.ReportRetention)} report retention period has ended.");
+        }
+
         var reportReference = CreateReportReference(result);
         var document = new ReportPdfDocument(reportReference, DateTimeOffset.UtcNow);
         BuildReport(document, result, reportReference);
@@ -53,6 +62,21 @@ public class AnalysisReportService(AppDbContext dbContext) : IAnalysisReportServ
             FileName = CreateReportFileName(result.Video.OriginalName, result.CreatedAt),
             Content = document.Save()
         });
+    }
+
+    private static string FormatRetentionPeriod(TimeSpan retention)
+    {
+        if (retention.TotalDays >= 1 && retention.TotalDays % 1 == 0)
+        {
+            return $"{(int)retention.TotalDays}-day";
+        }
+
+        if (retention.TotalHours >= 1 && retention.TotalHours % 1 == 0)
+        {
+            return $"{(int)retention.TotalHours}-hour";
+        }
+
+        return $"{Math.Max(1, (int)Math.Ceiling(retention.TotalMinutes))}-minute";
     }
 
     private static void BuildReport(ReportPdfDocument document, AiResult result, string reportReference)

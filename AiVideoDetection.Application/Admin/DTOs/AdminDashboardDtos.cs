@@ -350,3 +350,73 @@ public sealed class AdminVideoFileDto
 
     public string ContentType { get; init; } = "application/octet-stream";
 }
+
+public sealed class AuditLogCreateDto
+{
+    public long? UserId { get; init; }
+
+    public string? UserName { get; init; }
+
+    public string? UserEmail { get; init; }
+
+    public string Category { get; init; } = string.Empty;
+
+    public string Action { get; init; } = string.Empty;
+
+    public string Severity { get; init; } = "Information";
+
+    public string Message { get; init; } = string.Empty;
+
+    public string? ResourceType { get; init; }
+
+    public string? ResourceId { get; init; }
+
+    public string? HttpMethod { get; init; }
+
+    public string? Path { get; init; }
+
+    public int? StatusCode { get; init; }
+
+    public string? IpAddress { get; init; }
+
+    public string? UserAgent { get; init; }
+
+    public string? DetailsJson { get; init; }
+}
+
+public sealed class AdminAuditLogDto
+{
+    public long Id { get; init; }
+
+    public long? UserId { get; init; }
+
+    public string? UserName { get; init; }
+
+    public string? UserEmail { get; init; }
+
+    public string Category { get; init; } = string.Empty;
+
+    public string Action { get; init; } = string.Empty;
+
+    public string Severity { get; init; } = string.Empty;
+
+    public string Message { get; init; } = string.Empty;
+
+    public string? ResourceType { get; init; }
+
+    public string? ResourceId { get; init; }
+
+    public string? HttpMethod { get; init; }
+
+    public string? Path { get; init; }
+
+    public int? StatusCode { get; init; }
+
+    public string? IpAddress { get; init; }
+
+    public string? UserAgent { get; init; }
+
+    public string? DetailsJson { get; init; }
+
+    public DateTimeOffset CreatedAt { get; init; }
+}
