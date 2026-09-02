@@ -78,6 +78,10 @@ public class VideoProcessingService(
         }
 
         var workDirectory = Path.GetFullPath(Path.Combine(_options.WorkingRootPath, job.Id.ToString()));
+        var callerCancellationToken = cancellationToken;
+        using var workerTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        workerTimeoutCts.CancelAfter(_options.WorkerTimeout);
+        cancellationToken = workerTimeoutCts.Token;
 
         try
         {
@@ -212,6 +216,22 @@ public class VideoProcessingService(
 
             await jobLogService.LogAsync(job.Id, "Completed", "Information", CompletedStep, null, cancellationToken);
         }
+        catch (ProcessingException exception) when (exception.ErrorCode == "CANCELLED" && HasWorkerTimedOut(workerTimeoutCts, callerCancellationToken))
+        {
+            await MarkWorkerTimedOutAsync(job, exception);
+            throw new ProcessingException(
+                "WORKER_TIMEOUT",
+                $"Video processing timed out after {_options.WorkerTimeoutMinutes} minutes.",
+                exception);
+        }
+        catch (OperationCanceledException exception) when (HasWorkerTimedOut(workerTimeoutCts, callerCancellationToken))
+        {
+            await MarkWorkerTimedOutAsync(job, exception);
+            throw new ProcessingException(
+                "WORKER_TIMEOUT",
+                $"Video processing timed out after {_options.WorkerTimeoutMinutes} minutes.",
+                exception);
+        }
         catch (AnalysisPausedException exception)
         {
             logger.LogInformation(exception, "Analysis job {JobId} paused at checkpoint {Checkpoint}.", job.Id, job.LastCheckpoint);
@@ -260,6 +280,22 @@ public class VideoProcessingService(
         {
             TryDeleteDirectory(workDirectory);
         }
+    }
+
+    private static bool HasWorkerTimedOut(CancellationTokenSource workerTimeoutCts, CancellationToken callerCancellationToken)
+    {
+        return workerTimeoutCts.IsCancellationRequested && !callerCancellationToken.IsCancellationRequested;
+    }
+
+    private async Task MarkWorkerTimedOutAsync(AnalysisJob job, Exception exception)
+    {
+        logger.LogError(exception, "Analysis job {JobId} timed out after {TimeoutMinutes} minutes.", job.Id, _options.WorkerTimeoutMinutes);
+        await MarkFailedAsync(
+            job,
+            "TimedOut",
+            "WORKER_TIMEOUT",
+            $"Video processing timed out after {_options.WorkerTimeoutMinutes} minutes.",
+            CancellationToken.None);
     }
 
     private async Task<IReadOnlyList<AnalysisSegment>> GetOrCreateSegmentsAsync(
@@ -398,6 +434,20 @@ public class VideoProcessingService(
             segment.AttemptCount++;
             segment.LastActivityAt = DateTimeOffset.UtcNow;
             await dbContext.SaveChangesAsync(cancellationToken);
+            await jobLogService.LogAsync(
+                job.Id,
+                "ProviderRequestCreated",
+                "Information",
+                "Provider request prepared.",
+                new { providerMode, segment.SegmentIndex, segment.AttemptCount },
+                cancellationToken);
+            await jobLogService.LogAsync(
+                job.Id,
+                "ProviderRequestSent",
+                "Information",
+                "Provider request sent.",
+                new { providerMode, segment.SegmentIndex, segment.AttemptCount },
+                cancellationToken);
             var response = await aiInferenceClient.AnalyzeVideoAsync(
                 new AiAnalyzeVideoRequest(job.VideoId, job.Id, job.Video.UserId, providerMode, clipPath, [], segment.SegmentIndex, segment.AttemptCount),
                 cancellationToken);
@@ -411,6 +461,13 @@ public class VideoProcessingService(
             segment.CompletedAt = DateTimeOffset.UtcNow;
             segment.LastActivityAt = DateTimeOffset.UtcNow;
             await dbContext.SaveChangesAsync(cancellationToken);
+            await jobLogService.LogAsync(
+                job.Id,
+                "ProviderRequestReceived",
+                "Information",
+                "Provider response received.",
+                new { providerMode, segment.SegmentIndex, segment.ProviderRequestId },
+                cancellationToken);
             await UpdateSegmentProgressAsync(job.Id, cancellationToken);
             await CheckForPauseOrCancellationAsync(job, $"After provider response for part {segment.SegmentIndex} of {job.TotalSegments}", cancellationToken);
         }
@@ -428,6 +485,13 @@ public class VideoProcessingService(
             segment.FailedAt = DateTimeOffset.UtcNow;
             segment.LastActivityAt = DateTimeOffset.UtcNow;
             await dbContext.SaveChangesAsync(CancellationToken.None);
+            await jobLogService.LogAsync(
+                job.Id,
+                "ProviderRequestFailed",
+                "Error",
+                segment.SafeErrorMessage ?? "Provider request failed.",
+                new { providerMode, segment.SegmentIndex, segment.ErrorCode },
+                CancellationToken.None);
             throw;
         }
         finally
@@ -850,7 +914,9 @@ public class VideoProcessingService(
             .FirstOrDefaultAsync(existing => existing.ProviderName == providerName && existing.Year == year && existing.Month == month, cancellationToken);
         if (usage is not null)
         {
-            usage.QuotaLimit = _aiServiceOptions.BitMindMonthlyQuota;
+            usage.QuotaLimit = string.Equals(providerName, "BitMind", StringComparison.OrdinalIgnoreCase)
+                ? _aiServiceOptions.BitMindMonthlyQuota
+                : 0;
             return usage;
         }
 
@@ -859,7 +925,9 @@ public class VideoProcessingService(
             ProviderName = providerName,
             Year = year,
             Month = month,
-            QuotaLimit = _aiServiceOptions.BitMindMonthlyQuota
+            QuotaLimit = string.Equals(providerName, "BitMind", StringComparison.OrdinalIgnoreCase)
+                ? _aiServiceOptions.BitMindMonthlyQuota
+                : 0
         };
         dbContext.ApiUsageMonthly.Add(usage);
         await dbContext.SaveChangesAsync(cancellationToken);
@@ -984,8 +1052,19 @@ public class VideoProcessingService(
         AiAnalyzeFramesResponse aiResponse,
         CancellationToken cancellationToken)
     {
+        if (ShouldTrackInternalProviderUsage(aiResult))
+        {
+            await UpdateProviderUsageAsync(
+                "Internal",
+                aiResult.CreatedAt,
+                succeeded: true,
+                billable: true,
+                cancellationToken);
+        }
+
         if (string.IsNullOrWhiteSpace(aiResult.ExternalProviderName))
         {
+            await dbContext.SaveChangesAsync(cancellationToken);
             return;
         }
 
@@ -1012,29 +1091,49 @@ public class VideoProcessingService(
             RawResponseJson = aiResult.ExternalRawResponseJson
         });
 
-        var usage = await dbContext.ApiUsageMonthly
-            .FirstOrDefaultAsync(existing => existing.ProviderName == aiResult.ExternalProviderName
-                && existing.Year == aiResult.CreatedAt.Year
-                && existing.Month == aiResult.CreatedAt.Month, cancellationToken);
-        if (usage is not null)
+        if (string.Equals(aiResult.ExternalProviderStatus, "Completed", StringComparison.OrdinalIgnoreCase))
         {
-            if (string.Equals(aiResult.ExternalProviderStatus, "Completed", StringComparison.OrdinalIgnoreCase))
-            {
-                usage.RequestCount++;
-                usage.SuccessCount++;
-            }
-            else if (string.Equals(aiResult.ExternalProviderStatus, "Skipped", StringComparison.OrdinalIgnoreCase))
-            {
-                // Skipped external checks are not billable provider attempts.
-            }
-            else
-            {
-                usage.RequestCount++;
-                usage.FailedCount++;
-            }
+            await UpdateProviderUsageAsync(aiResult.ExternalProviderName, aiResult.CreatedAt, succeeded: true, billable: true, cancellationToken);
+        }
+        else if (!string.Equals(aiResult.ExternalProviderStatus, "Skipped", StringComparison.OrdinalIgnoreCase))
+        {
+            await UpdateProviderUsageAsync(aiResult.ExternalProviderName, aiResult.CreatedAt, succeeded: false, billable: true, cancellationToken);
         }
 
         await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task UpdateProviderUsageAsync(
+        string providerName,
+        DateTimeOffset occurredAt,
+        bool succeeded,
+        bool billable,
+        CancellationToken cancellationToken)
+    {
+        if (!billable)
+        {
+            return;
+        }
+
+        var usage = await GetOrCreateUsageAsync(providerName, occurredAt.Year, occurredAt.Month, cancellationToken);
+        usage.RequestCount++;
+        if (succeeded)
+        {
+            usage.SuccessCount++;
+        }
+        else
+        {
+            usage.FailedCount++;
+        }
+    }
+
+    private static bool ShouldTrackInternalProviderUsage(AiResult aiResult)
+    {
+        return string.IsNullOrWhiteSpace(aiResult.ExternalProviderName)
+            || aiResult.FallbackUsed
+            || string.Equals(aiResult.Provider, "Local", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(aiResult.FinalDecisionSource, "Local", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(aiResult.ProviderMode, "local", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string BuildProviderRequestMetadata(AiAnalyzeFramesResponse aiResponse)

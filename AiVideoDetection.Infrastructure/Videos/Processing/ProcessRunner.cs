@@ -1,11 +1,15 @@
 using System.Diagnostics;
 using AiVideoDetection.Application.Videos.Interfaces;
+using AiVideoDetection.Application.Videos.Options;
 using AiVideoDetection.Application.Videos.Processing;
+using Microsoft.Extensions.Options;
 
 namespace AiVideoDetection.Infrastructure.Videos.Processing;
 
-public class ProcessRunner(IFfmpegToolLocator toolLocator) : IProcessRunner
+public class ProcessRunner(IFfmpegToolLocator toolLocator, IOptions<VideoProcessingOptions> options) : IProcessRunner
 {
+    private readonly VideoProcessingOptions _options = options.Value;
+
     public async Task<ProcessRunResult> RunAsync(
         string toolName,
         string configuredFileName,
@@ -28,6 +32,9 @@ public class ProcessRunner(IFfmpegToolLocator toolLocator) : IProcessRunner
         }
 
         using var process = new Process { StartInfo = startInfo };
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var timeout = GetTimeout(toolName);
+        timeoutCts.CancelAfter(timeout);
 
         try
         {
@@ -51,10 +58,21 @@ public class ProcessRunner(IFfmpegToolLocator toolLocator) : IProcessRunner
                 exception);
         }
 
-        var outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        var errorTask = process.StandardError.ReadToEndAsync(cancellationToken);
+        var outputTask = process.StandardOutput.ReadToEndAsync(timeoutCts.Token);
+        var errorTask = process.StandardError.ReadToEndAsync(timeoutCts.Token);
 
-        await process.WaitForExitAsync(cancellationToken);
+        try
+        {
+            await process.WaitForExitAsync(timeoutCts.Token);
+        }
+        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested && timeoutCts.IsCancellationRequested)
+        {
+            KillProcessTree(process);
+            throw new ProcessingException(
+                "PROCESS_TIMEOUT",
+                $"{toolName} timed out after {Math.Ceiling(timeout.TotalSeconds)} seconds.",
+                exception);
+        }
 
         return new ProcessRunResult(
             process.ExitCode,
@@ -74,5 +92,26 @@ public class ProcessRunner(IFfmpegToolLocator toolLocator) : IProcessRunner
         return string.Equals(toolName, "ffprobe", StringComparison.OrdinalIgnoreCase)
             ? "FfprobePath"
             : "FfmpegPath";
+    }
+
+    private TimeSpan GetTimeout(string toolName)
+    {
+        return string.Equals(toolName, "ffprobe", StringComparison.OrdinalIgnoreCase)
+            ? _options.FfprobeTimeout
+            : _options.FfmpegTimeout;
+    }
+
+    private static void KillProcessTree(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (InvalidOperationException)
+        {
+        }
     }
 }

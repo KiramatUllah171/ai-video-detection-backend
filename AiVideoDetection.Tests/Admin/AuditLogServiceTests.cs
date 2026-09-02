@@ -1,9 +1,12 @@
 using AiVideoDetection.Application.Admin.DTOs;
+using AiVideoDetection.Application.Common;
 using AiVideoDetection.Domain.Entities;
 using AiVideoDetection.Infrastructure.Admin;
+using AiVideoDetection.Infrastructure.Common;
 using AiVideoDetection.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace AiVideoDetection.Tests.Admin;
 
@@ -13,7 +16,7 @@ public class AuditLogServiceTests
     public async Task GetLogsAsyncFiltersByUserDateSeverityAndCategory()
     {
         await using var dbContext = CreateDbContext();
-        var service = new AuditLogService(dbContext, NullLogger<AuditLogService>.Instance);
+        var service = CreateService(dbContext);
         var now = DateTimeOffset.UtcNow;
 
         dbContext.AuditLogs.Add(new AuditLog
@@ -62,7 +65,7 @@ public class AuditLogServiceTests
     public async Task GetLogsAsyncReturnsTenItemsPerPageByDefaultRequest()
     {
         await using var dbContext = CreateDbContext();
-        var service = new AuditLogService(dbContext, NullLogger<AuditLogService>.Instance);
+        var service = CreateService(dbContext);
 
         for (var index = 0; index < 12; index++)
         {
@@ -98,7 +101,7 @@ public class AuditLogServiceTests
     public async Task GetLogsAsyncExcludesNoisyReadOnlyLogs()
     {
         await using var dbContext = CreateDbContext();
-        var service = new AuditLogService(dbContext, NullLogger<AuditLogService>.Instance);
+        var service = CreateService(dbContext);
         var now = DateTimeOffset.UtcNow;
 
         dbContext.AuditLogs.AddRange(
@@ -169,10 +172,42 @@ public class AuditLogServiceTests
         Assert.Equal("ReportDownload", log.Action);
     }
 
+    [Fact]
+    public async Task LogAsyncPersistsCorrelationIdFromAccessor()
+    {
+        await using var dbContext = CreateDbContext();
+        var accessor = new CorrelationIdAccessor { CorrelationId = "test-correlation-id" };
+        var service = new AuditLogService(dbContext, accessor, CreateAlertService(), NullLogger<AuditLogService>.Instance);
+
+        await service.LogAsync(new AuditLogCreateDto
+        {
+            UserName = "Test User",
+            Category = "Authentication",
+            Action = "LoginSucceeded",
+            Severity = "Information",
+            Message = "User signed in successfully."
+        });
+
+        var log = await dbContext.AuditLogs.SingleAsync();
+        Assert.Equal("test-correlation-id", log.CorrelationId);
+    }
+
     private static AppDbContext CreateDbContext()
     {
         return new AppDbContext(new DbContextOptionsBuilder<AppDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options);
+    }
+
+    private static AuditLogService CreateService(AppDbContext dbContext)
+    {
+        return new AuditLogService(dbContext, new CorrelationIdAccessor(), CreateAlertService(), NullLogger<AuditLogService>.Instance);
+    }
+
+    private static LoggingMonitoringAlertService CreateAlertService()
+    {
+        return new LoggingMonitoringAlertService(
+            Options.Create(new MonitoringOptions()),
+            NullLogger<LoggingMonitoringAlertService>.Instance);
     }
 }

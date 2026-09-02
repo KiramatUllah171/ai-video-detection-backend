@@ -16,6 +16,7 @@ public class PythonAiInferenceClient(
     IHttpClientFactory httpClientFactory,
     IOptions<AiServiceOptions> options,
     IProviderRequestGate providerRequestGate,
+    IProviderCircuitBreaker providerCircuitBreaker,
     ILogger<PythonAiInferenceClient> logger) : IAiInferenceClient
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -121,6 +122,14 @@ public class PythonAiInferenceClient(
                     frame.ImageBase64))
                 .ToList());
 
+        var circuitKey = ResolveCircuitKey(request.ProviderMode);
+        if (!providerCircuitBreaker.CanExecute(circuitKey, DateTimeOffset.UtcNow))
+        {
+            throw new AiServiceException(
+                "AI_SERVICE_CIRCUIT_OPEN",
+                "The external analysis service is temporarily paused after repeated failures. Please try again shortly.");
+        }
+
         var maxAttempts = Math.Max(1, _options.TransientRetryCount + 1);
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
@@ -169,6 +178,11 @@ public class PythonAiInferenceClient(
                         continue;
                     }
 
+                    if (IsCircuitBreakerFailure(response.StatusCode))
+                    {
+                        RecordProviderFailure(circuitKey);
+                    }
+
                     throw new AiServiceException(
                         errorCode,
                         errorResponse is null
@@ -180,6 +194,7 @@ public class PythonAiInferenceClient(
                 var serviceResponse = JsonSerializer.Deserialize<AnalyzeFramesHttpResponse>(rawJson, JsonOptions);
                 if (serviceResponse is null)
                 {
+                    RecordProviderFailure(circuitKey);
                     throw new AiServiceException("AI_SERVICE_INVALID_RESPONSE", "AI analysis service returned an invalid response.");
                 }
 
@@ -192,6 +207,7 @@ public class PythonAiInferenceClient(
                     attempt,
                     maxAttempts,
                     Math.Round(elapsedMs));
+                providerCircuitBreaker.RecordSuccess(circuitKey);
                 return serviceResponse.ToApplicationResponse(rawJson);
             }
             catch (TaskCanceledException exception) when (!cancellationToken.IsCancellationRequested)
@@ -213,6 +229,7 @@ public class PythonAiInferenceClient(
                     continue;
                 }
 
+                RecordProviderFailure(circuitKey);
                 throw new AiServiceException("AI_SERVICE_TIMEOUT", "AI analysis service timed out. Please try again later.", exception);
             }
             catch (HttpRequestException exception)
@@ -234,14 +251,17 @@ public class PythonAiInferenceClient(
                     continue;
                 }
 
+                RecordProviderFailure(circuitKey);
                 throw new AiServiceException("AI_SERVICE_UNAVAILABLE", "AI analysis service is currently unavailable. Please try again later.", exception);
             }
             catch (JsonException exception)
             {
+                RecordProviderFailure(circuitKey);
                 throw new AiServiceException("AI_SERVICE_INVALID_RESPONSE", "AI analysis service returned an invalid response.", exception);
             }
         }
 
+        RecordProviderFailure(circuitKey);
         throw new AiServiceException("AI_VIDEO_SERVICE_UNAVAILABLE", "External video analysis is temporarily unavailable.");
     }
 
@@ -276,9 +296,13 @@ public class PythonAiInferenceClient(
     private async Task DelayBeforeRetryAsync(HttpResponseMessage? response, int attempt, CancellationToken cancellationToken)
     {
         var retryAfter = response?.Headers.RetryAfter?.Delta;
+        var exponent = Math.Min(Math.Max(attempt - 1, 0), 6);
+        var baseDelaySeconds = Math.Max(1, _options.TransientRetryBackoffSeconds);
+        var exponentialDelay = TimeSpan.FromSeconds(Math.Min(120, baseDelaySeconds * Math.Pow(2, exponent)));
+        var jitter = TimeSpan.FromMilliseconds(Random.Shared.Next(100, 500));
         var delay = retryAfter is { TotalSeconds: > 0 }
             ? retryAfter.Value
-            : TimeSpan.FromSeconds(Math.Max(1, _options.TransientRetryBackoffSeconds) * attempt);
+            : exponentialDelay.Add(jitter);
         await Task.Delay(delay, cancellationToken);
     }
 
@@ -290,6 +314,30 @@ public class PythonAiInferenceClient(
             or HttpStatusCode.BadGateway
             or HttpStatusCode.ServiceUnavailable
             or HttpStatusCode.GatewayTimeout;
+    }
+
+    private static bool IsCircuitBreakerFailure(HttpStatusCode statusCode)
+    {
+        return IsTransientStatusCode(statusCode);
+    }
+
+    private void RecordProviderFailure(string circuitKey)
+    {
+        providerCircuitBreaker.RecordFailure(
+            circuitKey,
+            DateTimeOffset.UtcNow,
+            _options.CircuitBreakerFailureThreshold,
+            TimeSpan.FromSeconds(Math.Clamp(_options.CircuitBreakerBreakSeconds, 10, 3600)));
+    }
+
+    private string ResolveCircuitKey(string providerMode)
+    {
+        var normalized = providerMode.Replace("_", string.Empty, StringComparison.OrdinalIgnoreCase);
+        return normalized.Equals("bitmind", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("external", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("hybrid", StringComparison.OrdinalIgnoreCase)
+            ? "BitMind"
+            : "Internal";
     }
 
     private static string MapVideoServiceErrorCode(HttpStatusCode statusCode, string? providerErrorCode)
@@ -463,6 +511,7 @@ public class PythonAiInferenceClient(
             "AI_SERVICE_TIMEOUT" => "The external analysis service took too long to respond. Please retry.",
             "AI_SERVICE_INVALID_REQUEST" => "External video analysis could not accept the prepared video segment.",
             "AI_VIDEO_SERVICE_UNAVAILABLE" => "External video analysis is temporarily unavailable.",
+            "AI_SERVICE_CIRCUIT_OPEN" => "The external analysis service is temporarily paused after repeated failures. Please try again shortly.",
             _ => string.IsNullOrWhiteSpace(fallback) ? "AI analysis could not be completed for this video." : fallback
         };
     }

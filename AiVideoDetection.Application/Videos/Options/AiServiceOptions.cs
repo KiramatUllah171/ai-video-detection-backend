@@ -20,6 +20,10 @@ public class AiServiceOptions
 
     public int TransientRetryBackoffSeconds { get; set; } = 5;
 
+    public int CircuitBreakerFailureThreshold { get; set; } = 5;
+
+    public int CircuitBreakerBreakSeconds { get; set; } = 60;
+
     public int MaxFramesPerRequest { get; set; } = 30;
 
     public string FrameSamplingStrategy { get; set; } = "uniform";

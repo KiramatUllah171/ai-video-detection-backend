@@ -1,6 +1,8 @@
 using AiVideoDetection.Application.Videos.Interfaces;
+using AiVideoDetection.Application.Videos.Options;
 using AiVideoDetection.Application.Videos.Processing;
 using AiVideoDetection.Infrastructure.Videos.Processing;
+using Microsoft.Extensions.Options;
 
 namespace AiVideoDetection.Tests.Videos;
 
@@ -9,7 +11,7 @@ public class ProcessRunnerTests
     [Fact]
     public async Task MissingToolIncludesToolNameAndConfiguredValue()
     {
-        var runner = new ProcessRunner(new ThrowingToolLocator());
+        var runner = new ProcessRunner(new ThrowingToolLocator(), Options.Create(new VideoProcessingOptions()));
 
         var exception = await Assert.ThrowsAsync<ProcessingException>(
             () => runner.RunAsync("ffprobe", "missing-ffprobe", ["-version"], CancellationToken.None));

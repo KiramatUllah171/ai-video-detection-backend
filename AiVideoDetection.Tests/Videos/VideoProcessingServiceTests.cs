@@ -7,6 +7,7 @@ using AiVideoDetection.Application.Videos.Matching;
 using AiVideoDetection.Application.Videos.Processing;
 using AiVideoDetection.Domain.Entities;
 using AiVideoDetection.Domain.Enums;
+using AiVideoDetection.Infrastructure.Common;
 using AiVideoDetection.Infrastructure.Data;
 using AiVideoDetection.Infrastructure.Videos.Ai;
 using AiVideoDetection.Infrastructure.Videos.Processing;
@@ -365,11 +366,18 @@ public class VideoProcessingServiceTests
             new FakeEvidenceGenerationService(),
             new FakeFrameHashService(),
             new FakeInternalVideoMatchingService(),
-            new JobLogService(dbContext),
+            new JobLogService(dbContext, new CorrelationIdAccessor(), CreateAlertService()),
             Options.Create(new VideoProcessingOptions { WorkingRootPath = workRoot }),
             Options.Create(new InternalMatchingOptions { Enabled = true, FailJobOnMatchingError = false }),
             Options.Create(aiOptions ?? new AiServiceOptions { MaxFramesPerRequest = 30 }),
             NullLogger<VideoProcessingService>.Instance);
+    }
+
+    private static LoggingMonitoringAlertService CreateAlertService()
+    {
+        return new LoggingMonitoringAlertService(
+            Options.Create(new MonitoringOptions()),
+            NullLogger<LoggingMonitoringAlertService>.Instance);
     }
 
     private static async Task<AnalysisJob> SeedQueuedJobAsync(AppDbContext dbContext)

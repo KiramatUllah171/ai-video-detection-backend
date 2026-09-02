@@ -1,15 +1,32 @@
 using AiVideoDetection.Domain.Entities;
 using AiVideoDetection.Domain.Enums;
+using AiVideoDetection.Application.Common;
+using AiVideoDetection.Infrastructure.Common;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.NameTranslation;
 
 namespace AiVideoDetection.Infrastructure.Data;
 
-public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options)
+public class AppDbContext : IdentityDbContext<User, IdentityRole<long>, long>
 {
     private static readonly NpgsqlNullNameTranslator EnumNameTranslator = new();
+    private readonly IApplicationEncryptionService _encryptionService;
 
-    public DbSet<User> Users => Set<User>();
+    public AppDbContext(DbContextOptions<AppDbContext> options)
+        : this(options, NoOpApplicationEncryptionService.Instance)
+    {
+    }
+
+    public AppDbContext(
+        DbContextOptions<AppDbContext> options,
+        IApplicationEncryptionService encryptionService)
+        : base(options)
+    {
+        _encryptionService = encryptionService;
+    }
 
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
 
@@ -44,6 +61,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<ApiUsageMonthly> ApiUsageMonthly => Set<ApiUsageMonthly>();
 
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
+
+    public DbSet<RetentionCleanupRun> RetentionCleanupRuns => Set<RetentionCleanupRun>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -100,6 +119,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         ConfigureAiProviderRequest(modelBuilder);
         ConfigureApiUsageMonthly(modelBuilder);
         ConfigureAuditLog(modelBuilder);
+        ConfigureRetentionCleanupRun(modelBuilder);
     }
 
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
@@ -312,65 +332,98 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             }
         }
 
+        foreach (var entry in ChangeTracker.Entries<RetentionCleanupRun>())
+        {
+            if (entry.State == EntityState.Added && entry.Entity.CreatedAt == default)
+            {
+                entry.Entity.CreatedAt = now;
+            }
+        }
+
         return base.SaveChangesAsync(cancellationToken);
+    }
+
+    private ValueConverter<string?, string?> EncryptedNullableStringConverter()
+    {
+        return new ValueConverter<string?, string?>(
+            value => _encryptionService.ProtectString(value),
+            value => _encryptionService.UnprotectString(value));
+    }
+
+    private ValueConverter<string, string> EncryptedRequiredStringConverter()
+    {
+        return new ValueConverter<string, string>(
+            value => _encryptionService.ProtectString(value) ?? string.Empty,
+            value => _encryptionService.UnprotectString(value) ?? string.Empty);
     }
 
     private static void ConfigureUser(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<User>(entity =>
         {
-            entity.ToTable("users");
-
-            entity.HasKey(user => user.Id);
+            entity.ToTable("AspNetUsers");
 
             entity.Property(user => user.Id)
-                .HasColumnName("id")
                 .UseIdentityByDefaultColumn();
 
             entity.Property(user => user.Name)
-                .HasColumnName("name")
                 .HasMaxLength(200)
                 .IsRequired();
 
             entity.Property(user => user.Email)
-                .HasColumnName("email")
                 .HasMaxLength(320)
                 .IsRequired();
 
+            entity.Property(user => user.NormalizedEmail)
+                .HasMaxLength(320);
+
+            entity.Property(user => user.UserName)
+                .HasMaxLength(320);
+
+            entity.Property(user => user.NormalizedUserName)
+                .HasMaxLength(320);
+
             entity.Property(user => user.PasswordHash)
-                .HasColumnName("password_hash")
+                .IsRequired();
+
+            entity.Property(user => user.SecurityStamp)
+                .HasMaxLength(64)
+                .HasDefaultValueSql("md5(random()::text || clock_timestamp()::text)")
+                .IsRequired();
+
+            entity.Property(user => user.AccessFailedCount)
+                .HasDefaultValue(0)
+                .IsRequired();
+
+            entity.Property(user => user.LockoutEnabled)
+                .HasDefaultValue(true)
                 .IsRequired();
 
             entity.Property(user => user.Role)
-                .HasColumnName("role")
                 .HasColumnType("user_role")
                 .HasSentinel((UserRole)(-1))
                 .HasDefaultValueSql("'User'::user_role")
                 .IsRequired();
 
             entity.Property(user => user.IsActive)
-                .HasColumnName("is_active")
                 .HasDefaultValue(true)
                 .IsRequired();
 
             entity.Property(user => user.EmailConfirmed)
-                .HasColumnName("email_confirmed")
                 .HasDefaultValue(false)
                 .IsRequired();
 
             entity.Property(user => user.CreatedAt)
-                .HasColumnName("created_at")
                 .HasDefaultValueSql("NOW()")
                 .IsRequired();
 
             entity.Property(user => user.UpdatedAt)
-                .HasColumnName("updated_at")
                 .HasDefaultValueSql("NOW()")
                 .IsRequired();
 
             entity.HasIndex(user => user.Email)
                 .IsUnique()
-                .HasDatabaseName("ix_users_email");
+                .HasDatabaseName("ix_aspnet_users_email");
         });
     }
 
@@ -417,6 +470,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
             entity.HasIndex(refreshToken => refreshToken.UserId)
                 .HasDatabaseName("ix_refresh_tokens_user_id");
+            entity.HasIndex(refreshToken => refreshToken.TokenHash)
+                .HasDatabaseName("ix_refresh_tokens_token_hash");
         });
     }
 
@@ -597,6 +652,14 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
                 .IsDescending(false, true)
                 .HasDatabaseName("ix_videos_user_created");
 
+            entity.HasIndex(video => new { video.DeletedAt, video.CreatedAt })
+                .IsDescending(false, true)
+                .HasDatabaseName("ix_videos_deleted_created");
+
+            entity.HasIndex(video => new { video.Status, video.DeletedAt, video.CreatedAt })
+                .IsDescending(false, false, true)
+                .HasDatabaseName("ix_videos_status_deleted_created");
+
             entity.HasIndex(video => video.Status)
                 .HasDatabaseName("ix_videos_status");
 
@@ -605,6 +668,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
             entity.HasIndex(video => video.Sha256Hash)
                 .HasDatabaseName("ix_videos_sha256_hash");
+            entity.HasIndex(video => new { video.UserId, video.Sha256Hash })
+                .HasDatabaseName("ix_videos_user_sha256_hash");
         });
     }
 
@@ -751,6 +816,14 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.HasIndex(job => job.Status)
                 .HasDatabaseName("ix_analysis_jobs_status");
 
+            entity.HasIndex(job => job.CreatedAt)
+                .IsDescending(true)
+                .HasDatabaseName("ix_analysis_jobs_created_at");
+
+            entity.HasIndex(job => new { job.Status, job.CreatedAt })
+                .IsDescending(false, true)
+                .HasDatabaseName("ix_analysis_jobs_status_created");
+
             entity.HasIndex(job => job.VideoId)
                 .IsUnique()
                 .HasFilter("status NOT IN ('Completed', 'Failed', 'Cancelled')")
@@ -758,7 +831,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         });
     }
 
-    private static void ConfigureAnalysisSegment(ModelBuilder modelBuilder)
+    private void ConfigureAnalysisSegment(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<AnalysisSegment>(entity =>
         {
@@ -788,7 +861,10 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.Property(segment => segment.ProviderRequestId).HasColumnName("provider_request_id").HasMaxLength(200);
             entity.Property(segment => segment.AiScore).HasColumnName("ai_score");
             entity.Property(segment => segment.Confidence).HasColumnName("confidence");
-            entity.Property(segment => segment.ResultJson).HasColumnName("result_json").HasColumnType("jsonb");
+            entity.Property(segment => segment.ResultJson)
+                .HasColumnName("result_json")
+                .HasColumnType("text")
+                .HasConversion(EncryptedNullableStringConverter());
             entity.Property(segment => segment.ErrorCode).HasColumnName("error_code").HasMaxLength(100);
             entity.Property(segment => segment.SafeErrorMessage).HasColumnName("safe_error_message");
             entity.Property(segment => segment.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("NOW()").IsRequired();
@@ -813,7 +889,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         });
     }
 
-    private static void ConfigureJobLog(ModelBuilder modelBuilder)
+    private void ConfigureJobLog(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<JobLog>(entity =>
         {
@@ -841,11 +917,17 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
             entity.Property(log => log.Message)
                 .HasColumnName("message")
+                .HasConversion(EncryptedRequiredStringConverter())
                 .IsRequired();
 
             entity.Property(log => log.DetailsJson)
                 .HasColumnName("details_json")
-                .HasColumnType("jsonb");
+                .HasColumnType("text")
+                .HasConversion(EncryptedNullableStringConverter());
+
+            entity.Property(log => log.CorrelationId)
+                .HasColumnName("correlation_id")
+                .HasMaxLength(128);
 
             entity.Property(log => log.CreatedAt)
                 .HasColumnName("created_at")
@@ -860,6 +942,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.HasIndex(log => new { log.JobId, log.CreatedAt })
                 .IsDescending(false, true)
                 .HasDatabaseName("ix_job_logs_job_id_created");
+            entity.HasIndex(log => log.CorrelationId)
+                .HasDatabaseName("ix_job_logs_correlation_id");
         });
     }
 
@@ -924,7 +1008,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         });
     }
 
-    private static void ConfigureMetadataResult(ModelBuilder modelBuilder)
+    private void ConfigureMetadataResult(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<MetadataResult>(entity =>
         {
@@ -962,7 +1046,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
                 .HasColumnName("bitrate");
 
             entity.Property(metadata => metadata.Encoder)
-                .HasColumnName("encoder");
+                .HasColumnName("encoder")
+                .HasConversion(EncryptedNullableStringConverter());
 
             entity.Property(metadata => metadata.CreationTime)
                 .HasColumnName("creation_time");
@@ -973,11 +1058,13 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
             entity.Property(metadata => metadata.WarningsJson)
                 .HasColumnName("warnings_json")
-                .HasColumnType("jsonb");
+                .HasColumnType("text")
+                .HasConversion(EncryptedNullableStringConverter());
 
             entity.Property(metadata => metadata.RawJson)
                 .HasColumnName("raw_json")
-                .HasColumnType("jsonb");
+                .HasColumnType("text")
+                .HasConversion(EncryptedNullableStringConverter());
 
             entity.Property(metadata => metadata.CreatedAt)
                 .HasColumnName("created_at")
@@ -1024,7 +1111,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         });
     }
 
-    private static void ConfigureAiResult(ModelBuilder modelBuilder)
+    private void ConfigureAiResult(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<AiResult>(entity =>
         {
@@ -1046,9 +1133,12 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
                 .IsRequired();
             entity.Property(result => result.RawModelOutputJson)
                 .HasColumnName("raw_model_output_json")
-                .HasColumnType("jsonb")
+                .HasColumnType("text")
+                .HasConversion(EncryptedRequiredStringConverter())
                 .IsRequired();
-            entity.Property(result => result.Summary).HasColumnName("summary").HasMaxLength(1000);
+            entity.Property(result => result.Summary)
+                .HasColumnName("summary")
+                .HasConversion(EncryptedNullableStringConverter());
             entity.Property(result => result.Provider).HasColumnName("provider").HasMaxLength(100).HasDefaultValue("Local").IsRequired();
             entity.Property(result => result.ProviderMode).HasColumnName("provider_mode").HasMaxLength(50).HasDefaultValue("local").IsRequired();
             entity.Property(result => result.FinalDecisionSource).HasColumnName("final_decision_source").HasMaxLength(50).HasDefaultValue("Local").IsRequired();
@@ -1059,14 +1149,27 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.Property(result => result.ExternalScore).HasColumnName("external_score");
             entity.Property(result => result.ExternalConfidence).HasColumnName("external_confidence");
             entity.Property(result => result.ExternalLabel).HasColumnName("external_label").HasMaxLength(100);
-            entity.Property(result => result.ExternalRawResponseJson).HasColumnName("external_raw_response_json").HasColumnType("jsonb");
-            entity.Property(result => result.ExternalErrorMessage).HasColumnName("external_error_message");
+            entity.Property(result => result.ExternalRawResponseJson)
+                .HasColumnName("external_raw_response_json")
+                .HasColumnType("text")
+                .HasConversion(EncryptedNullableStringConverter());
+            entity.Property(result => result.ExternalErrorMessage)
+                .HasColumnName("external_error_message")
+                .HasConversion(EncryptedNullableStringConverter());
             entity.Property(result => result.ExternalRequestedAt).HasColumnName("external_requested_at");
             entity.Property(result => result.ExternalCompletedAt).HasColumnName("external_completed_at");
             entity.Property(result => result.FallbackUsed).HasColumnName("fallback_used").HasDefaultValue(false).IsRequired();
-            entity.Property(result => result.FallbackReason).HasColumnName("fallback_reason");
-            entity.Property(result => result.LocalResultJson).HasColumnName("local_result_json").HasColumnType("jsonb");
-            entity.Property(result => result.HybridResultJson).HasColumnName("hybrid_result_json").HasColumnType("jsonb");
+            entity.Property(result => result.FallbackReason)
+                .HasColumnName("fallback_reason")
+                .HasConversion(EncryptedNullableStringConverter());
+            entity.Property(result => result.LocalResultJson)
+                .HasColumnName("local_result_json")
+                .HasColumnType("text")
+                .HasConversion(EncryptedNullableStringConverter());
+            entity.Property(result => result.HybridResultJson)
+                .HasColumnName("hybrid_result_json")
+                .HasColumnType("text")
+                .HasConversion(EncryptedNullableStringConverter());
             entity.Property(result => result.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("NOW()").IsRequired();
 
             entity.HasOne(result => result.Video)
@@ -1089,7 +1192,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         });
     }
 
-    private static void ConfigureAiProviderRequest(ModelBuilder modelBuilder)
+    private void ConfigureAiProviderRequest(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<AiProviderRequest>(entity =>
         {
@@ -1109,9 +1212,17 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.Property(request => request.RequestCompletedAt).HasColumnName("request_completed_at");
             entity.Property(request => request.DurationMs).HasColumnName("duration_ms");
             entity.Property(request => request.HttpStatusCode).HasColumnName("http_status_code");
-            entity.Property(request => request.ErrorMessage).HasColumnName("error_message");
-            entity.Property(request => request.RawRequestMetadataJson).HasColumnName("raw_request_metadata_json").HasColumnType("jsonb");
-            entity.Property(request => request.RawResponseJson).HasColumnName("raw_response_json").HasColumnType("jsonb");
+            entity.Property(request => request.ErrorMessage)
+                .HasColumnName("error_message")
+                .HasConversion(EncryptedNullableStringConverter());
+            entity.Property(request => request.RawRequestMetadataJson)
+                .HasColumnName("raw_request_metadata_json")
+                .HasColumnType("text")
+                .HasConversion(EncryptedNullableStringConverter());
+            entity.Property(request => request.RawResponseJson)
+                .HasColumnName("raw_response_json")
+                .HasColumnType("text")
+                .HasConversion(EncryptedNullableStringConverter());
             entity.Property(request => request.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("NOW()").IsRequired();
 
             entity.HasOne(request => request.Video).WithMany().HasForeignKey(request => request.VideoId).OnDelete(DeleteBehavior.Cascade);
@@ -1119,8 +1230,20 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.HasOne(request => request.AiResult).WithMany(result => result.ProviderRequests).HasForeignKey(request => request.AiResultId).OnDelete(DeleteBehavior.SetNull);
             entity.HasOne(request => request.User).WithMany().HasForeignKey(request => request.UserId).OnDelete(DeleteBehavior.Cascade);
             entity.HasIndex(request => new { request.VideoId, request.CreatedAt }).IsDescending(false, true).HasDatabaseName("ix_ai_provider_requests_video_created");
+            entity.HasIndex(request => request.UserId).HasDatabaseName("IX_ai_provider_requests_user_id");
             entity.HasIndex(request => new { request.ProviderName, request.ProviderJobId }).HasDatabaseName("ix_ai_provider_requests_provider_job");
             entity.HasIndex(request => request.CreatedAt).HasDatabaseName("ix_ai_provider_requests_created_at");
+            entity.HasIndex(request => request.RequestStartedAt)
+                .IsDescending(true)
+                .HasDatabaseName("ix_ai_provider_requests_started_at");
+            entity.HasIndex(request => new { request.Status, request.RequestStartedAt })
+                .IsDescending(false, true)
+                .HasDatabaseName("ix_ai_provider_requests_status_started");
+            entity.HasIndex(request => new { request.UserId, request.RequestStartedAt })
+                .IsDescending(false, true)
+                .HasDatabaseName("ix_ai_provider_requests_user_started");
+            entity.HasIndex(request => request.RequestCompletedAt)
+                .HasDatabaseName("ix_ai_provider_requests_completed_at");
         });
     }
 
@@ -1144,7 +1267,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         });
     }
 
-    private static void ConfigureAuditLog(ModelBuilder modelBuilder)
+    private void ConfigureAuditLog(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<AuditLog>(entity =>
         {
@@ -1158,15 +1281,26 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.Property(log => log.Category).HasColumnName("category").HasMaxLength(80).IsRequired();
             entity.Property(log => log.Action).HasColumnName("action").HasMaxLength(120).IsRequired();
             entity.Property(log => log.Severity).HasColumnName("severity").HasMaxLength(40).IsRequired();
-            entity.Property(log => log.Message).HasColumnName("message").HasMaxLength(1000).IsRequired();
+            entity.Property(log => log.Message)
+                .HasColumnName("message")
+                .HasConversion(EncryptedRequiredStringConverter())
+                .IsRequired();
             entity.Property(log => log.ResourceType).HasColumnName("resource_type").HasMaxLength(80);
             entity.Property(log => log.ResourceId).HasColumnName("resource_id").HasMaxLength(120);
             entity.Property(log => log.HttpMethod).HasColumnName("http_method").HasMaxLength(20);
-            entity.Property(log => log.Path).HasColumnName("path").HasMaxLength(500);
+            entity.Property(log => log.Path)
+                .HasColumnName("path")
+                .HasConversion(EncryptedNullableStringConverter());
             entity.Property(log => log.StatusCode).HasColumnName("status_code");
             entity.Property(log => log.IpAddress).HasColumnName("ip_address").HasColumnType("inet");
-            entity.Property(log => log.UserAgent).HasColumnName("user_agent").HasMaxLength(500);
-            entity.Property(log => log.DetailsJson).HasColumnName("details_json").HasColumnType("jsonb");
+            entity.Property(log => log.UserAgent)
+                .HasColumnName("user_agent")
+                .HasConversion(EncryptedNullableStringConverter());
+            entity.Property(log => log.DetailsJson)
+                .HasColumnName("details_json")
+                .HasColumnType("text")
+                .HasConversion(EncryptedNullableStringConverter());
+            entity.Property(log => log.CorrelationId).HasColumnName("correlation_id").HasMaxLength(128);
             entity.Property(log => log.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("NOW()").IsRequired();
 
             entity.HasOne(log => log.User)
@@ -1177,6 +1311,11 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.HasIndex(log => log.CreatedAt)
                 .IsDescending(true)
                 .HasDatabaseName("ix_audit_logs_created_at");
+            entity.HasIndex(log => new { log.CreatedAt, log.Id })
+                .IsDescending(true, true)
+                .HasDatabaseName("ix_audit_logs_created_id");
+            entity.HasIndex(log => log.CorrelationId)
+                .HasDatabaseName("ix_audit_logs_correlation_id");
             entity.HasIndex(log => new { log.UserId, log.CreatedAt })
                 .IsDescending(false, true)
                 .HasDatabaseName("ix_audit_logs_user_created");
@@ -1193,7 +1332,45 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         });
     }
 
-    private static void ConfigureEvidenceItem(ModelBuilder modelBuilder)
+    private static void ConfigureRetentionCleanupRun(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<RetentionCleanupRun>(entity =>
+        {
+            entity.ToTable("retention_cleanup_runs");
+            entity.HasKey(run => run.Id);
+
+            entity.Property(run => run.Id).HasColumnName("id").UseIdentityByDefaultColumn();
+            entity.Property(run => run.JobName).HasColumnName("job_name").HasMaxLength(120).IsRequired();
+            entity.Property(run => run.Status).HasColumnName("status").HasMaxLength(40).IsRequired();
+            entity.Property(run => run.StartedAt).HasColumnName("started_at").IsRequired();
+            entity.Property(run => run.CompletedAt).HasColumnName("completed_at");
+            entity.Property(run => run.DurationMs).HasColumnName("duration_ms").IsRequired();
+            entity.Property(run => run.WorkDirectoriesDeleted).HasColumnName("work_directories_deleted").IsRequired();
+            entity.Property(run => run.FrameObjectsCleared).HasColumnName("frame_objects_cleared").IsRequired();
+            entity.Property(run => run.OriginalVideosCleared).HasColumnName("original_videos_cleared").IsRequired();
+            entity.Property(run => run.ThumbnailsCleared).HasColumnName("thumbnails_cleared").IsRequired();
+            entity.Property(run => run.EvidenceRowsDeleted).HasColumnName("evidence_rows_deleted").IsRequired();
+            entity.Property(run => run.SourceMatchRowsDeleted).HasColumnName("source_match_rows_deleted").IsRequired();
+            entity.Property(run => run.ProviderPayloadsCleared).HasColumnName("provider_payloads_cleared").IsRequired();
+            entity.Property(run => run.AnalysisPayloadsCleared).HasColumnName("analysis_payloads_cleared").IsRequired();
+            entity.Property(run => run.SegmentPayloadsCleared).HasColumnName("segment_payloads_cleared").IsRequired();
+            entity.Property(run => run.FailureCount).HasColumnName("failure_count").IsRequired();
+            entity.Property(run => run.ErrorMessage).HasColumnName("error_message").HasMaxLength(1000);
+            entity.Property(run => run.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("NOW()").IsRequired();
+
+            entity.HasIndex(run => new { run.JobName, run.StartedAt })
+                .IsDescending(false, true)
+                .HasDatabaseName("ix_retention_cleanup_runs_job_started");
+            entity.HasIndex(run => run.StartedAt)
+                .IsDescending(true)
+                .HasDatabaseName("ix_retention_cleanup_runs_started");
+            entity.HasIndex(run => new { run.Status, run.StartedAt })
+                .IsDescending(false, true)
+                .HasDatabaseName("ix_retention_cleanup_runs_status_started");
+        });
+    }
+
+    private void ConfigureEvidenceItem(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<EvidenceItem>(entity =>
         {
@@ -1213,8 +1390,14 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
                 .HasColumnType("evidence_severity")
                 .HasSentinel((EvidenceSeverity)(-1))
                 .IsRequired();
-            entity.Property(evidence => evidence.Title).HasColumnName("title").HasMaxLength(300).IsRequired();
-            entity.Property(evidence => evidence.Description).HasColumnName("description").HasMaxLength(2000).IsRequired();
+            entity.Property(evidence => evidence.Title)
+                .HasColumnName("title")
+                .HasConversion(EncryptedRequiredStringConverter())
+                .IsRequired();
+            entity.Property(evidence => evidence.Description)
+                .HasColumnName("description")
+                .HasConversion(EncryptedRequiredStringConverter())
+                .IsRequired();
             entity.Property(evidence => evidence.ScoreImpact).HasColumnName("score_impact");
             entity.Property(evidence => evidence.TimestampSeconds).HasColumnName("timestamp_seconds");
             entity.Property(evidence => evidence.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("NOW()").IsRequired();
@@ -1279,7 +1462,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         });
     }
 
-    private static void ConfigureSourceMatch(ModelBuilder modelBuilder)
+    private void ConfigureSourceMatch(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<SourceMatch>(entity =>
         {
@@ -1296,9 +1479,15 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.Property(match => match.Id).HasColumnName("id").UseIdentityByDefaultColumn();
             entity.Property(match => match.VideoId).HasColumnName("video_id").IsRequired();
             entity.Property(match => match.Platform).HasColumnName("platform").HasMaxLength(100).IsRequired();
-            entity.Property(match => match.Url).HasColumnName("url");
-            entity.Property(match => match.Title).HasColumnName("title");
-            entity.Property(match => match.UploaderName).HasColumnName("uploader_name");
+            entity.Property(match => match.Url)
+                .HasColumnName("url")
+                .HasConversion(EncryptedNullableStringConverter());
+            entity.Property(match => match.Title)
+                .HasColumnName("title")
+                .HasConversion(EncryptedNullableStringConverter());
+            entity.Property(match => match.UploaderName)
+                .HasColumnName("uploader_name")
+                .HasConversion(EncryptedNullableStringConverter());
             entity.Property(match => match.UploadDatetime).HasColumnName("upload_datetime");
             entity.Property(match => match.SimilarityScore).HasColumnName("similarity_score").IsRequired();
             entity.Property(match => match.DurationMatchScore).HasColumnName("duration_match_score");
@@ -1314,7 +1503,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
                 .IsRequired();
             entity.Property(match => match.DetailsJson)
                 .HasColumnName("details_json")
-                .HasColumnType("jsonb");
+                .HasColumnType("text")
+                .HasConversion(EncryptedNullableStringConverter());
             entity.Property(match => match.CreatedAt)
                 .HasColumnName("created_at")
                 .HasDefaultValueSql("NOW()")

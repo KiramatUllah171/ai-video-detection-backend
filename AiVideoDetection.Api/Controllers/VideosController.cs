@@ -1,9 +1,13 @@
 using System.Security.Claims;
+using AiVideoDetection.Application.Admin.DTOs;
+using AiVideoDetection.Application.Admin.Interfaces;
 using AiVideoDetection.Application.Common;
 using AiVideoDetection.Application.Videos.DTOs;
 using AiVideoDetection.Application.Videos.Interfaces;
+using AiVideoDetection.Infrastructure.Auth;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 
 namespace AiVideoDetection.Api.Controllers;
 
@@ -13,8 +17,15 @@ namespace AiVideoDetection.Api.Controllers;
 public class VideosController(
     IVideoService videoService,
     IAnalysisReportService analysisReportService,
-    IInternalVideoMatchingService internalVideoMatchingService) : ControllerBase
+    IInternalVideoMatchingService internalVideoMatchingService,
+    IAuthorizationService authorizationService,
+    IAuthThrottleService authThrottleService,
+    IAuditLogService auditLogService,
+    IOptions<AuthSecurityOptions> authSecurityOptions) : ControllerBase
 {
+    private const string TooManyRequestsMessage = "Too many requests. Please wait a moment and try again.";
+    private readonly AuthSecurityOptions _authSecurityOptions = authSecurityOptions.Value;
+
     [HttpPost("upload")]
     [Consumes("multipart/form-data")]
     [RequestSizeLimit(524_288_000)]
@@ -67,6 +78,11 @@ public class VideosController(
             return Unauthorized(ApiResponse<VideoDetailDto>.ErrorResponse("Unauthorized."));
         }
 
+        if (!await CanAccessVideoAsync(videoId))
+        {
+            return NotFound(VideoNotFound<VideoDetailDto>());
+        }
+
         var response = await videoService.GetVideoDetailAsync(videoId, currentUserId, cancellationToken);
         return response.Success ? Ok(response) : NotFound(response);
     }
@@ -80,6 +96,11 @@ public class VideosController(
         if (!TryGetCurrentUserId(out var currentUserId))
         {
             return Unauthorized(ApiResponse<MetadataResultDto>.ErrorResponse("Unauthorized."));
+        }
+
+        if (!await CanAccessVideoAsync(videoId))
+        {
+            return NotFound(VideoNotFound<MetadataResultDto>());
         }
 
         var response = await videoService.GetMetadataAsync(videoId, currentUserId, cancellationToken);
@@ -97,6 +118,11 @@ public class VideosController(
             return Unauthorized(ApiResponse<IReadOnlyList<VideoFrameDto>>.ErrorResponse("Unauthorized."));
         }
 
+        if (!await CanAccessVideoAsync(videoId))
+        {
+            return NotFound(VideoNotFound<IReadOnlyList<VideoFrameDto>>());
+        }
+
         var response = await videoService.GetFramesAsync(videoId, currentUserId, cancellationToken);
         return response.Success ? Ok(response) : NotFound(response);
     }
@@ -110,6 +136,11 @@ public class VideosController(
         if (!TryGetCurrentUserId(out var currentUserId))
         {
             return Unauthorized(ApiResponse<AnalysisResultDto>.ErrorResponse("Unauthorized."));
+        }
+
+        if (!await CanAccessVideoAsync(videoId))
+        {
+            return NotFound(VideoNotFound<AnalysisResultDto>());
         }
 
         var response = await videoService.GetAnalysisAsync(videoId, currentUserId, cancellationToken);
@@ -126,6 +157,41 @@ public class VideosController(
         if (!TryGetCurrentUserId(out var currentUserId))
         {
             return Unauthorized(ApiResponse<AnalysisReportFile>.ErrorResponse("Unauthorized."));
+        }
+
+        if (!await CanAccessReportAsync(videoId))
+        {
+            return NotFound(VideoNotFound<AnalysisReportFile>());
+        }
+
+        var reportThrottle = authThrottleService.Check(
+            "report-download-user-video",
+            $"{currentUserId}:{videoId}",
+            _authSecurityOptions.ReportDownloadPerReportPermitLimit,
+            TimeSpan.FromMinutes(Math.Max(1, _authSecurityOptions.EmailThrottleWindowMinutes)));
+        if (!reportThrottle.IsAllowed)
+        {
+            await auditLogService.LogAsync(new AuditLogCreateDto
+            {
+                UserId = currentUserId,
+                UserName = User.FindFirstValue(ClaimTypes.Name),
+                UserEmail = User.FindFirstValue(ClaimTypes.Email),
+                Category = "Report",
+                Action = "ReportDownloadThrottled",
+                Severity = "Warning",
+                Message = "PDF report download was blocked by report throttling.",
+                ResourceType = "Video",
+                ResourceId = videoId.ToString(),
+                HttpMethod = Request.Method,
+                Path = Request.Path.Value,
+                StatusCode = StatusCodes.Status429TooManyRequests,
+                IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
+                UserAgent = Request.Headers.UserAgent.ToString()
+            }, cancellationToken);
+
+            return StatusCode(
+                StatusCodes.Status429TooManyRequests,
+                ApiResponse<AnalysisReportFile>.ErrorResponse(TooManyRequestsMessage));
         }
 
         var response = await analysisReportService.GeneratePdfAsync(videoId, currentUserId, cancellationToken);
@@ -155,6 +221,11 @@ public class VideosController(
             return Unauthorized(ApiResponse<UploadVideoResponse>.ErrorResponse("Unauthorized."));
         }
 
+        if (!await CanAccessVideoAsync(videoId))
+        {
+            return NotFound(VideoNotFound<UploadVideoResponse>());
+        }
+
         var response = await videoService.ReanalyzeAsync(videoId, currentUserId, cancellationToken);
         return response.Success ? Ok(response) : NotFound(response);
     }
@@ -169,6 +240,11 @@ public class VideosController(
         if (!TryGetCurrentUserId(out var currentUserId))
         {
             return Unauthorized(ApiResponse<UploadVideoResponse>.ErrorResponse("Unauthorized."));
+        }
+
+        if (!await CanAccessVideoAsync(videoId))
+        {
+            return NotFound(VideoNotFound<UploadVideoResponse>());
         }
 
         var response = await videoService.RetryAnalysisAsync(videoId, currentUserId, cancellationToken);
@@ -194,6 +270,11 @@ public class VideosController(
             return Unauthorized(ApiResponse<JobStatusDto>.ErrorResponse("Unauthorized."));
         }
 
+        if (!await CanAccessVideoAsync(videoId))
+        {
+            return NotFound(VideoNotFound<JobStatusDto>());
+        }
+
         var response = await videoService.CancelAnalysisAsync(videoId, currentUserId, cancellationToken);
         if (response.Success)
         {
@@ -215,6 +296,11 @@ public class VideosController(
         if (!TryGetCurrentUserId(out var currentUserId))
         {
             return Unauthorized(ApiResponse<JobStatusDto>.ErrorResponse("Unauthorized."));
+        }
+
+        if (!await CanAccessVideoAsync(videoId))
+        {
+            return NotFound(VideoNotFound<JobStatusDto>());
         }
 
         var response = await videoService.PauseAnalysisAsync(videoId, currentUserId, cancellationToken);
@@ -240,6 +326,11 @@ public class VideosController(
             return Unauthorized(ApiResponse<JobStatusDto>.ErrorResponse("Unauthorized."));
         }
 
+        if (!await CanAccessVideoAsync(videoId))
+        {
+            return NotFound(VideoNotFound<JobStatusDto>());
+        }
+
         var response = await videoService.ResumeAnalysisAsync(videoId, currentUserId, cancellationToken);
         if (response.Success)
         {
@@ -262,6 +353,11 @@ public class VideosController(
             return Unauthorized(ApiResponse<IReadOnlyList<EvidenceItemDto>>.ErrorResponse("Unauthorized."));
         }
 
+        if (!await CanAccessVideoAsync(videoId))
+        {
+            return NotFound(VideoNotFound<IReadOnlyList<EvidenceItemDto>>());
+        }
+
         var response = await videoService.GetEvidenceAsync(videoId, currentUserId, cancellationToken);
         return response.Success ? Ok(response) : NotFound(response);
     }
@@ -279,6 +375,11 @@ public class VideosController(
             return Unauthorized(ApiResponse<IReadOnlyList<SourceMatchDto>>.ErrorResponse("Unauthorized."));
         }
 
+        if (!await CanAccessVideoAsync(videoId))
+        {
+            return NotFound(VideoNotFound<IReadOnlyList<SourceMatchDto>>());
+        }
+
         var response = await internalVideoMatchingService.GetMatchesAsync(videoId, currentUserId, cancellationToken);
         return response.Success ? Ok(response) : NotFound(response);
     }
@@ -294,8 +395,25 @@ public class VideosController(
             return Unauthorized(ApiResponse<bool>.ErrorResponse("Unauthorized."));
         }
 
+        if (!await CanAccessVideoAsync(videoId))
+        {
+            return NotFound(VideoNotFound<bool>());
+        }
+
         var response = await videoService.DeleteVideoAsync(videoId, currentUserId, cancellationToken);
         return response.Success ? Ok(response) : NotFound(response);
+    }
+
+    private async Task<bool> CanAccessVideoAsync(long videoId)
+    {
+        var result = await authorizationService.AuthorizeAsync(User, videoId, "OwnVideoOnly");
+        return result.Succeeded;
+    }
+
+    private async Task<bool> CanAccessReportAsync(long videoId)
+    {
+        var result = await authorizationService.AuthorizeAsync(User, videoId, "OwnReportOnly");
+        return result.Succeeded;
     }
 
     private bool TryGetCurrentUserId(out long currentUserId)
@@ -311,5 +429,10 @@ public class VideosController(
     private ActionResult<ApiResponse<T>> ToActionResult<T>(ApiResponse<T> response)
     {
         return response.Success ? Ok(response) : BadRequest(response);
+    }
+
+    private static ApiResponse<T> VideoNotFound<T>()
+    {
+        return ApiResponse<T>.ErrorResponse("Video was not found.");
     }
 }

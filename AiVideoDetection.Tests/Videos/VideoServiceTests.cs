@@ -37,6 +37,65 @@ public class VideoServiceTests
     }
 
     [Fact]
+    public async Task UploadDetailedVideoStoresDetailedScanMode()
+    {
+        await using var dbContext = CreateDbContext();
+        dbContext.Users.Add(CreateUser(1, "owner@example.com"));
+        await dbContext.SaveChangesAsync();
+        var service = CreateService(dbContext, new FakeObjectStorageService(), new FakeAnalysisJobQueue());
+
+        var response = await service.UploadAsync(CreateUploadRequest(analysisMode: AnalysisMode.Detailed), 1, null);
+
+        Assert.True(response.Success);
+        var job = await dbContext.AnalysisJobs.SingleAsync();
+        Assert.Equal("Detailed", job.ScanMode);
+    }
+
+    [Fact]
+    public async Task UploadDuplicateVideoForSameUserReusesExistingRecord()
+    {
+        await using var dbContext = CreateDbContext();
+        dbContext.Users.Add(CreateUser(1, "owner@example.com"));
+        await dbContext.SaveChangesAsync();
+        var storage = new FakeObjectStorageService();
+        var queue = new FakeAnalysisJobQueue();
+        var service = CreateService(dbContext, storage, queue);
+
+        var first = await service.UploadAsync(CreateUploadRequest(), 1, null);
+        var second = await service.UploadAsync(CreateUploadRequest(), 1, null);
+
+        Assert.True(first.Success);
+        Assert.True(second.Success);
+        Assert.NotNull(first.Data);
+        Assert.NotNull(second.Data);
+        Assert.Equal(first.Data.VideoId, second.Data.VideoId);
+        Assert.Equal(1, await dbContext.Videos.CountAsync());
+        Assert.Equal(1, await dbContext.AnalysisJobs.CountAsync());
+        Assert.Equal(1, storage.UploadCalls);
+        Assert.Equal(1, queue.EnqueueCalls);
+    }
+
+    [Fact]
+    public async Task UploadRejectsUnsupportedFileSignature()
+    {
+        await using var dbContext = CreateDbContext();
+        dbContext.Users.Add(CreateUser(1, "owner@example.com"));
+        await dbContext.SaveChangesAsync();
+        var storage = new FakeObjectStorageService();
+        var queue = new FakeAnalysisJobQueue();
+        var service = CreateService(dbContext, storage, queue);
+
+        var response = await service.UploadAsync(CreateUploadRequest([1, 2, 3, 4, 5, 6, 7, 8]), 1, null);
+
+        Assert.False(response.Success);
+        Assert.Equal("The uploaded file content does not match a supported video format.", response.Message);
+        Assert.Equal(0, await dbContext.Videos.CountAsync());
+        Assert.Equal(0, await dbContext.AnalysisJobs.CountAsync());
+        Assert.Equal(0, storage.UploadCalls);
+        Assert.Equal(0, queue.EnqueueCalls);
+    }
+
+    [Fact]
     public async Task UploadAttemptsStorageCleanupWhenDatabaseSaveFails()
     {
         await using var dbContext = new FailingSaveAppDbContext(CreateOptions());
@@ -783,9 +842,11 @@ public class VideoServiceTests
         };
     }
 
-    private static UploadVideoRequest CreateUploadRequest()
+    private static UploadVideoRequest CreateUploadRequest(
+        byte[]? content = null,
+        AnalysisMode analysisMode = AnalysisMode.Basic)
     {
-        var stream = new MemoryStream([1, 2, 3]);
+        var stream = new MemoryStream(content ?? CreateMp4Header());
         return new UploadVideoRequest
         {
             File = new FormFile(stream, 0, stream.Length, "file", "sample.mp4")
@@ -794,8 +855,19 @@ public class VideoServiceTests
                 ContentType = "video/mp4"
             },
             ConsentAccepted = true,
-            AnalysisMode = AnalysisMode.Basic
+            AnalysisMode = analysisMode
         };
+    }
+
+    private static byte[] CreateMp4Header()
+    {
+        return
+        [
+            0x00, 0x00, 0x00, 0x18,
+            (byte)'f', (byte)'t', (byte)'y', (byte)'p',
+            (byte)'i', (byte)'s', (byte)'o', (byte)'m',
+            0x00, 0x00, 0x02, 0x00
+        ];
     }
 
     private sealed class FakeObjectStorageService : IObjectStorageService

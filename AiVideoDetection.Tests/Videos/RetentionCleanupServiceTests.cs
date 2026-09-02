@@ -1,7 +1,9 @@
+using AiVideoDetection.Application.Common;
 using AiVideoDetection.Application.Videos.Interfaces;
 using AiVideoDetection.Application.Videos.Options;
 using AiVideoDetection.Domain.Entities;
 using AiVideoDetection.Domain.Enums;
+using AiVideoDetection.Infrastructure.Common;
 using AiVideoDetection.Infrastructure.Data;
 using AiVideoDetection.Infrastructure.Videos.Retention;
 using Microsoft.EntityFrameworkCore;
@@ -42,6 +44,13 @@ public class RetentionCleanupServiceTests
         Assert.Null(video.ThumbnailUrl);
         Assert.Contains("videos/1/expired.mp4", storage.DeletedObjects);
         Assert.Contains("thumbnails/1/expired.jpg", storage.DeletedObjects);
+
+        var metric = await dbContext.RetentionCleanupRuns.SingleAsync();
+        Assert.Equal("retained-assets", metric.JobName);
+        Assert.Equal("Succeeded", metric.Status);
+        Assert.Equal(1, metric.OriginalVideosCleared);
+        Assert.Equal(1, metric.ThumbnailsCleared);
+        Assert.Equal(0, metric.FailureCount);
     }
 
     [Fact]
@@ -78,6 +87,12 @@ public class RetentionCleanupServiceTests
         Assert.Equal(string.Empty, frames[0].FrameUrl);
         Assert.Equal("frames/current.jpg", frames[1].FrameUrl);
         Assert.Single(storage.DeletedObjects, "frames/old.jpg");
+
+        var metric = await dbContext.RetentionCleanupRuns.SingleAsync();
+        Assert.Equal("temporary-files", metric.JobName);
+        Assert.Equal("Succeeded", metric.Status);
+        Assert.Equal(1, metric.FrameObjectsCleared);
+        Assert.Equal(0, metric.FailureCount);
     }
 
     [Fact]
@@ -177,6 +192,15 @@ public class RetentionCleanupServiceTests
         Assert.False(await dbContext.SourceMatches.AnyAsync());
         Assert.Null((await dbContext.AiProviderRequests.SingleAsync()).RawResponseJson);
         Assert.Null((await dbContext.AnalysisSegments.SingleAsync()).ResultJson);
+
+        var metric = await dbContext.RetentionCleanupRuns.SingleAsync();
+        Assert.Equal("retained-assets", metric.JobName);
+        Assert.Equal("Succeeded", metric.Status);
+        Assert.Equal(1, metric.EvidenceRowsDeleted);
+        Assert.Equal(1, metric.SourceMatchRowsDeleted);
+        Assert.Equal(1, metric.ProviderPayloadsCleared);
+        Assert.Equal(1, metric.AnalysisPayloadsCleared);
+        Assert.Equal(1, metric.SegmentPayloadsCleared);
     }
 
     private static RetentionCleanupService CreateService(AppDbContext dbContext, IObjectStorageService storage)
@@ -192,7 +216,15 @@ public class RetentionCleanupServiceTests
                 ReportRetentionDays = 30,
                 DetailedResultRetentionDays = 30
             }),
+            CreateAlertService(),
             NullLogger<RetentionCleanupService>.Instance);
+    }
+
+    private static LoggingMonitoringAlertService CreateAlertService()
+    {
+        return new LoggingMonitoringAlertService(
+            Options.Create(new MonitoringOptions()),
+            NullLogger<LoggingMonitoringAlertService>.Instance);
     }
 
     private static AppDbContext CreateDbContext()

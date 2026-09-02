@@ -1,5 +1,8 @@
+using System.Diagnostics;
+using AiVideoDetection.Application.Common;
 using AiVideoDetection.Application.Videos.Interfaces;
 using AiVideoDetection.Application.Videos.Options;
+using AiVideoDetection.Domain.Entities;
 using AiVideoDetection.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -11,6 +14,7 @@ public class RetentionCleanupService(
     AppDbContext dbContext,
     IObjectStorageService objectStorageService,
     IOptions<VideoProcessingOptions> options,
+    IMonitoringAlertService monitoringAlertService,
     ILogger<RetentionCleanupService> logger) : IRetentionCleanupService
 {
     private const int BatchSize = 100;
@@ -18,21 +22,89 @@ public class RetentionCleanupService(
 
     public async Task CleanupTemporaryFilesAsync()
     {
-        var cutoff = DateTimeOffset.UtcNow.Subtract(_options.TemporaryFileRetention);
-
-        CleanupWorkingDirectories(cutoff);
-        await CleanupStoredFrameImagesAsync(cutoff);
+        var metrics = new CleanupMetrics();
+        await RunTrackedCleanupAsync("temporary-files", metrics, async () =>
+        {
+            var cutoff = DateTimeOffset.UtcNow.Subtract(_options.TemporaryFileRetention);
+            await CleanupWorkingDirectoriesAsync(cutoff, metrics);
+            await CleanupStoredFrameImagesAsync(cutoff, metrics);
+        });
     }
 
     public async Task CleanupExpiredRetainedAssetsAsync()
     {
-        var now = DateTimeOffset.UtcNow;
-
-        await CleanupExpiredOriginalMediaAsync(now);
-        await CleanupExpiredDetailedResultsAsync(now.Subtract(_options.DetailedResultRetention));
+        var metrics = new CleanupMetrics();
+        await RunTrackedCleanupAsync("retained-assets", metrics, async () =>
+        {
+            var now = DateTimeOffset.UtcNow;
+            await CleanupExpiredOriginalMediaAsync(now, metrics);
+            await CleanupExpiredDetailedResultsAsync(now.Subtract(_options.DetailedResultRetention), metrics);
+        });
     }
 
-    private void CleanupWorkingDirectories(DateTimeOffset cutoff)
+    private async Task RunTrackedCleanupAsync(string jobName, CleanupMetrics metrics, Func<Task> cleanup)
+    {
+        var startedAt = DateTimeOffset.UtcNow;
+        var stopwatch = Stopwatch.StartNew();
+        var status = "Succeeded";
+
+        try
+        {
+            await cleanup();
+        }
+        catch (Exception exception)
+        {
+            status = "Failed";
+            metrics.FailureCount++;
+            metrics.ErrorMessage = exception.Message;
+            logger.LogError(exception, "Retention cleanup job {JobName} failed.", jobName);
+            await monitoringAlertService.RecordCleanupFailureAsync(jobName, null, exception.Message, CancellationToken.None);
+            throw;
+        }
+        finally
+        {
+            stopwatch.Stop();
+            await SaveCleanupRunMetricAsync(jobName, status, startedAt, stopwatch.ElapsedMilliseconds, metrics);
+        }
+    }
+
+    private async Task SaveCleanupRunMetricAsync(
+        string jobName,
+        string status,
+        DateTimeOffset startedAt,
+        long durationMs,
+        CleanupMetrics metrics)
+    {
+        try
+        {
+            dbContext.RetentionCleanupRuns.Add(new RetentionCleanupRun
+            {
+                JobName = jobName,
+                Status = metrics.FailureCount > 0 && status == "Succeeded" ? "SucceededWithWarnings" : status,
+                StartedAt = startedAt,
+                CompletedAt = DateTimeOffset.UtcNow,
+                DurationMs = durationMs,
+                WorkDirectoriesDeleted = metrics.WorkDirectoriesDeleted,
+                FrameObjectsCleared = metrics.FrameObjectsCleared,
+                OriginalVideosCleared = metrics.OriginalVideosCleared,
+                ThumbnailsCleared = metrics.ThumbnailsCleared,
+                EvidenceRowsDeleted = metrics.EvidenceRowsDeleted,
+                SourceMatchRowsDeleted = metrics.SourceMatchRowsDeleted,
+                ProviderPayloadsCleared = metrics.ProviderPayloadsCleared,
+                AnalysisPayloadsCleared = metrics.AnalysisPayloadsCleared,
+                SegmentPayloadsCleared = metrics.SegmentPayloadsCleared,
+                FailureCount = metrics.FailureCount,
+                ErrorMessage = metrics.ErrorMessage
+            });
+            await dbContext.SaveChangesAsync(CancellationToken.None);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Failed to save retention cleanup metric for job {JobName}.", jobName);
+        }
+    }
+
+    private async Task CleanupWorkingDirectoriesAsync(DateTimeOffset cutoff, CleanupMetrics metrics)
     {
         var rootPath = Path.GetFullPath(_options.WorkingRootPath);
         if (!Directory.Exists(rootPath))
@@ -57,16 +129,24 @@ public class RetentionCleanupService(
                 }
 
                 Directory.Delete(fullPath, recursive: true);
+                metrics.WorkDirectoriesDeleted++;
                 logger.LogInformation("Deleted expired video processing work directory {Path}.", fullPath);
             }
             catch (Exception exception)
             {
+                metrics.FailureCount++;
+                metrics.ErrorMessage ??= exception.Message;
                 logger.LogWarning(exception, "Failed to delete expired video processing work directory {Path}.", directory);
+                await monitoringAlertService.RecordCleanupFailureAsync(
+                    "work-directory",
+                    directory,
+                    exception.Message,
+                    CancellationToken.None);
             }
         }
     }
 
-    private async Task CleanupStoredFrameImagesAsync(DateTimeOffset cutoff)
+    private async Task CleanupStoredFrameImagesAsync(DateTimeOffset cutoff, CleanupMetrics metrics)
     {
         while (true)
         {
@@ -83,15 +163,20 @@ public class RetentionCleanupService(
 
             foreach (var frame in frames)
             {
-                await DeleteObjectQuietlyAsync(frame.FrameUrl, "frame image");
+                if (!await DeleteObjectQuietlyAsync(frame.FrameUrl, "frame image", metrics))
+                {
+                    metrics.FailureCount++;
+                }
+
                 frame.FrameUrl = string.Empty;
+                metrics.FrameObjectsCleared++;
             }
 
             await dbContext.SaveChangesAsync();
         }
     }
 
-    private async Task CleanupExpiredOriginalMediaAsync(DateTimeOffset now)
+    private async Task CleanupExpiredOriginalMediaAsync(DateTimeOffset now, CleanupMetrics metrics)
     {
         var fallbackCutoff = now.Subtract(_options.OriginalVideoRetention);
 
@@ -112,31 +197,41 @@ public class RetentionCleanupService(
 
             foreach (var video in videos)
             {
-                await DeleteObjectQuietlyAsync(video.FileUrl, "original video");
+                if (!await DeleteObjectQuietlyAsync(video.FileUrl, "original video", metrics))
+                {
+                    metrics.FailureCount++;
+                }
+
                 if (!string.IsNullOrWhiteSpace(video.ThumbnailUrl))
                 {
-                    await DeleteObjectQuietlyAsync(video.ThumbnailUrl, "thumbnail");
+                    if (!await DeleteObjectQuietlyAsync(video.ThumbnailUrl, "thumbnail", metrics))
+                    {
+                        metrics.FailureCount++;
+                    }
+
                     video.ThumbnailUrl = null;
+                    metrics.ThumbnailsCleared++;
                 }
 
                 video.FileUrl = string.Empty;
                 video.RetentionDeleteAt ??= video.CreatedAt.Add(_options.OriginalVideoRetention);
                 video.UpdatedAt = now;
+                metrics.OriginalVideosCleared++;
             }
 
             await dbContext.SaveChangesAsync();
         }
     }
 
-    private async Task CleanupExpiredDetailedResultsAsync(DateTimeOffset cutoff)
+    private async Task CleanupExpiredDetailedResultsAsync(DateTimeOffset cutoff, CleanupMetrics metrics)
     {
-        await CleanupEvidenceAsync(cutoff);
-        await CleanupSourceMatchesAsync(cutoff);
-        await CleanupProviderPayloadsAsync(cutoff);
-        await CleanupAnalysisPayloadsAsync(cutoff);
+        await CleanupEvidenceAsync(cutoff, metrics);
+        await CleanupSourceMatchesAsync(cutoff, metrics);
+        await CleanupProviderPayloadsAsync(cutoff, metrics);
+        await CleanupAnalysisPayloadsAsync(cutoff, metrics);
     }
 
-    private async Task CleanupEvidenceAsync(DateTimeOffset cutoff)
+    private async Task CleanupEvidenceAsync(DateTimeOffset cutoff, CleanupMetrics metrics)
     {
         while (true)
         {
@@ -151,12 +246,13 @@ public class RetentionCleanupService(
                 return;
             }
 
+            metrics.EvidenceRowsDeleted += evidence.Count;
             dbContext.EvidenceItems.RemoveRange(evidence);
             await dbContext.SaveChangesAsync();
         }
     }
 
-    private async Task CleanupSourceMatchesAsync(DateTimeOffset cutoff)
+    private async Task CleanupSourceMatchesAsync(DateTimeOffset cutoff, CleanupMetrics metrics)
     {
         while (true)
         {
@@ -171,12 +267,13 @@ public class RetentionCleanupService(
                 return;
             }
 
+            metrics.SourceMatchRowsDeleted += matches.Count;
             dbContext.SourceMatches.RemoveRange(matches);
             await dbContext.SaveChangesAsync();
         }
     }
 
-    private async Task CleanupProviderPayloadsAsync(DateTimeOffset cutoff)
+    private async Task CleanupProviderPayloadsAsync(DateTimeOffset cutoff, CleanupMetrics metrics)
     {
         while (true)
         {
@@ -198,11 +295,12 @@ public class RetentionCleanupService(
                 request.RawResponseJson = null;
             }
 
+            metrics.ProviderPayloadsCleared += requests.Count;
             await dbContext.SaveChangesAsync();
         }
     }
 
-    private async Task CleanupAnalysisPayloadsAsync(DateTimeOffset cutoff)
+    private async Task CleanupAnalysisPayloadsAsync(DateTimeOffset cutoff, CleanupMetrics metrics)
     {
         while (true)
         {
@@ -229,6 +327,7 @@ public class RetentionCleanupService(
                 result.ExternalRawResponseJson = null;
             }
 
+            metrics.AnalysisPayloadsCleared += results.Count;
             await dbContext.SaveChangesAsync();
         }
 
@@ -252,24 +351,29 @@ public class RetentionCleanupService(
                 segment.LocalTemporaryPath = null;
             }
 
+            metrics.SegmentPayloadsCleared += segments.Count;
             await dbContext.SaveChangesAsync();
         }
     }
 
-    private async Task DeleteObjectQuietlyAsync(string objectKey, string description)
+    private async Task<bool> DeleteObjectQuietlyAsync(string objectKey, string description, CleanupMetrics metrics)
     {
         if (string.IsNullOrWhiteSpace(objectKey))
         {
-            return;
+            return true;
         }
 
         try
         {
             await objectStorageService.DeleteAsync(objectKey);
+            return true;
         }
         catch (Exception exception)
         {
+            metrics.ErrorMessage ??= exception.Message;
             logger.LogWarning(exception, "Failed to delete expired {Description} object {ObjectKey}.", description, objectKey);
+            await monitoringAlertService.RecordCleanupFailureAsync(description, objectKey, exception.Message);
+            return false;
         }
     }
 
@@ -278,5 +382,30 @@ public class RetentionCleanupService(
         var normalizedRoot = rootPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
             + Path.DirectorySeparatorChar;
         return path.StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private sealed class CleanupMetrics
+    {
+        public int WorkDirectoriesDeleted { get; set; }
+
+        public int FrameObjectsCleared { get; set; }
+
+        public int OriginalVideosCleared { get; set; }
+
+        public int ThumbnailsCleared { get; set; }
+
+        public int EvidenceRowsDeleted { get; set; }
+
+        public int SourceMatchRowsDeleted { get; set; }
+
+        public int ProviderPayloadsCleared { get; set; }
+
+        public int AnalysisPayloadsCleared { get; set; }
+
+        public int SegmentPayloadsCleared { get; set; }
+
+        public int FailureCount { get; set; }
+
+        public string? ErrorMessage { get; set; }
     }
 }

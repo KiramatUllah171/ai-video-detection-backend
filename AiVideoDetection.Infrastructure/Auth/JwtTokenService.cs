@@ -26,11 +26,12 @@ public class JwtTokenService(IOptions<JwtOptions> jwtOptions) : IJwtTokenService
         {
             new(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
             new(ClaimTypes.NameIdentifier, user.Id.ToString()),
-            new(JwtRegisteredClaimNames.Email, user.Email),
-            new(ClaimTypes.Email, user.Email),
+            new(JwtRegisteredClaimNames.Email, user.Email ?? string.Empty),
+            new(ClaimTypes.Email, user.Email ?? string.Empty),
             new(JwtRegisteredClaimNames.Name, user.Name),
             new(ClaimTypes.Name, user.Name),
             new(ClaimTypes.Role, user.Role.ToString()),
+            new("security_stamp", user.SecurityStamp ?? string.Empty),
             new("email_confirmed", user.EmailConfirmed ? "true" : "false")
         };
 

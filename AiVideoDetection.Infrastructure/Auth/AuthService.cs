@@ -22,6 +22,8 @@ public class AuthService(
     IJwtTokenService jwtTokenService,
     IOptions<JwtOptions> jwtOptions,
     IOptions<PasswordResetOptions> passwordResetOptions,
+    IOptions<AuthSecurityOptions> authSecurityOptions,
+    IAuthThrottleService authThrottleService,
     IPasswordResetEmailSender passwordResetEmailSender,
     IEmailConfirmationSender emailConfirmationSender,
     IAuditLogService auditLogService,
@@ -33,12 +35,15 @@ public class AuthService(
     private const string ForgotPasswordMessage = "If an eligible account exists for this email address, a secure password reset link has been sent.";
     private const string InvalidResetTokenMessage = "This password reset link is invalid or has expired. Please request a new link.";
     private const string UsedResetTokenMessage = "This password reset link has already been used. Please request a new reset link if you need to change your password again.";
+    private const string AccountLockedMessage = "Too many failed sign-in attempts. Please wait before trying again.";
+    private const string TooManyRequestsMessage = "Too many requests. Please wait a moment and try again.";
     private const string ResendConfirmationMessage = "If this account exists and still needs verification, a new email confirmation link has been sent.";
     private const string InvalidConfirmationTokenMessage = "This email confirmation link is invalid, expired, or has already been handled. Please request a new verification link if needed.";
     private const string ConfirmationTokenAlreadyUsedMessage = "This email confirmation link has already been used.";
     private const string EmailNotConfirmedMessage = "Please confirm your email address before signing in.";
     private readonly JwtOptions _jwtOptions = jwtOptions.Value;
     private readonly PasswordResetOptions _passwordResetOptions = passwordResetOptions.Value;
+    private readonly AuthSecurityOptions _authSecurityOptions = authSecurityOptions.Value;
 
     public async Task<ApiResponse<bool>> SignupAsync(
         SignupRequest request,
@@ -59,10 +64,16 @@ public class AuthService(
         {
             Name = request.Name.Trim(),
             Email = normalizedEmail,
+            NormalizedEmail = normalizedEmail.ToUpperInvariant(),
+            UserName = normalizedEmail,
+            NormalizedUserName = normalizedEmail.ToUpperInvariant(),
             PasswordHash = passwordHasher.HashPassword(request.Password),
+            SecurityStamp = NewSecurityStamp(),
+            ConcurrencyStamp = Guid.NewGuid().ToString("N"),
             Role = UserRole.User,
             IsActive = true,
-            EmailConfirmed = false
+            EmailConfirmed = false,
+            LockoutEnabled = true
         };
 
         dbContext.Users.Add(user);
@@ -81,6 +92,14 @@ public class AuthService(
         CancellationToken cancellationToken = default)
     {
         var normalizedEmail = NormalizeEmail(request.Email);
+        var emailThrottle = CheckEmailThrottle("auth-login-email", normalizedEmail, _authSecurityOptions.LoginEmailPermitLimit);
+        if (!emailThrottle.IsAllowed)
+        {
+            logger.LogInformation("Login throttled for email {Email}.", normalizedEmail);
+            await LogAuthAsync(null, null, normalizedEmail, "LoginThrottled", "Warning", "Login was blocked by email throttling.", ipAddress, cancellationToken);
+            return ApiResponse<AuthResponse>.ErrorResponse(TooManyRequestsMessage);
+        }
+
         var user = await dbContext.Users
             .FirstOrDefaultAsync(existingUser => existingUser.Email == normalizedEmail, cancellationToken);
 
@@ -91,11 +110,22 @@ public class AuthService(
             return ApiResponse<AuthResponse>.ErrorResponse(EmailNotFoundMessage);
         }
 
-        if (!passwordHasher.VerifyPassword(request.Password, user.PasswordHash))
+        var now = DateTimeOffset.UtcNow;
+        if (IsLockedOut(user, now))
+        {
+            logger.LogInformation("Login rejected because account is locked for user id {UserId}.", user.Id);
+            await LogAuthAsync(user.Id, user.Name, user.Email, "LoginRejected", "Warning", "Login rejected because the account is temporarily locked.", ipAddress, cancellationToken);
+            return ApiResponse<AuthResponse>.ErrorResponse(AccountLockedMessage);
+        }
+
+        if (!passwordHasher.VerifyPassword(request.Password, user.PasswordHash ?? string.Empty))
         {
             logger.LogInformation("Login failed because the password was incorrect for user id {UserId}.", user.Id);
+            await RecordFailedLoginAsync(user, now, cancellationToken);
             await LogAuthAsync(user.Id, user.Name, user.Email, "LoginFailed", "Warning", "Login failed because the password was incorrect.", ipAddress, cancellationToken);
-            return ApiResponse<AuthResponse>.ErrorResponse(InvalidPasswordMessage);
+            return IsLockedOut(user, now)
+                ? ApiResponse<AuthResponse>.ErrorResponse(AccountLockedMessage)
+                : ApiResponse<AuthResponse>.ErrorResponse(InvalidPasswordMessage);
         }
 
         if (!user.IsActive)
@@ -113,6 +143,7 @@ public class AuthService(
         }
 
         logger.LogInformation("Login succeeded for user id {UserId}.", user.Id);
+        ResetLockout(user);
 
         var response = await CreateAuthResponseAsync(user, ipAddress, cancellationToken);
         await LogAuthAsync(user.Id, user.Name, user.Email, "LoginSucceeded", "Information", "User signed in successfully.", ipAddress, cancellationToken);
@@ -181,6 +212,14 @@ public class AuthService(
         CancellationToken cancellationToken = default)
     {
         var normalizedEmail = NormalizeEmail(request.Email);
+        var emailThrottle = CheckEmailThrottle("auth-password-reset-email", normalizedEmail, _authSecurityOptions.PasswordResetEmailPermitLimit);
+        if (!emailThrottle.IsAllowed)
+        {
+            logger.LogInformation("Password reset throttled for email {Email}.", normalizedEmail);
+            await LogAuthAsync(null, null, normalizedEmail, "PasswordResetThrottled", "Warning", "Password reset was blocked by email throttling.", null, cancellationToken);
+            return ApiResponse<bool>.ErrorResponse(TooManyRequestsMessage);
+        }
+
         var user = await dbContext.Users
             .FirstOrDefaultAsync(existingUser => existingUser.Email == normalizedEmail, cancellationToken);
 
@@ -252,6 +291,8 @@ public class AuthService(
         }
 
         resetToken.User.PasswordHash = passwordHasher.HashPassword(request.Password);
+        resetToken.User.SecurityStamp = NewSecurityStamp();
+        ResetLockout(resetToken.User);
         resetToken.UsedAt = now;
 
         var activeRefreshTokens = await dbContext.RefreshTokens
@@ -411,6 +452,14 @@ public class AuthService(
         CancellationToken cancellationToken = default)
     {
         var normalizedEmail = NormalizeEmail(request.Email);
+        var emailThrottle = CheckEmailThrottle("auth-email-confirmation-resend-email", normalizedEmail, _authSecurityOptions.EmailConfirmationResendPermitLimit);
+        if (!emailThrottle.IsAllowed)
+        {
+            logger.LogInformation("Email confirmation resend throttled for email {Email}.", normalizedEmail);
+            await LogAuthAsync(null, null, normalizedEmail, "EmailConfirmationResendThrottled", "Warning", "Email confirmation resend was blocked by email throttling.", null, cancellationToken);
+            return ApiResponse<bool>.ErrorResponse(TooManyRequestsMessage);
+        }
+
         var user = await dbContext.Users
             .FirstOrDefaultAsync(existingUser => existingUser.Email == normalizedEmail, cancellationToken);
 
@@ -441,7 +490,7 @@ public class AuthService(
         {
             Id = user.Id,
             Name = user.Name,
-            Email = user.Email,
+            Email = user.Email ?? string.Empty,
             Role = user.Role,
             EmailConfirmed = user.EmailConfirmed
         };
@@ -543,6 +592,47 @@ public class AuthService(
         return email.Trim().ToLowerInvariant();
     }
 
+    private ThrottleCheckResult CheckEmailThrottle(string scope, string normalizedEmail, int permitLimit)
+    {
+        return authThrottleService.Check(
+            scope,
+            normalizedEmail,
+            permitLimit,
+            TimeSpan.FromMinutes(Math.Max(1, _authSecurityOptions.EmailThrottleWindowMinutes)));
+    }
+
+    private async Task RecordFailedLoginAsync(User user, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        if (!_authSecurityOptions.LockoutEnabled)
+        {
+            return;
+        }
+
+        user.AccessFailedCount++;
+        if (user.AccessFailedCount >= Math.Max(1, _authSecurityOptions.MaxFailedAccessAttempts))
+        {
+            user.LockoutEnd = now.AddMinutes(Math.Max(1, _authSecurityOptions.LockoutMinutes));
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    private static bool IsLockedOut(User user, DateTimeOffset now)
+    {
+        return user.LockoutEnd is not null && user.LockoutEnd > now;
+    }
+
+    private static void ResetLockout(User user)
+    {
+        user.AccessFailedCount = 0;
+        user.LockoutEnd = null;
+    }
+
+    private static string NewSecurityStamp()
+    {
+        return Guid.NewGuid().ToString("N");
+    }
+
     private Task LogAuthAsync(
         long? userId,
         string? userName,
@@ -573,7 +663,7 @@ public class AuthService(
         {
             Id = user.Id,
             Name = user.Name,
-            Email = user.Email,
+            Email = user.Email ?? string.Empty,
             Role = user.Role,
             IsActive = user.IsActive,
             EmailConfirmed = user.EmailConfirmed

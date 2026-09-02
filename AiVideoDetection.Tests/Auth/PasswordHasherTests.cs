@@ -21,4 +21,13 @@ public class PasswordHasherTests
 
         Assert.False(hasher.VerifyPassword("WrongPassword123", hash));
     }
+
+    [Fact]
+    public void VerifyPassword_ReturnsTrue_ForLegacyBcryptHash()
+    {
+        var hasher = new PasswordHasher();
+        var legacyHash = BCrypt.Net.BCrypt.HashPassword("Password123");
+
+        Assert.True(hasher.VerifyPassword("Password123", legacyHash));
+    }
 }

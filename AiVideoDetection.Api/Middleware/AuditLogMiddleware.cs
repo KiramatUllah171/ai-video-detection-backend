@@ -3,6 +3,7 @@ using System.Security.Claims;
 using System.Text.Json;
 using AiVideoDetection.Application.Admin.DTOs;
 using AiVideoDetection.Application.Admin.Interfaces;
+using AiVideoDetection.Application.Common;
 
 namespace AiVideoDetection.Api.Middleware;
 
@@ -10,7 +11,10 @@ public sealed class AuditLogMiddleware(RequestDelegate next)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
-    public async Task InvokeAsync(HttpContext context, IAuditLogService auditLogService)
+    public async Task InvokeAsync(
+        HttpContext context,
+        IAuditLogService auditLogService,
+        ICorrelationIdAccessor correlationIdAccessor)
     {
         var stopwatch = Stopwatch.StartNew();
         Exception? capturedException = null;
@@ -50,6 +54,7 @@ public sealed class AuditLogMiddleware(RequestDelegate next)
                     StatusCode = capturedException is null ? context.Response.StatusCode : StatusCodes.Status500InternalServerError,
                     IpAddress = context.Connection.RemoteIpAddress?.ToString(),
                     UserAgent = context.Request.Headers.UserAgent.ToString(),
+                    CorrelationId = correlationIdAccessor.CorrelationId ?? context.TraceIdentifier,
                     DetailsJson = JsonSerializer.Serialize(new
                     {
                         durationMs = stopwatch.ElapsedMilliseconds,
@@ -73,6 +78,11 @@ public sealed class AuditLogMiddleware(RequestDelegate next)
         }
 
         if (path.StartsWith("/api/auth/", StringComparison.OrdinalIgnoreCase) && exception is null)
+        {
+            return false;
+        }
+
+        if (context.Response.StatusCode == StatusCodes.Status429TooManyRequests)
         {
             return false;
         }

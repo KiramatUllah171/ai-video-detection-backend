@@ -16,5 +16,7 @@ public class JobLog
 
     public string? DetailsJson { get; set; }
 
+    public string? CorrelationId { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; }
 }

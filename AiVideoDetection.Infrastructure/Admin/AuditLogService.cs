@@ -11,6 +11,8 @@ namespace AiVideoDetection.Infrastructure.Admin;
 
 public sealed class AuditLogService(
     AppDbContext dbContext,
+    ICorrelationIdAccessor correlationIdAccessor,
+    IMonitoringAlertService monitoringAlertService,
     ILogger<AuditLogService> logger) : IAuditLogService
 {
     private const int MaxPageSize = 100;
@@ -42,10 +44,12 @@ public sealed class AuditLogService(
                 StatusCode = entry.StatusCode,
                 IpAddress = ParseIpAddress(entry.IpAddress),
                 UserAgent = Truncate(entry.UserAgent, 500),
-                DetailsJson = string.IsNullOrWhiteSpace(entry.DetailsJson) ? null : entry.DetailsJson
+                DetailsJson = string.IsNullOrWhiteSpace(entry.DetailsJson) ? null : entry.DetailsJson,
+                CorrelationId = Truncate(entry.CorrelationId ?? correlationIdAccessor.CorrelationId, 128)
             });
 
             await dbContext.SaveChangesAsync(cancellationToken);
+            await RecordMonitoringSignalsAsync(entry, cancellationToken);
         }
         catch (Exception exception)
         {
@@ -125,6 +129,7 @@ public sealed class AuditLogService(
                 IpAddress = log.IpAddress == null ? null : log.IpAddress.ToString(),
                 UserAgent = log.UserAgent,
                 DetailsJson = log.DetailsJson,
+                CorrelationId = log.CorrelationId,
                 CreatedAt = log.CreatedAt
             })
             .ToListAsync(cancellationToken);
@@ -155,5 +160,25 @@ public sealed class AuditLogService(
         return IPAddress.TryParse(ipAddress, out var parsedIpAddress)
             ? parsedIpAddress
             : null;
+    }
+
+    private async Task RecordMonitoringSignalsAsync(AuditLogCreateDto entry, CancellationToken cancellationToken)
+    {
+        if (entry.Action is "LoginFailed" or "LoginRejected" or "LoginThrottled")
+        {
+            var partitionKey = entry.UserEmail ?? entry.IpAddress ?? "unknown-login";
+            await monitoringAlertService.RecordFailedLoginAsync(partitionKey, entry.UserEmail, entry.IpAddress, cancellationToken);
+        }
+
+        if (entry.StatusCode >= 500 || string.Equals(entry.Severity, "Error", StringComparison.OrdinalIgnoreCase))
+        {
+            var partitionKey = string.IsNullOrWhiteSpace(entry.Path) ? entry.Action : entry.Path;
+            await monitoringAlertService.RecordApiErrorAsync(
+                partitionKey ?? "unknown-api-error",
+                entry.Path,
+                entry.StatusCode,
+                entry.CorrelationId,
+                cancellationToken);
+        }
     }
 }
