@@ -19,6 +19,8 @@ public sealed class AdminDashboardSummaryDto
     public IReadOnlyList<AdminRecentActivityDto> RecentActivity { get; init; } = [];
 
     public AdminExternalRequestSummaryDto ExternalRequests { get; init; } = new();
+
+    public AdminCleanupSummaryDto RetentionCleanup { get; init; } = new();
 }
 
 public sealed class AdminMetricDto
@@ -89,6 +91,35 @@ public sealed class AdminExternalRequestSummaryDto
     public int MonthlySuccess { get; init; }
 
     public int MonthlyFailed { get; init; }
+
+    public string HealthStatus { get; init; } = "Available";
+
+    public bool CircuitOpen { get; init; }
+
+    public int CircuitConsecutiveFailures { get; init; }
+
+    public DateTimeOffset? CircuitOpenUntil { get; init; }
+}
+
+public sealed class AdminCleanupSummaryDto
+{
+    public DateTimeOffset? LastRunAt { get; init; }
+
+    public string LastStatus { get; init; } = "NotRun";
+
+    public long LastDurationMs { get; init; }
+
+    public int LastFailureCount { get; init; }
+
+    public long RunsLast24Hours { get; init; }
+
+    public long FailuresLast24Hours { get; init; }
+
+    public long PendingTemporaryFrameCleanup { get; init; }
+
+    public long PendingOriginalVideoCleanup { get; init; }
+
+    public long PendingDetailedPayloadCleanup { get; init; }
 }
 
 public sealed class AdminUserListItemDto
@@ -382,6 +413,8 @@ public sealed class AuditLogCreateDto
     public string? UserAgent { get; init; }
 
     public string? DetailsJson { get; init; }
+
+    public string? CorrelationId { get; init; }
 }
 
 public sealed class AdminAuditLogDto
@@ -417,6 +450,8 @@ public sealed class AdminAuditLogDto
     public string? UserAgent { get; init; }
 
     public string? DetailsJson { get; init; }
+
+    public string? CorrelationId { get; init; }
 
     public DateTimeOffset CreatedAt { get; init; }
 }

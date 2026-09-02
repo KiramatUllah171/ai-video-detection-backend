@@ -1,22 +1,22 @@
 using AiVideoDetection.Domain.Enums;
+using Microsoft.AspNetCore.Identity;
 
 namespace AiVideoDetection.Domain.Entities;
 
-public class User
+public class User : IdentityUser<long>
 {
-    public long Id { get; set; }
+    public User()
+    {
+        SecurityStamp = Guid.NewGuid().ToString("N");
+        ConcurrencyStamp = Guid.NewGuid().ToString("N");
+        LockoutEnabled = true;
+    }
 
     public string Name { get; set; } = string.Empty;
-
-    public string Email { get; set; } = string.Empty;
-
-    public string PasswordHash { get; set; } = string.Empty;
 
     public UserRole Role { get; set; } = UserRole.User;
 
     public bool IsActive { get; set; } = true;
-
-    public bool EmailConfirmed { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; }
 

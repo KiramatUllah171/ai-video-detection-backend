@@ -1,16 +1,27 @@
 using AiVideoDetection.Application.Admin.DTOs;
 using AiVideoDetection.Application.Admin.Interfaces;
 using AiVideoDetection.Application.Common;
+using AiVideoDetection.Application.Videos.Options;
 using AiVideoDetection.Domain.Entities;
 using AiVideoDetection.Domain.Enums;
+using AiVideoDetection.Infrastructure.Videos.Ai;
 using AiVideoDetection.Infrastructure.Data;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace AiVideoDetection.Infrastructure.Admin;
 
-public sealed class AdminDashboardService(AppDbContext dbContext) : IAdminDashboardService
+public sealed class AdminDashboardService(
+    AppDbContext dbContext,
+    IMemoryCache memoryCache,
+    IProviderCircuitBreaker providerCircuitBreaker,
+    IOptions<VideoProcessingOptions> videoProcessingOptions) : IAdminDashboardService
 {
     private const string BitMindProviderName = "BitMind";
+    private const string SummaryCacheKey = "admin-dashboard-summary:v1";
+    private static readonly TimeSpan SummaryCacheDuration = TimeSpan.FromSeconds(30);
+    private readonly VideoProcessingOptions _videoProcessingOptions = videoProcessingOptions.Value;
     private static readonly JobStatus[] PendingJobStatuses =
     [
         JobStatus.Queued,
@@ -24,6 +35,26 @@ public sealed class AdminDashboardService(AppDbContext dbContext) : IAdminDashbo
     ];
 
     public async Task<ApiResponse<AdminDashboardSummaryDto>> GetSummaryAsync(CancellationToken cancellationToken = default)
+    {
+        if (memoryCache.TryGetValue(SummaryCacheKey, out AdminDashboardSummaryDto? cachedSummary) && cachedSummary is not null)
+        {
+            return ApiResponse<AdminDashboardSummaryDto>.SuccessResponse(cachedSummary);
+        }
+
+        var summary = await BuildSummaryAsync(cancellationToken);
+        memoryCache.Set(
+            SummaryCacheKey,
+            summary,
+            new MemoryCacheEntryOptions
+            {
+                AbsoluteExpirationRelativeToNow = SummaryCacheDuration,
+                Size = 1
+            });
+
+        return ApiResponse<AdminDashboardSummaryDto>.SuccessResponse(summary);
+    }
+
+    private async Task<AdminDashboardSummaryDto> BuildSummaryAsync(CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
         var monthStart = new DateTimeOffset(now.Year, now.Month, 1, 0, 0, 0, TimeSpan.Zero);
@@ -114,6 +145,7 @@ public sealed class AdminDashboardService(AppDbContext dbContext) : IAdminDashbo
             .ToListAsync(cancellationToken);
 
         var externalRequests = await BuildExternalSummaryAsync(now, monthStart, providerTotal, providerPending, cancellationToken);
+        var retentionCleanup = await BuildCleanupSummaryAsync(now, cancellationToken);
 
         var summary = new AdminDashboardSummaryDto
         {
@@ -147,10 +179,11 @@ public sealed class AdminDashboardService(AppDbContext dbContext) : IAdminDashbo
                 .OrderByDescending(item => item.CreatedAt)
                 .Take(8)
                 .ToList(),
-            ExternalRequests = externalRequests
+            ExternalRequests = externalRequests,
+            RetentionCleanup = retentionCleanup
         };
 
-        return ApiResponse<AdminDashboardSummaryDto>.SuccessResponse(summary);
+        return summary;
     }
 
     public async Task<ApiResponse<PagedResponse<AdminUserListItemDto>>> GetUsersAsync(
@@ -220,6 +253,7 @@ public sealed class AdminDashboardService(AppDbContext dbContext) : IAdminDashbo
         }
 
         user.IsActive = isActive;
+        user.SecurityStamp = Guid.NewGuid().ToString("N");
         if (!isActive)
         {
             var now = DateTimeOffset.UtcNow;
@@ -233,6 +267,7 @@ public sealed class AdminDashboardService(AppDbContext dbContext) : IAdminDashbo
         }
 
         await dbContext.SaveChangesAsync(cancellationToken);
+        memoryCache.Remove(SummaryCacheKey);
 
         var response = new AdminUserListItemDto
         {
@@ -624,17 +659,23 @@ public sealed class AdminDashboardService(AppDbContext dbContext) : IAdminDashbo
 
         var usage = await dbContext.ApiUsageMonthly
             .AsNoTracking()
-            .Where(item => item.Year == monthStart.Year && item.Month == monthStart.Month)
-            .OrderByDescending(item => item.ProviderName == BitMindProviderName)
+            .Where(item => item.ProviderName == BitMindProviderName
+                && item.Year == monthStart.Year
+                && item.Month == monthStart.Month)
             .FirstOrDefaultAsync(cancellationToken);
 
         var monthlyUsed = usage?.RequestCount
-            ?? await dbContext.AiProviderRequests.CountAsync(request => request.RequestStartedAt >= monthStart && request.RequestStartedAt <= now, cancellationToken);
+            ?? await dbContext.AiProviderRequests.CountAsync(request =>
+                request.ProviderName == BitMindProviderName
+                && request.RequestStartedAt >= monthStart
+                && request.RequestStartedAt <= now,
+                cancellationToken);
         var monthlyQuota = usage?.QuotaLimit ?? 0;
+        var circuit = providerCircuitBreaker.GetSnapshot(BitMindProviderName);
 
         return new AdminExternalRequestSummaryDto
         {
-            ProviderName = usage?.ProviderName ?? BitMindProviderName,
+            ProviderName = BitMindProviderName,
             TotalRequests = totalRequests,
             PendingRequests = pendingRequests,
             CompletedRequests = completedRequests,
@@ -643,7 +684,65 @@ public sealed class AdminDashboardService(AppDbContext dbContext) : IAdminDashbo
             MonthlyUsed = monthlyUsed,
             MonthlyRemaining = monthlyQuota <= 0 ? 0 : Math.Max(0, monthlyQuota - monthlyUsed),
             MonthlySuccess = usage?.SuccessCount ?? 0,
-            MonthlyFailed = usage?.FailedCount ?? 0
+            MonthlyFailed = usage?.FailedCount ?? 0,
+            HealthStatus = circuit.IsOpen ? "Temporarily paused" : "Available",
+            CircuitOpen = circuit.IsOpen,
+            CircuitConsecutiveFailures = circuit.ConsecutiveFailures,
+            CircuitOpenUntil = circuit.OpenUntil
+        };
+    }
+
+    private async Task<AdminCleanupSummaryDto> BuildCleanupSummaryAsync(DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        var last24Hours = now.AddHours(-24);
+        var temporaryFrameCutoff = now.Subtract(_videoProcessingOptions.TemporaryFileRetention);
+        var originalVideoFallbackCutoff = now.Subtract(_videoProcessingOptions.OriginalVideoRetention);
+        var detailedPayloadCutoff = now.Subtract(_videoProcessingOptions.DetailedResultRetention);
+
+        var latestRun = await dbContext.RetentionCleanupRuns
+            .AsNoTracking()
+            .OrderByDescending(run => run.StartedAt)
+            .ThenByDescending(run => run.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        var runsLast24Hours = await dbContext.RetentionCleanupRuns
+            .AsNoTracking()
+            .CountAsync(run => run.StartedAt >= last24Hours, cancellationToken);
+
+        var failuresLast24Hours = await dbContext.RetentionCleanupRuns
+            .AsNoTracking()
+            .CountAsync(run => run.StartedAt >= last24Hours
+                && (run.Status != "Succeeded" || run.FailureCount > 0), cancellationToken);
+
+        var pendingTemporaryFrameCleanup = await dbContext.VideoFrames
+            .AsNoTracking()
+            .CountAsync(frame => frame.CreatedAt <= temporaryFrameCutoff && frame.FrameUrl != string.Empty, cancellationToken);
+
+        var pendingOriginalVideoCleanup = await dbContext.Videos
+            .AsNoTracking()
+            .CountAsync(video => video.FileUrl != string.Empty
+                && ((video.RetentionDeleteAt != null && video.RetentionDeleteAt <= now)
+                    || (video.RetentionDeleteAt == null && video.CreatedAt <= originalVideoFallbackCutoff)), cancellationToken);
+
+        var pendingDetailedPayloadCleanup = await dbContext.AiResults
+            .AsNoTracking()
+            .CountAsync(result => result.CreatedAt <= detailedPayloadCutoff
+                && (result.RawModelOutputJson != "{}"
+                    || result.LocalResultJson != null
+                    || result.HybridResultJson != null
+                    || result.ExternalRawResponseJson != null), cancellationToken);
+
+        return new AdminCleanupSummaryDto
+        {
+            LastRunAt = latestRun?.CompletedAt ?? latestRun?.StartedAt,
+            LastStatus = latestRun?.Status ?? "NotRun",
+            LastDurationMs = latestRun?.DurationMs ?? 0,
+            LastFailureCount = latestRun?.FailureCount ?? 0,
+            RunsLast24Hours = runsLast24Hours,
+            FailuresLast24Hours = failuresLast24Hours,
+            PendingTemporaryFrameCleanup = pendingTemporaryFrameCleanup,
+            PendingOriginalVideoCleanup = pendingOriginalVideoCleanup,
+            PendingDetailedPayloadCleanup = pendingDetailedPayloadCleanup
         };
     }
 

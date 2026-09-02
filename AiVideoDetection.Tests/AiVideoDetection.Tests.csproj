@@ -8,6 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\AiVideoDetection.Api\AiVideoDetection.Api.csproj" />
     <ProjectReference Include="..\AiVideoDetection.Application\AiVideoDetection.Application.csproj" />
     <ProjectReference Include="..\AiVideoDetection.Domain\AiVideoDetection.Domain.csproj" />
     <ProjectReference Include="..\AiVideoDetection.Infrastructure\AiVideoDetection.Infrastructure.csproj" />

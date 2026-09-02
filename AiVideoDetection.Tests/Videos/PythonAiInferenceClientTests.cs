@@ -196,6 +196,7 @@ public class PythonAiInferenceClientTests
             new FakeHttpClientFactory(new HttpClient(handler)),
             Options.Create(options),
             new FakeProviderRequestGate(),
+            new InMemoryProviderCircuitBreaker(),
             NullLogger<PythonAiInferenceClient>.Instance);
     }
 
@@ -205,6 +206,7 @@ public class PythonAiInferenceClientTests
             new FakeHttpClientFactory(new HttpClient(handler)),
             Options.Create(options),
             new FakeProviderRequestGate(),
+            new InMemoryProviderCircuitBreaker(),
             NullLogger<PythonAiInferenceClient>.Instance);
     }
 

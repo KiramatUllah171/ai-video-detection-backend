@@ -65,6 +65,40 @@ public class VideoService(
                 sha256Hash = Convert.ToHexString(sha256.Hash!).ToLowerInvariant();
             }
 
+            if (!HasSupportedVideoSignature(tempFilePath, extension))
+            {
+                return ApiResponse<UploadVideoResponse>.ErrorResponse(
+                    "The uploaded file content does not match a supported video format.");
+            }
+
+            var reportCutoff = DateTimeOffset.UtcNow.Subtract(_processingOptions.ReportRetention);
+            var duplicateVideo = await dbContext.Videos
+                .Include(video => video.AnalysisJobs)
+                .Where(video => video.UserId == currentUserId
+                    && video.DeletedAt == null
+                    && video.Status != VideoStatus.Deleted
+                    && video.Sha256Hash == sha256Hash
+                    && (video.FileUrl != string.Empty || video.AiResults.Any(result => result.CreatedAt > reportCutoff)))
+                .OrderByDescending(video => video.CreatedAt)
+                .ThenByDescending(video => video.Id)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            var duplicateJob = duplicateVideo?.AnalysisJobs
+                .OrderByDescending(job => job.CreatedAt)
+                .ThenByDescending(job => job.Id)
+                .FirstOrDefault();
+            if (duplicateVideo is not null && duplicateJob is not null)
+            {
+                logger.LogInformation(
+                    "Duplicate upload prevented for user id {UserId}; existing video id {VideoId} reused.",
+                    currentUserId,
+                    duplicateVideo.Id);
+
+                return ApiResponse<UploadVideoResponse>.SuccessResponse(
+                    ToUploadResponse(duplicateVideo, duplicateJob, "This video has already been uploaded. Use the existing analysis record."),
+                    "Video already uploaded.");
+            }
+
             if (string.Equals(file.ContentType, "application/octet-stream", StringComparison.OrdinalIgnoreCase))
             {
                 logger.LogWarning("Video upload accepted with application/octet-stream for user id {UserId}.", currentUserId);
@@ -1269,5 +1303,47 @@ public class VideoService(
         }
 
         return fileName.Length <= 500 ? fileName : fileName[..500];
+    }
+
+    private static bool HasSupportedVideoSignature(string filePath, string extension)
+    {
+        Span<byte> header = stackalloc byte[16];
+        using var stream = File.OpenRead(filePath);
+        var bytesRead = stream.Read(header);
+        var slice = header[..bytesRead];
+
+        return extension switch
+        {
+            ".mp4" or ".mov" => HasIsoBaseMediaSignature(slice),
+            ".mkv" or ".webm" => StartsWith(slice, [0x1A, 0x45, 0xDF, 0xA3]),
+            ".avi" => HasAviSignature(slice),
+            _ => false
+        };
+    }
+
+    private static bool HasIsoBaseMediaSignature(ReadOnlySpan<byte> header)
+    {
+        return header.Length >= 12
+            && header[4] == (byte)'f'
+            && header[5] == (byte)'t'
+            && header[6] == (byte)'y'
+            && header[7] == (byte)'p';
+    }
+
+    private static bool HasAviSignature(ReadOnlySpan<byte> header)
+    {
+        return header.Length >= 12
+            && header[0] == (byte)'R'
+            && header[1] == (byte)'I'
+            && header[2] == (byte)'F'
+            && header[3] == (byte)'F'
+            && header[8] == (byte)'A'
+            && header[9] == (byte)'V'
+            && header[10] == (byte)'I';
+    }
+
+    private static bool StartsWith(ReadOnlySpan<byte> value, ReadOnlySpan<byte> prefix)
+    {
+        return value.Length >= prefix.Length && value[..prefix.Length].SequenceEqual(prefix);
     }
 }

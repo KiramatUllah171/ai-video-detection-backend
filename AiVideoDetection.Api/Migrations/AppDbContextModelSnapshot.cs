@@ -90,11 +90,11 @@ namespace AiVideoDetection.Api.Migrations
                         .HasColumnName("provider_request_id");
 
                     b.Property<string>("RawRequestMetadataJson")
-                        .HasColumnType("jsonb")
+                        .HasColumnType("text")
                         .HasColumnName("raw_request_metadata_json");
 
                     b.Property<string>("RawResponseJson")
-                        .HasColumnType("jsonb")
+                        .HasColumnType("text")
                         .HasColumnName("raw_response_json");
 
                     b.Property<DateTimeOffset?>("RequestCompletedAt")
@@ -128,10 +128,26 @@ namespace AiVideoDetection.Api.Migrations
                     b.HasIndex("CreatedAt")
                         .HasDatabaseName("ix_ai_provider_requests_created_at");
 
-                    b.HasIndex("UserId");
+                    b.HasIndex("RequestCompletedAt")
+                        .HasDatabaseName("ix_ai_provider_requests_completed_at");
+
+                    b.HasIndex("RequestStartedAt")
+                        .IsDescending()
+                        .HasDatabaseName("ix_ai_provider_requests_started_at");
+
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("IX_ai_provider_requests_user_id");
 
                     b.HasIndex("ProviderName", "ProviderJobId")
                         .HasDatabaseName("ix_ai_provider_requests_provider_job");
+
+                    b.HasIndex("Status", "RequestStartedAt")
+                        .IsDescending(false, true)
+                        .HasDatabaseName("ix_ai_provider_requests_status_started");
+
+                    b.HasIndex("UserId", "RequestStartedAt")
+                        .IsDescending(false, true)
+                        .HasDatabaseName("ix_ai_provider_requests_user_started");
 
                     b.HasIndex("VideoId", "CreatedAt")
                         .IsDescending(false, true)
@@ -197,7 +213,7 @@ namespace AiVideoDetection.Api.Migrations
                         .HasColumnName("external_provider_status");
 
                     b.Property<string>("ExternalRawResponseJson")
-                        .HasColumnType("jsonb")
+                        .HasColumnType("text")
                         .HasColumnName("external_raw_response_json");
 
                     b.Property<DateTimeOffset?>("ExternalRequestedAt")
@@ -231,7 +247,7 @@ namespace AiVideoDetection.Api.Migrations
                         .HasColumnName("final_score");
 
                     b.Property<string>("HybridResultJson")
-                        .HasColumnType("jsonb")
+                        .HasColumnType("text")
                         .HasColumnName("hybrid_result_json");
 
                     b.Property<AnalysisLabel>("Label")
@@ -239,7 +255,7 @@ namespace AiVideoDetection.Api.Migrations
                         .HasColumnName("label");
 
                     b.Property<string>("LocalResultJson")
-                        .HasColumnType("jsonb")
+                        .HasColumnType("text")
                         .HasColumnName("local_result_json");
 
                     b.Property<decimal?>("MetadataScore")
@@ -268,12 +284,11 @@ namespace AiVideoDetection.Api.Migrations
 
                     b.Property<string>("RawModelOutputJson")
                         .IsRequired()
-                        .HasColumnType("jsonb")
+                        .HasColumnType("text")
                         .HasColumnName("raw_model_output_json");
 
                     b.Property<string>("Summary")
-                        .HasMaxLength(1000)
-                        .HasColumnType("character varying(1000)")
+                        .HasColumnType("text")
                         .HasColumnName("summary");
 
                     b.Property<decimal?>("TemporalScore")
@@ -463,6 +478,10 @@ namespace AiVideoDetection.Api.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("CreatedAt")
+                        .IsDescending()
+                        .HasDatabaseName("ix_analysis_jobs_created_at");
+
                     b.HasIndex("Status")
                         .HasDatabaseName("ix_analysis_jobs_status");
 
@@ -470,6 +489,10 @@ namespace AiVideoDetection.Api.Migrations
                         .IsUnique()
                         .HasDatabaseName("ux_analysis_jobs_one_active_per_video")
                         .HasFilter("status NOT IN ('Completed', 'Failed', 'Cancelled')");
+
+                    b.HasIndex("Status", "CreatedAt")
+                        .IsDescending(false, true)
+                        .HasDatabaseName("ix_analysis_jobs_status_created");
 
                     b.ToTable("analysis_jobs", null, t =>
                         {
@@ -551,7 +574,7 @@ namespace AiVideoDetection.Api.Migrations
                         .HasColumnName("provider_request_id");
 
                     b.Property<string>("ResultJson")
-                        .HasColumnType("jsonb")
+                        .HasColumnType("text")
                         .HasColumnName("result_json");
 
                     b.Property<string>("SafeErrorMessage")
@@ -689,6 +712,11 @@ namespace AiVideoDetection.Api.Migrations
                         .HasColumnType("character varying(80)")
                         .HasColumnName("category");
 
+                    b.Property<string>("CorrelationId")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("correlation_id");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
@@ -696,7 +724,7 @@ namespace AiVideoDetection.Api.Migrations
                         .HasDefaultValueSql("NOW()");
 
                     b.Property<string>("DetailsJson")
-                        .HasColumnType("jsonb")
+                        .HasColumnType("text")
                         .HasColumnName("details_json");
 
                     b.Property<string>("HttpMethod")
@@ -710,13 +738,11 @@ namespace AiVideoDetection.Api.Migrations
 
                     b.Property<string>("Message")
                         .IsRequired()
-                        .HasMaxLength(1000)
-                        .HasColumnType("character varying(1000)")
+                        .HasColumnType("text")
                         .HasColumnName("message");
 
                     b.Property<string>("Path")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)")
+                        .HasColumnType("text")
                         .HasColumnName("path");
 
                     b.Property<string>("ResourceId")
@@ -740,8 +766,7 @@ namespace AiVideoDetection.Api.Migrations
                         .HasColumnName("status_code");
 
                     b.Property<string>("UserAgent")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)")
+                        .HasColumnType("text")
                         .HasColumnName("user_agent");
 
                     b.Property<string>("UserEmail")
@@ -760,6 +785,9 @@ namespace AiVideoDetection.Api.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("CorrelationId")
+                        .HasDatabaseName("ix_audit_logs_correlation_id");
+
                     b.HasIndex("CreatedAt")
                         .IsDescending()
                         .HasDatabaseName("ix_audit_logs_created_at");
@@ -773,6 +801,10 @@ namespace AiVideoDetection.Api.Migrations
                     b.HasIndex("Category", "CreatedAt")
                         .IsDescending(false, true)
                         .HasDatabaseName("ix_audit_logs_category_created");
+
+                    b.HasIndex("CreatedAt", "Id")
+                        .IsDescending()
+                        .HasDatabaseName("ix_audit_logs_created_id");
 
                     b.HasIndex("Severity", "CreatedAt")
                         .IsDescending(false, true)
@@ -851,8 +883,7 @@ namespace AiVideoDetection.Api.Migrations
 
                     b.Property<string>("Description")
                         .IsRequired()
-                        .HasMaxLength(2000)
-                        .HasColumnType("character varying(2000)")
+                        .HasColumnType("text")
                         .HasColumnName("description");
 
                     b.Property<decimal?>("ScoreImpact")
@@ -869,8 +900,7 @@ namespace AiVideoDetection.Api.Migrations
 
                     b.Property<string>("Title")
                         .IsRequired()
-                        .HasMaxLength(300)
-                        .HasColumnType("character varying(300)")
+                        .HasColumnType("text")
                         .HasColumnName("title");
 
                     b.Property<EvidenceType>("Type")
@@ -974,6 +1004,11 @@ namespace AiVideoDetection.Api.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
 
+                    b.Property<string>("CorrelationId")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("correlation_id");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
@@ -981,7 +1016,7 @@ namespace AiVideoDetection.Api.Migrations
                         .HasDefaultValueSql("NOW()");
 
                     b.Property<string>("DetailsJson")
-                        .HasColumnType("jsonb")
+                        .HasColumnType("text")
                         .HasColumnName("details_json");
 
                     b.Property<long>("JobId")
@@ -1006,6 +1041,9 @@ namespace AiVideoDetection.Api.Migrations
                         .HasColumnName("step_name");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("CorrelationId")
+                        .HasDatabaseName("ix_job_logs_correlation_id");
 
                     b.HasIndex("JobId", "CreatedAt")
                         .IsDescending(false, true)
@@ -1064,7 +1102,7 @@ namespace AiVideoDetection.Api.Migrations
                         .HasColumnName("has_missing_metadata");
 
                     b.Property<string>("RawJson")
-                        .HasColumnType("jsonb")
+                        .HasColumnType("text")
                         .HasColumnName("raw_json");
 
                     b.Property<string>("Resolution")
@@ -1077,7 +1115,7 @@ namespace AiVideoDetection.Api.Migrations
                         .HasColumnName("video_id");
 
                     b.Property<string>("WarningsJson")
-                        .HasColumnType("jsonb")
+                        .HasColumnType("text")
                         .HasColumnName("warnings_json");
 
                     b.HasKey("Id");
@@ -1232,10 +1270,114 @@ namespace AiVideoDetection.Api.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("TokenHash")
+                        .HasDatabaseName("ix_refresh_tokens_token_hash");
+
                     b.HasIndex("UserId")
                         .HasDatabaseName("ix_refresh_tokens_user_id");
 
                     b.ToTable("refresh_tokens", (string)null);
+                });
+
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.RetentionCleanupRun", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<int>("AnalysisPayloadsCleared")
+                        .HasColumnType("integer")
+                        .HasColumnName("analysis_payloads_cleared");
+
+                    b.Property<DateTimeOffset?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("completed_at");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("NOW()");
+
+                    b.Property<long>("DurationMs")
+                        .HasColumnType("bigint")
+                        .HasColumnName("duration_ms");
+
+                    b.Property<string>("ErrorMessage")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("error_message");
+
+                    b.Property<int>("EvidenceRowsDeleted")
+                        .HasColumnType("integer")
+                        .HasColumnName("evidence_rows_deleted");
+
+                    b.Property<int>("FailureCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("failure_count");
+
+                    b.Property<int>("FrameObjectsCleared")
+                        .HasColumnType("integer")
+                        .HasColumnName("frame_objects_cleared");
+
+                    b.Property<string>("JobName")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)")
+                        .HasColumnName("job_name");
+
+                    b.Property<int>("OriginalVideosCleared")
+                        .HasColumnType("integer")
+                        .HasColumnName("original_videos_cleared");
+
+                    b.Property<int>("ProviderPayloadsCleared")
+                        .HasColumnType("integer")
+                        .HasColumnName("provider_payloads_cleared");
+
+                    b.Property<int>("SegmentPayloadsCleared")
+                        .HasColumnType("integer")
+                        .HasColumnName("segment_payloads_cleared");
+
+                    b.Property<int>("SourceMatchRowsDeleted")
+                        .HasColumnType("integer")
+                        .HasColumnName("source_match_rows_deleted");
+
+                    b.Property<DateTimeOffset>("StartedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("started_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("status");
+
+                    b.Property<int>("ThumbnailsCleared")
+                        .HasColumnType("integer")
+                        .HasColumnName("thumbnails_cleared");
+
+                    b.Property<int>("WorkDirectoriesDeleted")
+                        .HasColumnType("integer")
+                        .HasColumnName("work_directories_deleted");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("StartedAt")
+                        .IsDescending()
+                        .HasDatabaseName("ix_retention_cleanup_runs_started");
+
+                    b.HasIndex("JobName", "StartedAt")
+                        .IsDescending(false, true)
+                        .HasDatabaseName("ix_retention_cleanup_runs_job_started");
+
+                    b.HasIndex("Status", "StartedAt")
+                        .IsDescending(false, true)
+                        .HasDatabaseName("ix_retention_cleanup_runs_status_started");
+
+                    b.ToTable("retention_cleanup_runs", (string)null);
                 });
 
             modelBuilder.Entity("AiVideoDetection.Domain.Entities.SourceMatch", b =>
@@ -1260,7 +1402,7 @@ namespace AiVideoDetection.Api.Migrations
                         .HasDefaultValueSql("NOW()");
 
                     b.Property<string>("DetailsJson")
-                        .HasColumnType("jsonb")
+                        .HasColumnType("text")
                         .HasColumnName("details_json");
 
                     b.Property<decimal?>("DurationMatchScore")
@@ -1344,65 +1486,108 @@ namespace AiVideoDetection.Api.Migrations
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint")
-                        .HasColumnName("id");
+                        .HasColumnType("bigint");
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<int>("AccessFailedCount")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0);
+
+                    b.Property<string>("ConcurrencyStamp")
+                        .IsConcurrencyToken()
+                        .HasColumnType("text");
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at")
                         .HasDefaultValueSql("NOW()");
 
                     b.Property<string>("Email")
                         .IsRequired()
                         .HasMaxLength(320)
-                        .HasColumnType("character varying(320)")
-                        .HasColumnName("email");
+                        .HasColumnType("character varying(320)");
 
                     b.Property<bool>("EmailConfirmed")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("boolean")
-                        .HasDefaultValue(false)
-                        .HasColumnName("email_confirmed");
+                        .HasDefaultValue(false);
 
                     b.Property<bool>("IsActive")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("boolean")
-                        .HasDefaultValue(true)
-                        .HasColumnName("is_active");
+                        .HasDefaultValue(true);
+
+                    b.Property<bool>("LockoutEnabled")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true);
+
+                    b.Property<DateTimeOffset?>("LockoutEnd")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(200)
-                        .HasColumnType("character varying(200)")
-                        .HasColumnName("name");
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("NormalizedEmail")
+                        .HasMaxLength(320)
+                        .HasColumnType("character varying(320)");
+
+                    b.Property<string>("NormalizedUserName")
+                        .HasMaxLength(320)
+                        .HasColumnType("character varying(320)");
 
                     b.Property<string>("PasswordHash")
                         .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("password_hash");
+                        .HasColumnType("text");
+
+                    b.Property<string>("PhoneNumber")
+                        .HasColumnType("text");
+
+                    b.Property<bool>("PhoneNumberConfirmed")
+                        .HasColumnType("boolean");
 
                     b.Property<UserRole>("Role")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("user_role")
-                        .HasColumnName("role")
                         .HasDefaultValueSql("'User'::user_role");
+
+                    b.Property<string>("SecurityStamp")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasDefaultValueSql("md5(random()::text || clock_timestamp()::text)");
+
+                    b.Property<bool>("TwoFactorEnabled")
+                        .HasColumnType("boolean");
 
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
-                        .HasColumnName("updated_at")
                         .HasDefaultValueSql("NOW()");
+
+                    b.Property<string>("UserName")
+                        .HasMaxLength(320)
+                        .HasColumnType("character varying(320)");
 
                     b.HasKey("Id");
 
                     b.HasIndex("Email")
                         .IsUnique()
-                        .HasDatabaseName("ix_users_email");
+                        .HasDatabaseName("ix_aspnet_users_email");
 
-                    b.ToTable("users", (string)null);
+                    b.HasIndex("NormalizedEmail")
+                        .HasDatabaseName("EmailIndex");
+
+                    b.HasIndex("NormalizedUserName")
+                        .IsUnique()
+                        .HasDatabaseName("UserNameIndex");
+
+                    b.ToTable("AspNetUsers", (string)null);
                 });
 
             modelBuilder.Entity("AiVideoDetection.Domain.Entities.Video", b =>
@@ -1498,9 +1683,20 @@ namespace AiVideoDetection.Api.Migrations
                     b.HasIndex("Status")
                         .HasDatabaseName("ix_videos_status");
 
+                    b.HasIndex("DeletedAt", "CreatedAt")
+                        .IsDescending(false, true)
+                        .HasDatabaseName("ix_videos_deleted_created");
+
                     b.HasIndex("UserId", "CreatedAt")
                         .IsDescending(false, true)
                         .HasDatabaseName("ix_videos_user_created");
+
+                    b.HasIndex("UserId", "Sha256Hash")
+                        .HasDatabaseName("ix_videos_user_sha256_hash");
+
+                    b.HasIndex("Status", "DeletedAt", "CreatedAt")
+                        .IsDescending(false, false, true)
+                        .HasDatabaseName("ix_videos_status_deleted_created");
 
                     b.ToTable("videos", (string)null);
                 });
@@ -1564,6 +1760,138 @@ namespace AiVideoDetection.Api.Migrations
                         .HasDatabaseName("ux_video_frames_video_id_frame_index");
 
                     b.ToTable("video_frames", (string)null);
+                });
+
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRole<long>", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("ConcurrencyStamp")
+                        .IsConcurrencyToken()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Name")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("NormalizedName")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("NormalizedName")
+                        .IsUnique()
+                        .HasDatabaseName("RoleNameIndex");
+
+                    b.ToTable("AspNetRoles", (string)null);
+                });
+
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRoleClaim<long>", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("ClaimType")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ClaimValue")
+                        .HasColumnType("text");
+
+                    b.Property<long>("RoleId")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RoleId");
+
+                    b.ToTable("AspNetRoleClaims", (string)null);
+                });
+
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserClaim<long>", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("ClaimType")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ClaimValue")
+                        .HasColumnType("text");
+
+                    b.Property<long>("UserId")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("AspNetUserClaims", (string)null);
+                });
+
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserLogin<long>", b =>
+                {
+                    b.Property<string>("LoginProvider")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ProviderKey")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ProviderDisplayName")
+                        .HasColumnType("text");
+
+                    b.Property<long>("UserId")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("LoginProvider", "ProviderKey");
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("AspNetUserLogins", (string)null);
+                });
+
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserRole<long>", b =>
+                {
+                    b.Property<long>("UserId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("RoleId")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("UserId", "RoleId");
+
+                    b.HasIndex("RoleId");
+
+                    b.ToTable("AspNetUserRoles", (string)null);
+                });
+
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserToken<long>", b =>
+                {
+                    b.Property<long>("UserId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("LoginProvider")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Name")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Value")
+                        .HasColumnType("text");
+
+                    b.HasKey("UserId", "LoginProvider", "Name");
+
+                    b.ToTable("AspNetUserTokens", (string)null);
                 });
 
             modelBuilder.Entity("AiVideoDetection.Domain.Entities.AiProviderRequest", b =>
@@ -1781,6 +2109,57 @@ namespace AiVideoDetection.Api.Migrations
                         .IsRequired();
 
                     b.Navigation("Video");
+                });
+
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRoleClaim<long>", b =>
+                {
+                    b.HasOne("Microsoft.AspNetCore.Identity.IdentityRole<long>", null)
+                        .WithMany()
+                        .HasForeignKey("RoleId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserClaim<long>", b =>
+                {
+                    b.HasOne("AiVideoDetection.Domain.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserLogin<long>", b =>
+                {
+                    b.HasOne("AiVideoDetection.Domain.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserRole<long>", b =>
+                {
+                    b.HasOne("Microsoft.AspNetCore.Identity.IdentityRole<long>", null)
+                        .WithMany()
+                        .HasForeignKey("RoleId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("AiVideoDetection.Domain.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserToken<long>", b =>
+                {
+                    b.HasOne("AiVideoDetection.Domain.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("AiVideoDetection.Domain.Entities.AiResult", b =>

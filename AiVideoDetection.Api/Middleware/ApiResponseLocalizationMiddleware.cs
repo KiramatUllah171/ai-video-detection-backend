@@ -216,6 +216,9 @@ public sealed partial class ApiResponseLocalizationMiddleware(RequestDelegate ne
         ["An unexpected error occurred."] = "ایک غیر متوقع خرابی پیش آئی۔",
         ["Please try again later."] = "براہ کرم کچھ دیر بعد دوبارہ کوشش کریں۔",
         ["Unauthorized."] = "آپ کو اس عمل کی اجازت نہیں ہے۔",
+        ["Request body is too large."] = "درخواست کا ڈیٹا بہت زیادہ ہے۔",
+        ["Too many requests. Please wait a moment and try again."] = "بہت زیادہ درخواستیں بھیجی گئی ہیں۔ براہ کرم کچھ دیر انتظار کریں اور دوبارہ کوشش کریں۔",
+        ["Too many failed sign-in attempts. Please wait before trying again."] = "بہت زیادہ ناکام لاگ اِن کوششیں ہو چکی ہیں۔ براہ کرم دوبارہ کوشش سے پہلے کچھ دیر انتظار کریں۔",
         ["A video file is required."] = "ویڈیو فائل لازمی ہے۔",
         ["The uploaded file is empty."] = "اپ لوڈ کی گئی فائل خالی ہے۔",
         ["The uploaded file extension is not supported."] = "اپ لوڈ کی گئی فائل کی ایکسٹینشن سپورٹ نہیں ہے۔",
@@ -250,7 +253,16 @@ public sealed partial class ApiResponseLocalizationMiddleware(RequestDelegate ne
         ["Video deleted successfully."] = "ویڈیو کامیابی سے حذف ہو گئی۔",
         ["Preparing video"] = "ویڈیو تیار ہو رہی ہے",
         ["Analysis completed"] = "تجزیہ مکمل",
-        ["Waiting for processing worker"] = "پروسیسنگ ورکر کا انتظار ہے"
+        ["Waiting for processing worker"] = "پروسیسنگ ورکر کا انتظار ہے",
+        ["AI analysis service is currently unavailable. Please try again later."] = "AI تجزیہ سروس اس وقت دستیاب نہیں۔ براہ کرم کچھ دیر بعد دوبارہ کوشش کریں۔",
+        ["AI analysis service timed out. Please try again later."] = "AI تجزیہ سروس نے وقت پر جواب نہیں دیا۔ براہ کرم کچھ دیر بعد دوبارہ کوشش کریں۔",
+        ["AI analysis service returned an invalid response."] = "AI تجزیہ سروس سے غیر درست جواب موصول ہوا۔",
+        ["External video analysis is temporarily unavailable."] = "بیرونی ویڈیو تجزیہ عارضی طور پر دستیاب نہیں۔",
+        ["The external analysis service took too long to respond. Please retry."] = "بیرونی تجزیہ سروس نے جواب دینے میں بہت وقت لیا۔ براہ کرم دوبارہ کوشش کریں۔",
+        ["External video analysis could not accept the prepared video segment."] = "بیرونی ویڈیو تجزیہ تیار کردہ ویڈیو حصے کو قبول نہیں کر سکا۔",
+        ["The analysis service is currently busy. Please wait a moment and retry."] = "تجزیہ سروس اس وقت مصروف ہے۔ براہ کرم تھوڑی دیر انتظار کر کے دوبارہ کوشش کریں۔",
+        ["The external analysis service is temporarily paused after repeated failures. Please try again shortly."] = "مسلسل ناکامیوں کے بعد بیرونی تجزیہ سروس عارضی طور پر روکی گئی ہے۔ براہ کرم کچھ دیر بعد دوبارہ کوشش کریں۔",
+        ["AI analysis could not be completed for this video."] = "اس ویڈیو کا AI تجزیہ مکمل نہیں ہو سکا۔"
     };
 
     private static readonly IReadOnlyDictionary<string, string> Pashto = new Dictionary<string, string>(StringComparer.Ordinal)
@@ -259,6 +271,9 @@ public sealed partial class ApiResponseLocalizationMiddleware(RequestDelegate ne
         ["An unexpected error occurred."] = "یوه ناڅاپي تېروتنه رامنځته شوه.",
         ["Please try again later."] = "مهرباني وکړئ وروسته بیا هڅه وکړئ.",
         ["Unauthorized."] = "تاسو د دې عمل اجازه نه لرئ.",
+        ["Request body is too large."] = "د غوښتنې ډاټا ډېره زیاته ده.",
+        ["Too many requests. Please wait a moment and try again."] = "ډېرې غوښتنې واستول شوې. مهرباني وکړئ لږ انتظار وکړئ او بیا هڅه وکړئ.",
+        ["Too many failed sign-in attempts. Please wait before trying again."] = "د ننوتلو ډېرې ناکامې هڅې وشوې. مهرباني وکړئ د بیا هڅې مخکې لږ انتظار وکړئ.",
         ["A video file is required."] = "د ویډیو فایل اړین دی.",
         ["The uploaded file is empty."] = "اپلوډ شوی فایل تش دی.",
         ["The uploaded file extension is not supported."] = "د اپلوډ شوي فایل توسیع ملاتړ نه کېږي.",
@@ -293,7 +308,16 @@ public sealed partial class ApiResponseLocalizationMiddleware(RequestDelegate ne
         ["Video deleted successfully."] = "ویډیو په بریالیتوب حذف شوه.",
         ["Preparing video"] = "ویډیو چمتو کېږي",
         ["Analysis completed"] = "تحلیل بشپړ شو",
-        ["Waiting for processing worker"] = "د پروسس کارکوونکي ته انتظار دی"
+        ["Waiting for processing worker"] = "د پروسس کارکوونکي ته انتظار دی",
+        ["AI analysis service is currently unavailable. Please try again later."] = "د AI تحلیل خدمت اوس نشته. مهرباني وکړئ لږ وروسته بیا هڅه وکړئ.",
+        ["AI analysis service timed out. Please try again later."] = "د AI تحلیل خدمت په وخت ځواب ورنه کړ. مهرباني وکړئ لږ وروسته بیا هڅه وکړئ.",
+        ["AI analysis service returned an invalid response."] = "د AI تحلیل خدمت ناسمه ځواب ورکړ.",
+        ["External video analysis is temporarily unavailable."] = "بهرنی ویډیو تحلیل لنډمهاله نشته.",
+        ["The external analysis service took too long to respond. Please retry."] = "بهرني تحلیل خدمت ځواب ورکولو کې ډېر وخت واخیست. مهرباني وکړئ بیا هڅه وکړئ.",
+        ["External video analysis could not accept the prepared video segment."] = "بهرني ویډیو تحلیل چمتو شوې ویډیو برخه ونه منله.",
+        ["The analysis service is currently busy. Please wait a moment and retry."] = "د تحلیل خدمت اوس بوخت دی. مهرباني وکړئ لږ انتظار وکړئ او بیا هڅه وکړئ.",
+        ["The external analysis service is temporarily paused after repeated failures. Please try again shortly."] = "د پرله پسې ناکامیو وروسته بهرنی تحلیل خدمت لنډمهاله درول شوی. مهرباني وکړئ لږ وروسته بیا هڅه وکړئ.",
+        ["AI analysis could not be completed for this video."] = "د دې ویډیو AI تحلیل بشپړ نه شو."
     };
 
     }

@@ -32,6 +32,12 @@ public class VideoProcessingOptions
 
     public int StaleActiveJobTimeoutMinutes { get; set; } = 30;
 
+    public int FfmpegTimeoutSeconds { get; set; } = 600;
+
+    public int FfprobeTimeoutSeconds { get; set; } = 120;
+
+    public int WorkerTimeoutMinutes { get; set; } = 30;
+
     public decimal HighRiskOverrideScore { get; set; } = 0.90m;
 
     public decimal MinimumRequiredCoverageRatio { get; set; } = 0.80m;
@@ -51,6 +57,12 @@ public class VideoProcessingOptions
     public TimeSpan ReportRetention => TimeSpan.FromDays(ReportRetentionDays);
 
     public TimeSpan DetailedResultRetention => TimeSpan.FromDays(DetailedResultRetentionDays);
+
+    public TimeSpan FfmpegTimeout => TimeSpan.FromSeconds(FfmpegTimeoutSeconds);
+
+    public TimeSpan FfprobeTimeout => TimeSpan.FromSeconds(FfprobeTimeoutSeconds);
+
+    public TimeSpan WorkerTimeout => TimeSpan.FromMinutes(WorkerTimeoutMinutes);
 
     public Dictionary<string, int> ProgressStageWeights { get; set; } = new()
     {

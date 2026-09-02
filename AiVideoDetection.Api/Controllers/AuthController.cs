@@ -299,6 +299,12 @@ public class AuthController(
 
     private ActionResult<ApiResponse<T>> ToActionResult<T>(ApiResponse<T> response)
     {
+        if (!response.Success &&
+            response.Message.Equals("Too many requests. Please wait a moment and try again.", StringComparison.OrdinalIgnoreCase))
+        {
+            return StatusCode(StatusCodes.Status429TooManyRequests, response);
+        }
+
         return response.Success ? Ok(response) : BadRequest(response);
     }
 }

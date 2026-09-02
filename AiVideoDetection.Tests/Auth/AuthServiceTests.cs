@@ -41,6 +41,26 @@ public class AuthServiceTests
     }
 
     [Fact]
+    public async Task ForgotPasswordAsync_ThrottlesRepeatedRequestsForSameEmail()
+    {
+        await using var dbContext = CreateDbContext();
+        var authService = CreateAuthService(
+            dbContext,
+            authSecurityOptions: Options.Create(new AuthSecurityOptions
+            {
+                PasswordResetEmailPermitLimit = 1,
+                EmailThrottleWindowMinutes = 15
+            }));
+
+        var first = await authService.ForgotPasswordAsync(new ForgotPasswordRequest { Email = "missing@example.com" });
+        var second = await authService.ForgotPasswordAsync(new ForgotPasswordRequest { Email = "missing@example.com" });
+
+        Assert.True(first.Success);
+        Assert.False(second.Success);
+        Assert.Contains("Too many requests", second.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task ResetPasswordAsync_UpdatesPasswordAndRevokesToken()
     {
         await using var dbContext = CreateDbContext();
@@ -71,7 +91,9 @@ public class AuthServiceTests
         var user = await dbContext.Users.SingleAsync(user => user.Email == "reset@example.com");
         Assert.True(passwordHasher.VerifyPassword("NewPassword123!", user.PasswordHash));
         Assert.False(passwordHasher.VerifyPassword("Password123!", user.PasswordHash));
-        Assert.NotNull(await dbContext.PasswordResetTokens.SingleAsync(token => token.UserId == user.Id && token.UsedAt != null));
+        var storedToken = await dbContext.PasswordResetTokens.SingleAsync(token => token.UserId == user.Id && token.UsedAt != null);
+        Assert.NotEqual(resetToken, storedToken.TokenHash);
+        Assert.Equal(64, storedToken.TokenHash.Length);
     }
 
     [Fact]
@@ -169,7 +191,9 @@ public class AuthServiceTests
         Assert.True(response.Success);
         var user = await dbContext.Users.SingleAsync(user => user.Email == "confirm-token@example.com");
         Assert.True(user.EmailConfirmed);
-        Assert.NotNull(await dbContext.EmailConfirmationTokens.SingleAsync(token => token.UserId == user.Id && token.UsedAt != null));
+        var storedToken = await dbContext.EmailConfirmationTokens.SingleAsync(token => token.UserId == user.Id && token.UsedAt != null);
+        Assert.NotEqual(confirmationToken, storedToken.TokenHash);
+        Assert.Equal(64, storedToken.TokenHash.Length);
     }
 
     [Fact]
@@ -234,7 +258,9 @@ public class AuthServiceTests
 
         Assert.True(afterConfirmation.Success);
         Assert.NotNull(afterConfirmation.Data);
-        Assert.Single(dbContext.RefreshTokens);
+        var refreshToken = await dbContext.RefreshTokens.SingleAsync();
+        Assert.NotEqual(afterConfirmation.Data.RefreshToken, refreshToken.TokenHash);
+        Assert.Equal(64, refreshToken.TokenHash.Length);
     }
 
     [Fact]
@@ -258,6 +284,66 @@ public class AuthServiceTests
         Assert.Contains("email address", missingEmail.Message, StringComparison.OrdinalIgnoreCase);
         Assert.False(wrongPassword.Success);
         Assert.Contains("password", wrongPassword.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task LoginAsync_LocksAccountAfterRepeatedPasswordFailures()
+    {
+        await using var dbContext = CreateDbContext();
+        var emailSender = new TestPasswordResetEmailSender();
+        var authService = CreateAuthService(
+            dbContext,
+            emailSender,
+            authSecurityOptions: Options.Create(new AuthSecurityOptions
+            {
+                MaxFailedAccessAttempts = 2,
+                LockoutMinutes = 15
+            }));
+        await authService.SignupAsync(ValidSignupRequest("lockout@example.com"));
+        var confirmationToken = ExtractToken(emailSender.ConfirmationUrls.Single());
+        await authService.ConfirmEmailAsync(new ConfirmEmailRequest { Token = confirmationToken });
+
+        var firstFailure = await authService.LoginAsync(
+            new LoginRequest { Email = "lockout@example.com", Password = "WrongPassword123!" },
+            null);
+        var secondFailure = await authService.LoginAsync(
+            new LoginRequest { Email = "lockout@example.com", Password = "WrongPassword123!" },
+            null);
+        var correctPasswordAfterLockout = await authService.LoginAsync(
+            new LoginRequest { Email = "lockout@example.com", Password = "Password123!" },
+            null);
+
+        var user = await dbContext.Users.SingleAsync(user => user.Email == "lockout@example.com");
+        Assert.False(firstFailure.Success);
+        Assert.False(secondFailure.Success);
+        Assert.Contains("failed sign-in attempts", secondFailure.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.False(correctPasswordAfterLockout.Success);
+        Assert.NotNull(user.LockoutEnd);
+        Assert.Equal(2, user.AccessFailedCount);
+    }
+
+    [Fact]
+    public async Task LoginAsync_ThrottlesRepeatedRequestsForSameEmail()
+    {
+        await using var dbContext = CreateDbContext();
+        var authService = CreateAuthService(
+            dbContext,
+            authSecurityOptions: Options.Create(new AuthSecurityOptions
+            {
+                LoginEmailPermitLimit = 1,
+                EmailThrottleWindowMinutes = 15
+            }));
+
+        var first = await authService.LoginAsync(
+            new LoginRequest { Email = "missing-login@example.com", Password = "Password123!" },
+            null);
+        var second = await authService.LoginAsync(
+            new LoginRequest { Email = "missing-login@example.com", Password = "Password123!" },
+            null);
+
+        Assert.False(first.Success);
+        Assert.False(second.Success);
+        Assert.Contains("Too many requests", second.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -300,6 +386,26 @@ public class AuthServiceTests
         Assert.Empty(emailSender.ConfirmationUrls);
     }
 
+    [Fact]
+    public async Task ResendEmailConfirmationAsync_ThrottlesRepeatedRequestsForSameEmail()
+    {
+        await using var dbContext = CreateDbContext();
+        var authService = CreateAuthService(
+            dbContext,
+            authSecurityOptions: Options.Create(new AuthSecurityOptions
+            {
+                EmailConfirmationResendPermitLimit = 1,
+                EmailThrottleWindowMinutes = 15
+            }));
+
+        var first = await authService.ResendEmailConfirmationAsync(new ResendEmailConfirmationRequest { Email = "missing@example.com" });
+        var second = await authService.ResendEmailConfirmationAsync(new ResendEmailConfirmationRequest { Email = "missing@example.com" });
+
+        Assert.True(first.Success);
+        Assert.False(second.Success);
+        Assert.Contains("Too many requests", second.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static AppDbContext CreateDbContext()
     {
         var options = new DbContextOptionsBuilder<AppDbContext>()
@@ -312,7 +418,8 @@ public class AuthServiceTests
     private static AuthService CreateAuthService(
         AppDbContext dbContext,
         TestPasswordResetEmailSender? emailSender = null,
-        IPasswordHasher? passwordHasher = null)
+        IPasswordHasher? passwordHasher = null,
+        IOptions<AuthSecurityOptions>? authSecurityOptions = null)
     {
         var jwtOptions = Options.Create(new JwtOptions
         {
@@ -329,6 +436,8 @@ public class AuthServiceTests
             new JwtTokenService(jwtOptions),
             jwtOptions,
             Options.Create(new PasswordResetOptions()),
+            authSecurityOptions ?? Options.Create(new AuthSecurityOptions()),
+            new InMemoryAuthThrottleService(),
             emailSender ?? new TestPasswordResetEmailSender(),
             emailSender ?? new TestPasswordResetEmailSender(),
             new NoopAuditLogService(),
