@@ -2,8 +2,11 @@ using System.Security.Claims;
 using AiVideoDetection.Application.Admin.DTOs;
 using AiVideoDetection.Application.Admin.Interfaces;
 using AiVideoDetection.Application.Common;
+using AiVideoDetection.Application.Subscriptions;
+using AiVideoDetection.Application.Videos;
 using AiVideoDetection.Application.Videos.DTOs;
 using AiVideoDetection.Application.Videos.Interfaces;
+using AiVideoDetection.Application.Videos.Options;
 using AiVideoDetection.Infrastructure.Auth;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -28,8 +31,8 @@ public class VideosController(
 
     [HttpPost("upload")]
     [Consumes("multipart/form-data")]
-    [RequestSizeLimit(524_288_000)]
-    [RequestFormLimits(MultipartBodyLengthLimit = 524_288_000)]
+    [RequestSizeLimit(VideoUploadSizeLimits.MultipartRequestBodyLimitBytes)]
+    [RequestFormLimits(MultipartBodyLengthLimit = VideoUploadSizeLimits.MultipartRequestBodyLimitBytes)]
     [ProducesResponseType(typeof(ApiResponse<UploadVideoResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<UploadVideoResponse>), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ApiResponse<UploadVideoResponse>), StatusCodes.Status401Unauthorized)]
@@ -227,7 +230,7 @@ public class VideosController(
         }
 
         var response = await videoService.ReanalyzeAsync(videoId, currentUserId, cancellationToken);
-        return response.Success ? Ok(response) : NotFound(response);
+        return ToActionResult(response);
     }
 
     [HttpPost("{videoId:long}/retry-analysis")]
@@ -248,14 +251,7 @@ public class VideosController(
         }
 
         var response = await videoService.RetryAnalysisAsync(videoId, currentUserId, cancellationToken);
-        if (response.Success)
-        {
-            return Ok(response);
-        }
-
-        return response.Message.Contains("not found", StringComparison.OrdinalIgnoreCase)
-            ? NotFound(response)
-            : BadRequest(response);
+        return ToActionResult(response);
     }
 
     [HttpPost("{videoId:long}/cancel-analysis")]
@@ -428,7 +424,29 @@ public class VideosController(
 
     private ActionResult<ApiResponse<T>> ToActionResult<T>(ApiResponse<T> response)
     {
-        return response.Success ? Ok(response) : BadRequest(response);
+        if (response.Success)
+        {
+            return Ok(response);
+        }
+
+        if (response.Message.Contains("not found", StringComparison.OrdinalIgnoreCase))
+        {
+            return NotFound(response);
+        }
+
+        return response.ErrorCode switch
+        {
+            SubscriptionErrorCodes.FreeTrialExhausted
+                or SubscriptionErrorCodes.ScanQuotaExhausted
+                or SubscriptionErrorCodes.SubscriptionRequired
+                or SubscriptionErrorCodes.DetailedScanNotAllowed => StatusCode(StatusCodes.Status402PaymentRequired, response),
+            SubscriptionErrorCodes.VideoSizeLimitExceeded => StatusCode(StatusCodes.Status413PayloadTooLarge, response),
+            SubscriptionErrorCodes.SubscriptionSecurityNotConfigured => StatusCode(StatusCodes.Status500InternalServerError, response),
+            VideoInfrastructureErrorCodes.ServerStorageCapacityLow
+                or VideoInfrastructureErrorCodes.AnalysisQueueUnavailable => StatusCode(StatusCodes.Status503ServiceUnavailable, response),
+            VideoInfrastructureErrorCodes.UploadConcurrencyLimitReached => StatusCode(StatusCodes.Status429TooManyRequests, response),
+            _ => BadRequest(response)
+        };
     }
 
     private static ApiResponse<T> VideoNotFound<T>()

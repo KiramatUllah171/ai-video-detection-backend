@@ -4,11 +4,11 @@ public class VideoUploadOptions
 {
     public const string SectionName = "VideoUpload";
 
-    public long MaxFileSizeBytes { get; set; } = 524_288_000;
+    public long MaxFileSizeBytes { get; set; } = VideoUploadSizeLimits.AbsoluteMaxVideoSizeBytes;
 
-    public long SmartScanMaxFileSizeBytes { get; set; } = 209_715_200;
+    public long SmartScanMaxFileSizeBytes { get; set; } = VideoUploadSizeLimits.AbsoluteMaxVideoSizeBytes;
 
-    public long DetailedScanMaxFileSizeBytes { get; set; } = 524_288_000;
+    public long DetailedScanMaxFileSizeBytes { get; set; } = VideoUploadSizeLimits.ProMaxVideoSizeBytes;
 
     public long UploadChunkSizeBytes { get; set; } = 15_728_640;
 

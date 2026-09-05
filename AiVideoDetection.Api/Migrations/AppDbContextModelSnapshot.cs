@@ -32,6 +32,50 @@ namespace AiVideoDetection.Api.Migrations
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "video_status", new[] { "Uploaded", "Queued", "Processing", "Completed", "Failed", "Cancelled", "Deleted" });
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.AccountDeviceLink", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("NOW()");
+
+                    b.Property<long>("DeviceIdentityId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("device_identity_id");
+
+                    b.Property<DateTimeOffset>("FirstSeenAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("first_seen_at");
+
+                    b.Property<DateTimeOffset>("LastSeenAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_seen_at");
+
+                    b.Property<long>("UserId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DeviceIdentityId", "LastSeenAt")
+                        .IsDescending(false, true)
+                        .HasDatabaseName("ix_account_device_links_device_last_seen");
+
+                    b.HasIndex("UserId", "DeviceIdentityId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_account_device_links_user_device");
+
+                    b.ToTable("account_device_links", (string)null);
+                });
+
             modelBuilder.Entity("AiVideoDetection.Domain.Entities.AiProviderRequest", b =>
                 {
                     b.Property<long>("Id")
@@ -817,6 +861,83 @@ namespace AiVideoDetection.Api.Migrations
                     b.ToTable("audit_logs", (string)null);
                 });
 
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.DeviceIdentity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("ConcurrencyStamp")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("concurrency_stamp");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("NOW()");
+
+                    b.Property<string>("DeviceFingerprintHash")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("device_fingerprint_hash");
+
+                    b.Property<string>("DeviceTokenHash")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("device_token_hash");
+
+                    b.Property<DateTimeOffset>("FirstSeenAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("first_seen_at");
+
+                    b.Property<string>("HashVersion")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("hash_version");
+
+                    b.Property<DateTimeOffset>("LastSeenAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_seen_at");
+
+                    b.Property<string>("RiskStatus")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("risk_status");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("NOW()");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DeviceFingerprintHash")
+                        .HasDatabaseName("ix_device_identities_fingerprint_hash");
+
+                    b.HasIndex("DeviceTokenHash")
+                        .IsUnique()
+                        .HasDatabaseName("ux_device_identities_device_token_hash")
+                        .HasFilter("device_token_hash IS NOT NULL");
+
+                    b.HasIndex("LastSeenAt")
+                        .HasDatabaseName("ix_device_identities_last_seen_at");
+
+                    b.ToTable("device_identities", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_device_identities_hash_present", "(device_token_hash IS NOT NULL AND device_token_hash <> '') OR (device_fingerprint_hash IS NOT NULL AND device_fingerprint_hash <> '')");
+                        });
+                });
+
             modelBuilder.Entity("AiVideoDetection.Domain.Entities.EmailConfirmationToken", b =>
                 {
                     b.Property<long>("Id")
@@ -993,6 +1114,224 @@ namespace AiVideoDetection.Api.Migrations
                         .HasDatabaseName("ux_frame_hashes_frame_id_hash_version");
 
                     b.ToTable("frame_hashes", (string)null);
+                });
+
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.FreeTrialAccountUsage", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<int>("AllocatedScans")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(2)
+                        .HasColumnName("allocated_scans");
+
+                    b.Property<string>("ConcurrencyStamp")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("concurrency_stamp");
+
+                    b.Property<int>("ConsumedScans")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("consumed_scans");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("NOW()");
+
+                    b.Property<DateTimeOffset?>("FirstUsedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("first_used_at");
+
+                    b.Property<DateTimeOffset?>("LastUsedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_used_at");
+
+                    b.Property<int>("ReservedScans")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("reserved_scans");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("NOW()");
+
+                    b.Property<long>("UserId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_free_trial_account_usages_user_id");
+
+                    b.ToTable("free_trial_account_usages", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_free_trial_account_usage_counts", "allocated_scans > 0 AND consumed_scans >= 0 AND reserved_scans >= 0 AND consumed_scans + reserved_scans <= allocated_scans");
+                        });
+                });
+
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.FreeTrialDeviceUsage", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<int>("AllocatedScans")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(2)
+                        .HasColumnName("allocated_scans");
+
+                    b.Property<string>("ConcurrencyStamp")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("concurrency_stamp");
+
+                    b.Property<int>("ConsumedScans")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("consumed_scans");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("NOW()");
+
+                    b.Property<long>("DeviceIdentityId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("device_identity_id");
+
+                    b.Property<DateTimeOffset?>("FirstUsedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("first_used_at");
+
+                    b.Property<DateTimeOffset?>("LastUsedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_used_at");
+
+                    b.Property<int>("ReservedScans")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("reserved_scans");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("NOW()");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DeviceIdentityId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_free_trial_device_usages_device_id");
+
+                    b.ToTable("free_trial_device_usages", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_free_trial_device_usage_counts", "allocated_scans > 0 AND consumed_scans >= 0 AND reserved_scans >= 0 AND consumed_scans + reserved_scans <= allocated_scans");
+                        });
+                });
+
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.FreeTrialIpUsage", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<int>("AllocatedScans")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(2)
+                        .HasColumnName("allocated_scans");
+
+                    b.Property<string>("ConcurrencyStamp")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("concurrency_stamp");
+
+                    b.Property<int>("ConsumedScans")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("consumed_scans");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("NOW()");
+
+                    b.Property<DateTimeOffset?>("FirstUsedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("first_used_at");
+
+                    b.Property<string>("HashVersion")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("hash_version");
+
+                    b.Property<string>("IpHash")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("ip_hash");
+
+                    b.Property<DateTimeOffset?>("LastUsedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_used_at");
+
+                    b.Property<int>("ReservedScans")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("reserved_scans");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("NOW()");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("IpHash")
+                        .IsUnique()
+                        .HasDatabaseName("ux_free_trial_ip_usages_ip_hash");
+
+                    b.ToTable("free_trial_ip_usages", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_free_trial_ip_usage_counts", "allocated_scans > 0 AND consumed_scans >= 0 AND reserved_scans >= 0 AND consumed_scans + reserved_scans <= allocated_scans");
+                        });
                 });
 
             modelBuilder.Entity("AiVideoDetection.Domain.Entities.JobLog", b =>
@@ -1232,6 +1571,143 @@ namespace AiVideoDetection.Api.Migrations
                     b.ToTable("password_reset_tokens", (string)null);
                 });
 
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.PaymentTransaction", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("amount");
+
+                    b.Property<string>("CallbackPayloadJson")
+                        .HasColumnType("text")
+                        .HasColumnName("callback_payload_json");
+
+                    b.Property<string>("ConcurrencyStamp")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("concurrency_stamp");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("NOW()");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)")
+                        .HasColumnName("currency");
+
+                    b.Property<DateTimeOffset?>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<DateTimeOffset?>("FailedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("failed_at");
+
+                    b.Property<string>("FailureReason")
+                        .HasColumnType("text")
+                        .HasColumnName("failure_reason");
+
+                    b.Property<string>("GatewayRequestJson")
+                        .HasColumnType("text")
+                        .HasColumnName("gateway_request_json");
+
+                    b.Property<string>("GatewayResponseJson")
+                        .HasColumnType("text")
+                        .HasColumnName("gateway_response_json");
+
+                    b.Property<DateTimeOffset>("InitiatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("initiated_at");
+
+                    b.Property<string>("OrderId")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)")
+                        .HasColumnName("order_id");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("provider");
+
+                    b.Property<string>("ProviderTransactionId")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("provider_transaction_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("status");
+
+                    b.Property<long>("SubscriptionPlanId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("subscription_plan_id");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("NOW()");
+
+                    b.Property<long>("UserId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("user_id");
+
+                    b.Property<long?>("UserSubscriptionId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("user_subscription_id");
+
+                    b.Property<DateTimeOffset?>("VerifiedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("verified_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OrderId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_payment_transactions_order_id");
+
+                    b.HasIndex("Status")
+                        .HasDatabaseName("ix_payment_transactions_status");
+
+                    b.HasIndex("SubscriptionPlanId");
+
+                    b.HasIndex("UserSubscriptionId")
+                        .HasDatabaseName("ix_payment_transactions_subscription_id");
+
+                    b.HasIndex("Provider", "ProviderTransactionId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_payment_transactions_provider_transaction")
+                        .HasFilter("provider_transaction_id IS NOT NULL");
+
+                    b.HasIndex("UserId", "Status", "CreatedAt")
+                        .IsDescending(false, false, true)
+                        .HasDatabaseName("ix_payment_transactions_user_status_created");
+
+                    b.ToTable("payment_transactions", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_payment_transactions_amount", "amount >= 0");
+
+                            t.HasCheckConstraint("ck_payment_transactions_status", "status IN ('Pending', 'Verified', 'Failed', 'Cancelled', 'Expired')");
+                        });
+                });
+
             modelBuilder.Entity("AiVideoDetection.Domain.Entities.RefreshToken", b =>
                 {
                     b.Property<long>("Id")
@@ -1380,6 +1856,231 @@ namespace AiVideoDetection.Api.Migrations
                     b.ToTable("retention_cleanup_runs", (string)null);
                 });
 
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.ScanReservation", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<long?>("AnalysisJobId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("analysis_job_id");
+
+                    b.Property<string>("AnalysisMode")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("analysis_mode");
+
+                    b.Property<string>("ConcurrencyStamp")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("concurrency_stamp");
+
+                    b.Property<DateTimeOffset?>("ConsumedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("consumed_at");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("NOW()");
+
+                    b.Property<long?>("DeviceIdentityId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("device_identity_id");
+
+                    b.Property<DateTimeOffset?>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<long>("FileSizeBytes")
+                        .HasColumnType("bigint")
+                        .HasColumnName("file_size_bytes");
+
+                    b.Property<string>("FreeTrialIpHash")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("free_trial_ip_hash");
+
+                    b.Property<DateTimeOffset?>("LastHeartbeatAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_heartbeat_at");
+
+                    b.Property<string>("ReleaseReason")
+                        .HasColumnType("text")
+                        .HasColumnName("release_reason");
+
+                    b.Property<DateTimeOffset?>("ReleasedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("released_at");
+
+                    b.Property<string>("ReservationKind")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("reservation_kind");
+
+                    b.Property<DateTimeOffset>("ReservedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("reserved_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("status");
+
+                    b.Property<long>("SubscriptionPlanId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("subscription_plan_id");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("NOW()");
+
+                    b.Property<long>("UserId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("user_id");
+
+                    b.Property<long?>("UserSubscriptionId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("user_subscription_id");
+
+                    b.Property<long?>("VideoId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("video_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AnalysisJobId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_scan_reservations_analysis_job_id")
+                        .HasFilter("analysis_job_id IS NOT NULL");
+
+                    b.HasIndex("FreeTrialIpHash")
+                        .HasDatabaseName("ix_scan_reservations_free_trial_ip_hash");
+
+                    b.HasIndex("SubscriptionPlanId");
+
+                    b.HasIndex("VideoId")
+                        .HasDatabaseName("ix_scan_reservations_video_id");
+
+                    b.HasIndex("DeviceIdentityId", "Status")
+                        .HasDatabaseName("ix_scan_reservations_device_status");
+
+                    b.HasIndex("Status", "ExpiresAt")
+                        .HasDatabaseName("ix_scan_reservations_status_expires");
+
+                    b.HasIndex("UserSubscriptionId", "Status")
+                        .HasDatabaseName("ix_scan_reservations_subscription_status");
+
+                    b.HasIndex("UserId", "Status", "ReservedAt")
+                        .IsDescending(false, false, true)
+                        .HasDatabaseName("ix_scan_reservations_user_status_reserved");
+
+                    b.ToTable("scan_reservations", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_scan_reservations_file_size", "file_size_bytes >= 0");
+
+                            t.HasCheckConstraint("ck_scan_reservations_kind", "reservation_kind IN ('FreeTrial', 'PaidSubscription', 'InternalUnlimited')");
+
+                            t.HasCheckConstraint("ck_scan_reservations_status", "status IN ('Reserved', 'Consumed', 'Released')");
+                        });
+                });
+
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.ScanUsage", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<long?>("AnalysisJobId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("analysis_job_id");
+
+                    b.Property<string>("AnalysisMode")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("analysis_mode");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("NOW()");
+
+                    b.Property<string>("EntitlementType")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("entitlement_type");
+
+                    b.Property<DateTimeOffset>("OccurredAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("occurred_at");
+
+                    b.Property<long?>("ScanReservationId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("scan_reservation_id");
+
+                    b.Property<long>("SubscriptionPlanId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("subscription_plan_id");
+
+                    b.Property<long>("UserId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("user_id");
+
+                    b.Property<long?>("UserSubscriptionId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("user_subscription_id");
+
+                    b.Property<long?>("VideoId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("video_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AnalysisJobId")
+                        .HasDatabaseName("ix_scan_usages_analysis_job_id");
+
+                    b.HasIndex("ScanReservationId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_scan_usages_reservation_id")
+                        .HasFilter("scan_reservation_id IS NOT NULL");
+
+                    b.HasIndex("SubscriptionPlanId");
+
+                    b.HasIndex("VideoId")
+                        .HasDatabaseName("ix_scan_usages_video_id");
+
+                    b.HasIndex("UserId", "OccurredAt")
+                        .IsDescending(false, true)
+                        .HasDatabaseName("ix_scan_usages_user_occurred");
+
+                    b.HasIndex("UserSubscriptionId", "OccurredAt")
+                        .IsDescending(false, true)
+                        .HasDatabaseName("ix_scan_usages_subscription_occurred");
+
+                    b.ToTable("scan_usages", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_scan_usages_entitlement_type", "entitlement_type IN ('FreeTrial', 'PaidSubscription', 'InternalUnlimited')");
+                        });
+                });
+
             modelBuilder.Entity("AiVideoDetection.Domain.Entities.SourceMatch", b =>
                 {
                     b.Property<long>("Id")
@@ -1479,6 +2180,153 @@ namespace AiVideoDetection.Api.Migrations
                             t.HasCheckConstraint("ck_source_matches_similarity_score", "similarity_score >= 0 AND similarity_score <= 1");
 
                             t.HasCheckConstraint("ck_source_matches_source_credibility_score", "source_credibility_score IS NULL OR (source_credibility_score >= 0 AND source_credibility_score <= 1)");
+                        });
+                });
+
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.SubscriptionPlan", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<bool>("AllowsDetailedScan")
+                        .HasColumnType("boolean")
+                        .HasColumnName("allows_detailed_scan");
+
+                    b.Property<bool>("AllowsSmartScan")
+                        .HasColumnType("boolean")
+                        .HasColumnName("allows_smart_scan");
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("code");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("NOW()");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)")
+                        .HasColumnName("currency");
+
+                    b.Property<bool>("IsActive")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_active");
+
+                    b.Property<long>("MaxVideoSizeBytes")
+                        .HasColumnType("bigint")
+                        .HasColumnName("max_video_size_bytes");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("name");
+
+                    b.Property<decimal>("PriceAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("price_amount");
+
+                    b.Property<int>("ScanLimit")
+                        .HasColumnType("integer")
+                        .HasColumnName("scan_limit");
+
+                    b.Property<int>("SortOrder")
+                        .HasColumnType("integer")
+                        .HasColumnName("sort_order");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("NOW()");
+
+                    b.Property<int?>("ValidityDays")
+                        .HasColumnType("integer")
+                        .HasColumnName("validity_days");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Code")
+                        .IsUnique()
+                        .HasDatabaseName("ux_subscription_plans_code");
+
+                    b.HasIndex("IsActive", "SortOrder")
+                        .HasDatabaseName("ix_subscription_plans_active_sort");
+
+                    b.ToTable("subscription_plans", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_subscription_plans_max_video_size", "max_video_size_bytes > 0");
+
+                            t.HasCheckConstraint("ck_subscription_plans_price", "price_amount >= 0");
+
+                            t.HasCheckConstraint("ck_subscription_plans_scan_limit", "scan_limit >= 0");
+
+                            t.HasCheckConstraint("ck_subscription_plans_validity_days", "validity_days IS NULL OR validity_days > 0");
+                        });
+
+                    b.HasData(
+                        new
+                        {
+                            Id = 1L,
+                            AllowsDetailedScan = false,
+                            AllowsSmartScan = true,
+                            Code = "FREE",
+                            CreatedAt = new DateTimeOffset(new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0)),
+                            Currency = "PKR",
+                            IsActive = true,
+                            MaxVideoSizeBytes = 209715200L,
+                            Name = "Free",
+                            PriceAmount = 0m,
+                            ScanLimit = 2,
+                            SortOrder = 1,
+                            UpdatedAt = new DateTimeOffset(new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0))
+                        },
+                        new
+                        {
+                            Id = 2L,
+                            AllowsDetailedScan = false,
+                            AllowsSmartScan = true,
+                            Code = "PLUS",
+                            CreatedAt = new DateTimeOffset(new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0)),
+                            Currency = "PKR",
+                            IsActive = true,
+                            MaxVideoSizeBytes = 262144000L,
+                            Name = "Plus",
+                            PriceAmount = 499m,
+                            ScanLimit = 10,
+                            SortOrder = 2,
+                            UpdatedAt = new DateTimeOffset(new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0)),
+                            ValidityDays = 30
+                        },
+                        new
+                        {
+                            Id = 3L,
+                            AllowsDetailedScan = true,
+                            AllowsSmartScan = true,
+                            Code = "PRO",
+                            CreatedAt = new DateTimeOffset(new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0)),
+                            Currency = "PKR",
+                            IsActive = true,
+                            MaxVideoSizeBytes = 314572800L,
+                            Name = "Pro",
+                            PriceAmount = 999m,
+                            ScanLimit = 25,
+                            SortOrder = 3,
+                            UpdatedAt = new DateTimeOffset(new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0)),
+                            ValidityDays = 30
                         });
                 });
 
@@ -1588,6 +2436,84 @@ namespace AiVideoDetection.Api.Migrations
                         .HasDatabaseName("UserNameIndex");
 
                     b.ToTable("AspNetUsers", (string)null);
+                });
+
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.UserSubscription", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTimeOffset?>("ActivatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("activated_at");
+
+                    b.Property<DateTimeOffset?>("CancelledAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("cancelled_at");
+
+                    b.Property<string>("ConcurrencyStamp")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("concurrency_stamp");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("NOW()");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<DateTimeOffset>("StartsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("starts_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("status");
+
+                    b.Property<long>("SubscriptionPlanId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("subscription_plan_id");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("NOW()");
+
+                    b.Property<long>("UserId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ExpiresAt")
+                        .HasDatabaseName("ix_user_subscriptions_expires_at");
+
+                    b.HasIndex("SubscriptionPlanId")
+                        .HasDatabaseName("ix_user_subscriptions_plan_id");
+
+                    b.HasIndex("UserId", "Status", "ExpiresAt")
+                        .IsDescending(false, false, true)
+                        .HasDatabaseName("ix_user_subscriptions_user_status_expires");
+
+                    b.ToTable("user_subscriptions", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_user_subscriptions_dates", "expires_at > starts_at");
+
+                            t.HasCheckConstraint("ck_user_subscriptions_status", "status IN ('Pending', 'Active', 'Expired', 'Cancelled')");
+                        });
                 });
 
             modelBuilder.Entity("AiVideoDetection.Domain.Entities.Video", b =>
@@ -1894,6 +2820,25 @@ namespace AiVideoDetection.Api.Migrations
                     b.ToTable("AspNetUserTokens", (string)null);
                 });
 
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.AccountDeviceLink", b =>
+                {
+                    b.HasOne("AiVideoDetection.Domain.Entities.DeviceIdentity", "DeviceIdentity")
+                        .WithMany()
+                        .HasForeignKey("DeviceIdentityId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("AiVideoDetection.Domain.Entities.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("DeviceIdentity");
+
+                    b.Navigation("User");
+                });
+
             modelBuilder.Entity("AiVideoDetection.Domain.Entities.AiProviderRequest", b =>
                 {
                     b.HasOne("AiVideoDetection.Domain.Entities.AiResult", "AiResult")
@@ -2034,6 +2979,28 @@ namespace AiVideoDetection.Api.Migrations
                     b.Navigation("VideoFrame");
                 });
 
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.FreeTrialAccountUsage", b =>
+                {
+                    b.HasOne("AiVideoDetection.Domain.Entities.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.FreeTrialDeviceUsage", b =>
+                {
+                    b.HasOne("AiVideoDetection.Domain.Entities.DeviceIdentity", "DeviceIdentity")
+                        .WithMany()
+                        .HasForeignKey("DeviceIdentityId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("DeviceIdentity");
+                });
+
             modelBuilder.Entity("AiVideoDetection.Domain.Entities.JobLog", b =>
                 {
                     b.HasOne("AiVideoDetection.Domain.Entities.AnalysisJob", "AnalysisJob")
@@ -2067,6 +3034,32 @@ namespace AiVideoDetection.Api.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.PaymentTransaction", b =>
+                {
+                    b.HasOne("AiVideoDetection.Domain.Entities.SubscriptionPlan", "SubscriptionPlan")
+                        .WithMany()
+                        .HasForeignKey("SubscriptionPlanId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("AiVideoDetection.Domain.Entities.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("AiVideoDetection.Domain.Entities.UserSubscription", "UserSubscription")
+                        .WithMany()
+                        .HasForeignKey("UserSubscriptionId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("SubscriptionPlan");
+
+                    b.Navigation("User");
+
+                    b.Navigation("UserSubscription");
+                });
+
             modelBuilder.Entity("AiVideoDetection.Domain.Entities.RefreshToken", b =>
                 {
                     b.HasOne("AiVideoDetection.Domain.Entities.User", "User")
@@ -2078,6 +3071,100 @@ namespace AiVideoDetection.Api.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.ScanReservation", b =>
+                {
+                    b.HasOne("AiVideoDetection.Domain.Entities.AnalysisJob", "AnalysisJob")
+                        .WithMany()
+                        .HasForeignKey("AnalysisJobId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("AiVideoDetection.Domain.Entities.DeviceIdentity", "DeviceIdentity")
+                        .WithMany()
+                        .HasForeignKey("DeviceIdentityId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("AiVideoDetection.Domain.Entities.SubscriptionPlan", "SubscriptionPlan")
+                        .WithMany()
+                        .HasForeignKey("SubscriptionPlanId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("AiVideoDetection.Domain.Entities.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("AiVideoDetection.Domain.Entities.UserSubscription", "UserSubscription")
+                        .WithMany()
+                        .HasForeignKey("UserSubscriptionId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("AiVideoDetection.Domain.Entities.Video", "Video")
+                        .WithMany()
+                        .HasForeignKey("VideoId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("AnalysisJob");
+
+                    b.Navigation("DeviceIdentity");
+
+                    b.Navigation("SubscriptionPlan");
+
+                    b.Navigation("User");
+
+                    b.Navigation("UserSubscription");
+
+                    b.Navigation("Video");
+                });
+
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.ScanUsage", b =>
+                {
+                    b.HasOne("AiVideoDetection.Domain.Entities.AnalysisJob", "AnalysisJob")
+                        .WithMany()
+                        .HasForeignKey("AnalysisJobId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("AiVideoDetection.Domain.Entities.ScanReservation", "ScanReservation")
+                        .WithMany()
+                        .HasForeignKey("ScanReservationId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("AiVideoDetection.Domain.Entities.SubscriptionPlan", "SubscriptionPlan")
+                        .WithMany()
+                        .HasForeignKey("SubscriptionPlanId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("AiVideoDetection.Domain.Entities.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("AiVideoDetection.Domain.Entities.UserSubscription", "UserSubscription")
+                        .WithMany()
+                        .HasForeignKey("UserSubscriptionId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("AiVideoDetection.Domain.Entities.Video", "Video")
+                        .WithMany()
+                        .HasForeignKey("VideoId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("AnalysisJob");
+
+                    b.Navigation("ScanReservation");
+
+                    b.Navigation("SubscriptionPlan");
+
+                    b.Navigation("User");
+
+                    b.Navigation("UserSubscription");
+
+                    b.Navigation("Video");
+                });
+
             modelBuilder.Entity("AiVideoDetection.Domain.Entities.SourceMatch", b =>
                 {
                     b.HasOne("AiVideoDetection.Domain.Entities.Video", "Video")
@@ -2087,6 +3174,25 @@ namespace AiVideoDetection.Api.Migrations
                         .IsRequired();
 
                     b.Navigation("Video");
+                });
+
+            modelBuilder.Entity("AiVideoDetection.Domain.Entities.UserSubscription", b =>
+                {
+                    b.HasOne("AiVideoDetection.Domain.Entities.SubscriptionPlan", "SubscriptionPlan")
+                        .WithMany()
+                        .HasForeignKey("SubscriptionPlanId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("AiVideoDetection.Domain.Entities.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("SubscriptionPlan");
+
+                    b.Navigation("User");
                 });
 
             modelBuilder.Entity("AiVideoDetection.Domain.Entities.Video", b =>

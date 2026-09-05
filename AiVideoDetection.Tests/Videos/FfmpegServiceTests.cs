@@ -17,7 +17,9 @@ public class FfmpegServiceTests
             {
               "streams": [
                 { "codec_type": "video", "codec_name": "h264", "width": 1280, "height": 720, "avg_frame_rate": "30000/1001" },
-                { "codec_type": "audio", "codec_name": "aac" }
+                { "codec_type": "audio", "codec_name": "aac" },
+                { "codec_type": "subtitle", "codec_name": "mov_text" },
+                { "codec_type": "attachment", "codec_name": "png" }
               ],
               "format": {
                 "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
@@ -38,6 +40,11 @@ public class FfmpegServiceTests
         Assert.Equal(12.500m, result.DurationSeconds);
         Assert.Equal(800000, result.Bitrate);
         Assert.Equal(29.970m, result.Fps);
+        Assert.Equal(1, result.VideoStreamCount);
+        Assert.Equal(1, result.AudioStreamCount);
+        Assert.Equal(1, result.SubtitleStreamCount);
+        Assert.Equal(1, result.AttachmentStreamCount);
+        Assert.Equal(4, result.TotalStreamCount);
         Assert.False(result.HasMissingMetadata);
         Assert.Equal("ffprobe", runner.ToolName);
         Assert.Equal("ffprobe", runner.ConfiguredFileName);
@@ -86,6 +93,28 @@ public class FfmpegServiceTests
         Assert.Contains("4", runner.Arguments);
     }
 
+    [Fact]
+    public async Task FrameExtractionRejectsOversizedFrameOutput()
+    {
+        var runner = new FakeProcessRunner
+        {
+            CreateFrameOutputs = true,
+            FramePayload = [1, 2]
+        };
+        var options = Options.Create(new VideoProcessingOptions
+        {
+            MaxFrameFileSizeBytes = 1
+        });
+        var service = new FrameExtractionService(runner, options);
+        var input = CreateInput();
+        Directory.CreateDirectory(input.WorkingDirectory);
+
+        var exception = await Assert.ThrowsAsync<ProcessingException>(
+            () => service.ExtractFramesAsync(input, CancellationToken.None));
+
+        Assert.Equal("FRAME_EXTRACTION_RESOURCE_LIMIT_EXCEEDED", exception.ErrorCode);
+    }
+
     private static VideoProcessingInput CreateInput()
     {
         var workingDirectory = Path.Combine(Path.GetTempPath(), "ai-video-ffmpeg-tests", Guid.NewGuid().ToString("N"));
@@ -97,6 +126,8 @@ public class FfmpegServiceTests
         public ProcessRunResult Result { get; init; } = new(0, "", "");
 
         public bool CreateFrameOutputs { get; init; }
+
+        public byte[] FramePayload { get; init; } = [1];
 
         public IReadOnlyList<string> Arguments { get; private set; } = [];
 
@@ -119,8 +150,8 @@ public class FfmpegServiceTests
                 var outputPattern = arguments[^1];
                 var directory = Path.GetDirectoryName(outputPattern)!;
                 Directory.CreateDirectory(directory);
-                await File.WriteAllBytesAsync(Path.Combine(directory, "frame_000001.jpg"), [1], cancellationToken);
-                await File.WriteAllBytesAsync(Path.Combine(directory, "frame_000002.jpg"), [2], cancellationToken);
+                await File.WriteAllBytesAsync(Path.Combine(directory, "frame_000001.jpg"), FramePayload, cancellationToken);
+                await File.WriteAllBytesAsync(Path.Combine(directory, "frame_000002.jpg"), FramePayload, cancellationToken);
             }
 
             return Result;

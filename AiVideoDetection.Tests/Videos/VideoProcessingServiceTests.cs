@@ -1,10 +1,15 @@
 using AiVideoDetection.Application.Common;
+using AiVideoDetection.Application.Subscriptions;
+using AiVideoDetection.Application.Subscriptions.DTOs;
+using AiVideoDetection.Application.Subscriptions.Interfaces;
+using AiVideoDetection.Application.Videos;
 using AiVideoDetection.Application.Videos.Interfaces;
 using AiVideoDetection.Application.Videos.DTOs;
 using AiVideoDetection.Application.Videos.Options;
 using AiVideoDetection.Application.Videos.Ai;
 using AiVideoDetection.Application.Videos.Matching;
 using AiVideoDetection.Application.Videos.Processing;
+using AiVideoDetection.Domain.Constants;
 using AiVideoDetection.Domain.Entities;
 using AiVideoDetection.Domain.Enums;
 using AiVideoDetection.Infrastructure.Common;
@@ -48,6 +53,27 @@ public class VideoProcessingServiceTests
     }
 
     [Fact]
+    public async Task CompletedProcessingConsumesLinkedReservation()
+    {
+        await using var dbContext = CreateDbContext();
+        var job = await SeedQueuedJobAsync(dbContext);
+        await SeedReservationAsync(dbContext, job);
+        var entitlement = new FakeEntitlementService();
+        var service = CreateService(
+            dbContext,
+            new FakeObjectStorageService(),
+            new FakeMetadataExtractionService(),
+            new FakeFrameExtractionService(),
+            CreateWorkRoot(),
+            entitlementService: entitlement);
+
+        await service.ProcessAnalysisJobAsync(job.Id);
+
+        Assert.Equal(1, entitlement.ConsumeCalls);
+        Assert.Equal(0, entitlement.ReleaseCalls);
+    }
+
+    [Fact]
     public async Task MetadataFailureMarksJobFailedAndWritesErrorLog()
     {
         await using var dbContext = CreateDbContext();
@@ -67,6 +93,192 @@ public class VideoProcessingServiceTests
         Assert.Equal("FFPROBE_FAILED", savedJob.ErrorCode);
         Assert.Contains("metadata", savedJob.ErrorMessage, StringComparison.OrdinalIgnoreCase);
         Assert.Contains(await dbContext.JobLogs.ToListAsync(), log => log.Level == "Error");
+    }
+
+    [Fact]
+    public async Task InvalidVideoFailureReleasesLinkedReservation()
+    {
+        await using var dbContext = CreateDbContext();
+        var job = await SeedQueuedJobAsync(dbContext);
+        await SeedReservationAsync(dbContext, job);
+        var entitlement = new FakeEntitlementService();
+        var service = CreateService(
+            dbContext,
+            new FakeObjectStorageService(),
+            new FakeMetadataExtractionService { ErrorCode = "INVALID_VIDEO" },
+            new FakeFrameExtractionService(),
+            CreateWorkRoot(),
+            entitlementService: entitlement);
+
+        await Assert.ThrowsAsync<ProcessingException>(() => service.ProcessAnalysisJobAsync(job.Id));
+
+        Assert.Equal(0, entitlement.ConsumeCalls);
+        Assert.Equal(1, entitlement.ReleaseCalls);
+    }
+
+    [Fact]
+    public async Task DurationOverConfiguredLimitFailsAndReleasesReservation()
+    {
+        await using var dbContext = CreateDbContext();
+        var job = await SeedQueuedJobAsync(dbContext);
+        await SeedReservationAsync(dbContext, job);
+        var entitlement = new FakeEntitlementService();
+        var service = CreateService(
+            dbContext,
+            new FakeObjectStorageService(),
+            new FakeMetadataExtractionService { DurationSeconds = 3_601 },
+            new FakeFrameExtractionService(),
+            CreateWorkRoot(),
+            entitlementService: entitlement,
+            uploadOptions: new VideoUploadOptions { MaxDurationSeconds = 3_600 });
+
+        await Assert.ThrowsAsync<ProcessingException>(() => service.ProcessAnalysisJobAsync(job.Id));
+
+        var savedJob = await dbContext.AnalysisJobs.SingleAsync();
+        Assert.Equal("VIDEO_METADATA_LIMIT_EXCEEDED", savedJob.ErrorCode);
+        Assert.Equal(0, entitlement.ConsumeCalls);
+        Assert.Equal(1, entitlement.ReleaseCalls);
+    }
+
+    [Fact]
+    public async Task ValidFourKAtHighFrameRateIsAllowed()
+    {
+        await using var dbContext = CreateDbContext();
+        var job = await SeedQueuedJobAsync(dbContext);
+        var service = CreateService(
+            dbContext,
+            new FakeObjectStorageService(),
+            new FakeMetadataExtractionService
+            {
+                Resolution = "3840x2160",
+                Fps = 120,
+                DurationSeconds = 60
+            },
+            new FakeFrameExtractionService(),
+            CreateWorkRoot());
+
+        await service.ProcessAnalysisJobAsync(job.Id);
+
+        var savedJob = await dbContext.AnalysisJobs.SingleAsync();
+        Assert.Equal(JobStatus.Completed, savedJob.Status);
+    }
+
+    [Fact]
+    public async Task ExtremeResolutionFailsBeforeFrameExtraction()
+    {
+        await using var dbContext = CreateDbContext();
+        var job = await SeedQueuedJobAsync(dbContext);
+        var frames = new FakeFrameExtractionService();
+        var service = CreateService(
+            dbContext,
+            new FakeObjectStorageService(),
+            new FakeMetadataExtractionService { Resolution = "7680x4320" },
+            frames,
+            CreateWorkRoot());
+
+        await Assert.ThrowsAsync<ProcessingException>(() => service.ProcessAnalysisJobAsync(job.Id));
+
+        var savedJob = await dbContext.AnalysisJobs.SingleAsync();
+        Assert.Equal("VIDEO_METADATA_LIMIT_EXCEEDED", savedJob.ErrorCode);
+        Assert.Equal(0, frames.ExtractCalls);
+    }
+
+    [Fact]
+    public async Task ExtremeFpsFailsBeforeFrameExtraction()
+    {
+        await using var dbContext = CreateDbContext();
+        var job = await SeedQueuedJobAsync(dbContext);
+        var frames = new FakeFrameExtractionService();
+        var service = CreateService(
+            dbContext,
+            new FakeObjectStorageService(),
+            new FakeMetadataExtractionService { Fps = 240 },
+            frames,
+            CreateWorkRoot());
+
+        await Assert.ThrowsAsync<ProcessingException>(() => service.ProcessAnalysisJobAsync(job.Id));
+
+        var savedJob = await dbContext.AnalysisJobs.SingleAsync();
+        Assert.Equal("VIDEO_METADATA_LIMIT_EXCEEDED", savedJob.ErrorCode);
+        Assert.Equal(0, frames.ExtractCalls);
+    }
+
+    [Fact]
+    public async Task ExcessiveStreamCountFailsBeforeFrameExtraction()
+    {
+        await using var dbContext = CreateDbContext();
+        var job = await SeedQueuedJobAsync(dbContext);
+        var frames = new FakeFrameExtractionService();
+        var service = CreateService(
+            dbContext,
+            new FakeObjectStorageService(),
+            new FakeMetadataExtractionService { AudioStreamCount = 9 },
+            frames,
+            CreateWorkRoot());
+
+        await Assert.ThrowsAsync<ProcessingException>(() => service.ProcessAnalysisJobAsync(job.Id));
+
+        var savedJob = await dbContext.AnalysisJobs.SingleAsync();
+        Assert.Equal("VIDEO_METADATA_LIMIT_EXCEEDED", savedJob.ErrorCode);
+        Assert.Equal(0, frames.ExtractCalls);
+    }
+
+    [Fact]
+    public async Task OversizedExtractedFrameFailsAndReleasesReservation()
+    {
+        await using var dbContext = CreateDbContext();
+        var job = await SeedQueuedJobAsync(dbContext);
+        await SeedReservationAsync(dbContext, job);
+        var entitlement = new FakeEntitlementService();
+        var service = CreateService(
+            dbContext,
+            new FakeObjectStorageService(),
+            new FakeMetadataExtractionService(),
+            new FakeFrameExtractionService { SecondFrameBytes = [1, 2] },
+            CreateWorkRoot(),
+            entitlementService: entitlement,
+            processingOptions: new VideoProcessingOptions { MaxFrameFileSizeBytes = 1 });
+
+        await Assert.ThrowsAsync<ProcessingException>(() => service.ProcessAnalysisJobAsync(job.Id));
+
+        var savedJob = await dbContext.AnalysisJobs.SingleAsync();
+        Assert.Equal("FRAME_EXTRACTION_RESOURCE_LIMIT_EXCEEDED", savedJob.ErrorCode);
+        Assert.Equal(0, entitlement.ConsumeCalls);
+        Assert.Equal(1, entitlement.ReleaseCalls);
+    }
+
+    [Fact]
+    public async Task ProcessingCapacityFailureFailsJobAndReleasesReservationBeforeSourceDownload()
+    {
+        await using var dbContext = CreateDbContext();
+        var job = await SeedQueuedJobAsync(dbContext);
+        await SeedReservationAsync(dbContext, job);
+        var entitlement = new FakeEntitlementService();
+        var storage = new FakeObjectStorageService();
+        var metadata = new FakeMetadataExtractionService();
+        var service = CreateService(
+            dbContext,
+            storage,
+            metadata,
+            new FakeFrameExtractionService(),
+            CreateWorkRoot(),
+            entitlementService: entitlement,
+            storageCapacityService: new FakeVideoStorageCapacityService
+            {
+                ProcessingResult = VideoStorageCapacityCheckResult.Failed(
+                    VideoInfrastructureErrorCodes.ServerStorageCapacityLow,
+                    "The server is temporarily unable to process this video. Please try again later.")
+            });
+
+        await Assert.ThrowsAsync<ProcessingException>(() => service.ProcessAnalysisJobAsync(job.Id));
+
+        var savedJob = await dbContext.AnalysisJobs.SingleAsync();
+        Assert.Equal(JobStatus.Failed, savedJob.Status);
+        Assert.Equal(VideoInfrastructureErrorCodes.ServerStorageCapacityLow, savedJob.ErrorCode);
+        Assert.Equal(0, storage.DownloadCalls);
+        Assert.Equal(0, metadata.CallCount);
+        Assert.Equal(0, entitlement.ConsumeCalls);
+        Assert.Equal(1, entitlement.ReleaseCalls);
     }
 
     [Fact]
@@ -275,6 +487,29 @@ public class VideoProcessingServiceTests
     }
 
     [Fact]
+    public async Task ProviderFailureReleasesLinkedReservation()
+    {
+        await using var dbContext = CreateDbContext();
+        var job = await SeedQueuedJobAsync(dbContext);
+        await SeedReservationAsync(dbContext, job);
+        var entitlement = new FakeEntitlementService();
+        var service = CreateService(
+            dbContext,
+            new FakeObjectStorageService(),
+            new FakeMetadataExtractionService(),
+            new FakeFrameExtractionService(),
+            CreateWorkRoot(),
+            new FailingAiInferenceClient(),
+            entitlementService: entitlement);
+
+        await Assert.ThrowsAsync<AiServiceException>(() => service.ProcessAnalysisJobAsync(job.Id));
+
+        Assert.Equal(0, entitlement.ConsumeCalls);
+        Assert.Equal(1, entitlement.ReleaseCalls);
+    }
+
+
+    [Fact]
     public async Task BitMindModeSavesExternalScoreAndFinalDecisionFromConfidence()
     {
         await using var dbContext = CreateDbContext();
@@ -353,8 +588,16 @@ public class VideoProcessingServiceTests
         IFrameExtractionService frames,
         string workRoot,
         IAiInferenceClient? aiClient = null,
-        AiServiceOptions? aiOptions = null)
+        AiServiceOptions? aiOptions = null,
+        IEntitlementService? entitlementService = null,
+        VideoUploadOptions? uploadOptions = null,
+        VideoProcessingOptions? processingOptions = null,
+        IVideoStorageCapacityService? storageCapacityService = null,
+        IVideoWorkloadGate? workloadGate = null)
     {
+        var resolvedProcessingOptions = processingOptions ?? new VideoProcessingOptions();
+        resolvedProcessingOptions.WorkingRootPath = workRoot;
+
         return new VideoProcessingService(
             dbContext,
             storage,
@@ -367,7 +610,11 @@ public class VideoProcessingServiceTests
             new FakeFrameHashService(),
             new FakeInternalVideoMatchingService(),
             new JobLogService(dbContext, new CorrelationIdAccessor(), CreateAlertService()),
-            Options.Create(new VideoProcessingOptions { WorkingRootPath = workRoot }),
+            entitlementService ?? new FakeEntitlementService(),
+            storageCapacityService ?? new FakeVideoStorageCapacityService(),
+            workloadGate ?? new FakeVideoWorkloadGate(),
+            Options.Create(resolvedProcessingOptions),
+            Options.Create(uploadOptions ?? new VideoUploadOptions()),
             Options.Create(new InternalMatchingOptions { Enabled = true, FailJobOnMatchingError = false }),
             Options.Create(aiOptions ?? new AiServiceOptions { MaxFramesPerRequest = 30 }),
             NullLogger<VideoProcessingService>.Instance);
@@ -417,6 +664,24 @@ public class VideoProcessingServiceTests
         return job;
     }
 
+    private static async Task SeedReservationAsync(AppDbContext dbContext, AnalysisJob job)
+    {
+        dbContext.ScanReservations.Add(new ScanReservation
+        {
+            Id = 100,
+            UserId = job.Video.UserId,
+            VideoId = job.VideoId,
+            AnalysisJobId = job.Id,
+            SubscriptionPlanId = 1,
+            ReservationKind = ScanReservationKinds.PaidSubscription,
+            Status = ScanReservationStatuses.Reserved,
+            AnalysisMode = AnalysisMode.Basic.ToString(),
+            FileSizeBytes = job.Video.FileSize,
+            ReservedAt = DateTimeOffset.UtcNow
+        });
+        await dbContext.SaveChangesAsync();
+    }
+
     private static AppDbContext CreateDbContext()
     {
         return new AppDbContext(new DbContextOptionsBuilder<AppDbContext>()
@@ -432,6 +697,8 @@ public class VideoProcessingServiceTests
     private sealed class FakeObjectStorageService : IObjectStorageService
     {
         public int UploadCalls { get; private set; }
+
+        public int DownloadCalls { get; private set; }
 
         public Task<string> UploadAsync(Stream stream, string objectKey, string contentType, CancellationToken cancellationToken = default)
         {
@@ -451,8 +718,104 @@ public class VideoProcessingServiceTests
 
         public async Task DownloadToAsync(string objectKeyOrUrl, string destinationPath, CancellationToken cancellationToken = default)
         {
+            DownloadCalls++;
             Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
             await File.WriteAllBytesAsync(destinationPath, [1, 2, 3], cancellationToken);
+        }
+    }
+
+    private sealed class FakeVideoStorageCapacityService : IVideoStorageCapacityService
+    {
+        public VideoStorageCapacityCheckResult UploadResult { get; init; } = VideoStorageCapacityCheckResult.Succeeded();
+
+        public VideoStorageCapacityCheckResult ProcessingResult { get; init; } = VideoStorageCapacityCheckResult.Succeeded();
+
+        public Task<VideoStorageCapacityCheckResult> CheckUploadCapacityAsync(
+            long originalFileSizeBytes,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(UploadResult);
+        }
+
+        public Task<VideoStorageCapacityCheckResult> CheckProcessingCapacityAsync(
+            long originalFileSizeBytes,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(ProcessingResult);
+        }
+    }
+
+    private sealed class FakeVideoWorkloadGate : IVideoWorkloadGate
+    {
+        public Task<IAsyncDisposable?> TryEnterUploadAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<IAsyncDisposable?>(new NoopAsyncDisposable());
+        }
+
+        public Task<IAsyncDisposable> EnterProcessingAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<IAsyncDisposable>(new NoopAsyncDisposable());
+        }
+    }
+
+    private sealed class NoopAsyncDisposable : IAsyncDisposable
+    {
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class FakeEntitlementService : IEntitlementService
+    {
+        public int ConsumeCalls { get; private set; }
+
+        public int ReleaseCalls { get; private set; }
+
+        public Task<ApiResponse<SubscriptionStatusResponse>> GetStatusAsync(
+            long userId,
+            SubscriptionClientContext? clientContext = null,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(ApiResponse<SubscriptionStatusResponse>.SuccessResponse(new SubscriptionStatusResponse()));
+        }
+
+        public Task<ScanReservationResult> ReserveScanAsync(
+            ScanReservationRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(ScanReservationResult.Succeeded(
+                "Reserved.",
+                ScanReservationKinds.PaidSubscription,
+                reservationId: 1,
+                remainingScans: 1));
+        }
+
+        public Task<ScanReservationResult> ConsumeReservationAsync(
+            long reservationId,
+            long? videoId = null,
+            long? analysisJobId = null,
+            CancellationToken cancellationToken = default)
+        {
+            ConsumeCalls++;
+            return Task.FromResult(ScanReservationResult.Succeeded(
+                "Consumed.",
+                ScanReservationKinds.PaidSubscription,
+                reservationId,
+                remainingScans: null));
+        }
+
+        public Task<ScanReservationResult> ReleaseReservationAsync(
+            long reservationId,
+            string? reason = null,
+            CancellationToken cancellationToken = default)
+        {
+            ReleaseCalls++;
+            return Task.FromResult(ScanReservationResult.Succeeded(
+                "Released.",
+                ScanReservationKinds.PaidSubscription,
+                reservationId,
+                remainingScans: null));
         }
     }
 
@@ -463,6 +826,20 @@ public class VideoProcessingServiceTests
         public bool SawProcessingStatus { get; private set; }
 
         public string? ErrorCode { get; init; }
+
+        public decimal? DurationSeconds { get; init; } = 6;
+
+        public decimal? Fps { get; init; } = 30;
+
+        public string? Resolution { get; init; } = "1920x1080";
+
+        public int VideoStreamCount { get; init; } = 1;
+
+        public int AudioStreamCount { get; init; } = 1;
+
+        public int SubtitleStreamCount { get; init; }
+
+        public int AttachmentStreamCount { get; init; }
 
         public async Task<ExtractedMetadataResult> ExtractMetadataAsync(VideoProcessingInput input, CancellationToken cancellationToken)
         {
@@ -479,20 +856,33 @@ public class VideoProcessingServiceTests
                 "mov,mp4,m4a,3gp,3g2,mj2",
                 "h264",
                 "aac",
-                30,
-                "1920x1080",
-                6,
+                Fps,
+                Resolution,
+                DurationSeconds,
                 500_000,
                 "Lavf",
                 null,
                 true,
                 ["missing_creation_time"],
-                "{\"format\":{}}");
+                "{\"format\":{}}")
+            {
+                VideoStreamCount = VideoStreamCount,
+                AudioStreamCount = AudioStreamCount,
+                SubtitleStreamCount = SubtitleStreamCount,
+                AttachmentStreamCount = AttachmentStreamCount,
+                TotalStreamCount = VideoStreamCount + AudioStreamCount + SubtitleStreamCount + AttachmentStreamCount
+            };
         }
     }
 
     private sealed class FakeFrameExtractionService : IFrameExtractionService
     {
+        public int ExtractCalls { get; private set; }
+
+        public byte[] FirstFrameBytes { get; init; } = [1];
+
+        public byte[] SecondFrameBytes { get; init; } = [2];
+
         public async Task<ThumbnailResult> GenerateThumbnailAsync(VideoProcessingInput input, CancellationToken cancellationToken)
         {
             var path = Path.Combine(input.WorkingDirectory, "thumbnail.jpg");
@@ -502,12 +892,13 @@ public class VideoProcessingServiceTests
 
         public async Task<IReadOnlyList<ExtractedFrameResult>> ExtractFramesAsync(VideoProcessingInput input, CancellationToken cancellationToken)
         {
+            ExtractCalls++;
             var directory = Path.Combine(input.WorkingDirectory, "frames");
             Directory.CreateDirectory(directory);
             var first = Path.Combine(directory, "frame_000001.jpg");
             var second = Path.Combine(directory, "frame_000002.jpg");
-            await File.WriteAllBytesAsync(first, [1], cancellationToken);
-            await File.WriteAllBytesAsync(second, [2], cancellationToken);
+            await File.WriteAllBytesAsync(first, FirstFrameBytes, cancellationToken);
+            await File.WriteAllBytesAsync(second, SecondFrameBytes, cancellationToken);
 
             return
             [
@@ -692,7 +1083,7 @@ public class VideoProcessingServiceTests
               "provider_confidence": 0.7529020309448242,
               "provider_request_id": null,
               "provider_decision_band": "ai_moderate_confidence",
-              "original_file_size_bytes": 524288000,
+              "original_file_size_bytes": 314572800,
               "bitmind_file_size_bytes": 104857600,
               "compression_used": true,
               "compression_attempts": 1,

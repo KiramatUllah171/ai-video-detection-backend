@@ -16,6 +16,26 @@ public class VideoProcessingOptions
 
     public int MaxExtractedFrames { get; set; } = 30;
 
+    public long MaxFrameFileSizeBytes { get; set; } = 8_388_608;
+
+    public int MaxVideoWidth { get; set; } = 4096;
+
+    public int MaxVideoHeight { get; set; } = 4096;
+
+    public decimal MaxFramesPerSecond { get; set; } = 120;
+
+    public int MaxVideoStreams { get; set; } = 2;
+
+    public int MaxAudioStreams { get; set; } = 8;
+
+    public int MaxSubtitleStreams { get; set; } = 16;
+
+    public int MaxAttachmentStreams { get; set; } = 8;
+
+    public int MaxTotalStreams { get; set; } = 32;
+
+    public int MaxProcessOutputBytes { get; set; } = 1_048_576;
+
     public int FrameImageQuality { get; set; } = 2;
 
     public string FrameOutputFormat { get; set; } = "jpg";

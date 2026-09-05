@@ -1,5 +1,7 @@
 using System.Text.Json;
 using System.Globalization;
+using AiVideoDetection.Application.Videos;
+using AiVideoDetection.Application.Subscriptions.Interfaces;
 using AiVideoDetection.Application.Videos.Ai;
 using AiVideoDetection.Application.Videos.Interfaces;
 using AiVideoDetection.Application.Videos.Options;
@@ -26,7 +28,11 @@ public class VideoProcessingService(
     IFrameHashService frameHashService,
     IInternalVideoMatchingService internalVideoMatchingService,
     IJobLogService jobLogService,
+    IEntitlementService entitlementService,
+    IVideoStorageCapacityService storageCapacityService,
+    IVideoWorkloadGate workloadGate,
     IOptions<VideoProcessingOptions> options,
+    IOptions<VideoUploadOptions> uploadOptions,
     IOptions<InternalMatchingOptions> internalMatchingOptions,
     IOptions<AiServiceOptions> aiServiceOptions,
     ILogger<VideoProcessingService> logger) : IVideoProcessingService
@@ -34,6 +40,7 @@ public class VideoProcessingService(
     private const string CompletedStep = "Analysis completed";
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private readonly VideoProcessingOptions _options = options.Value;
+    private readonly VideoUploadOptions _uploadOptions = uploadOptions.Value;
     private readonly InternalMatchingOptions _internalMatchingOptions = internalMatchingOptions.Value;
     private readonly AiServiceOptions _aiServiceOptions = aiServiceOptions.Value;
 
@@ -85,6 +92,15 @@ public class VideoProcessingService(
 
         try
         {
+            await using var processingLease = await workloadGate.EnterProcessingAsync(cancellationToken);
+            var capacity = await storageCapacityService.CheckProcessingCapacityAsync(job.Video.FileSize, cancellationToken);
+            if (!capacity.HasCapacity)
+            {
+                throw new ProcessingException(
+                    capacity.ErrorCode ?? VideoInfrastructureErrorCodes.ServerStorageCapacityLow,
+                    capacity.Message ?? "The server is temporarily unable to process this video. Please try again later.");
+            }
+
             await CheckForPauseOrCancellationAsync(job, "Before starting analysis", cancellationToken);
             await StartProcessingAsync(job, cancellationToken);
 
@@ -213,6 +229,7 @@ public class VideoProcessingService(
             job.CompletedAt = DateTimeOffset.UtcNow;
             job.Video.Status = VideoStatus.Completed;
             await dbContext.SaveChangesAsync(cancellationToken);
+            await ConsumeReservedScanAsync(job, cancellationToken);
 
             await jobLogService.LogAsync(job.Id, "Completed", "Information", CompletedStep, null, cancellationToken);
         }
@@ -686,6 +703,7 @@ public class VideoProcessingService(
         }
 
         await dbContext.SaveChangesAsync(cancellationToken);
+        await ReleaseReservedScanAsync(job, "Analysis was cancelled before completion.", cancellationToken);
         await jobLogService.LogAsync(job.Id, "Cancelled", "Information", "Analysis was cancelled by the user.", null, cancellationToken);
     }
 
@@ -706,12 +724,71 @@ public class VideoProcessingService(
         return $"Paused at {checkpoint.ToLowerInvariant()}";
     }
 
-    private static void ValidateMetadata(ExtractedMetadataResult metadata)
+    private void ValidateMetadata(ExtractedMetadataResult metadata)
     {
         if (metadata.DurationSeconds is null or <= 0 || string.IsNullOrWhiteSpace(metadata.Codec) || string.IsNullOrWhiteSpace(metadata.Resolution))
         {
             throw new ProcessingException("INVALID_VIDEO", "This file could not be processed as a valid video.");
         }
+
+        if (metadata.DurationSeconds > _uploadOptions.MaxDurationSeconds)
+        {
+            throw new ProcessingException(
+                "VIDEO_METADATA_LIMIT_EXCEEDED",
+                $"Videos longer than {FormatDurationLimit(_uploadOptions.MaxDurationSeconds)} are not supported.");
+        }
+
+        var (width, height) = ParseResolution(metadata.Resolution);
+        if (width is null || height is null || width <= 0 || height <= 0)
+        {
+            throw new ProcessingException("INVALID_VIDEO", "This file could not be processed as a valid video.");
+        }
+
+        if (width > _options.MaxVideoWidth || height > _options.MaxVideoHeight)
+        {
+            throw new ProcessingException(
+                "VIDEO_METADATA_LIMIT_EXCEEDED",
+                $"Videos above {_options.MaxVideoWidth}x{_options.MaxVideoHeight} resolution are not supported.");
+        }
+
+        if (metadata.Fps is > 0 && metadata.Fps > _options.MaxFramesPerSecond)
+        {
+            throw new ProcessingException(
+                "VIDEO_METADATA_LIMIT_EXCEEDED",
+                $"Videos above {_options.MaxFramesPerSecond:0.###} FPS are not supported.");
+        }
+
+        if (metadata.TotalStreamCount > 0 && HasUnsupportedStreamCounts(metadata))
+        {
+            throw new ProcessingException(
+                "VIDEO_METADATA_LIMIT_EXCEEDED",
+                "This video contains too many media streams to process safely.");
+        }
+    }
+
+    private bool HasUnsupportedStreamCounts(ExtractedMetadataResult metadata)
+    {
+        return metadata.VideoStreamCount is <= 0
+            || metadata.VideoStreamCount > _options.MaxVideoStreams
+            || metadata.AudioStreamCount > _options.MaxAudioStreams
+            || metadata.SubtitleStreamCount > _options.MaxSubtitleStreams
+            || metadata.AttachmentStreamCount > _options.MaxAttachmentStreams
+            || metadata.TotalStreamCount > _options.MaxTotalStreams;
+    }
+
+    private static string FormatDurationLimit(int seconds)
+    {
+        if (seconds % 3600 == 0)
+        {
+            return $"{seconds / 3600} hours";
+        }
+
+        if (seconds % 60 == 0)
+        {
+            return $"{seconds / 60} minutes";
+        }
+
+        return $"{seconds} seconds";
     }
 
     private static string? TryGetProviderRequestId(string? json)
@@ -831,6 +908,7 @@ public class VideoProcessingService(
             var extension = Path.GetExtension(frame.FrameUrl);
             var destination = Path.Combine(aiFrameDirectory, $"frame_{frame.Id}{extension}");
             await objectStorageService.DownloadToAsync(frame.FrameUrl, destination, cancellationToken);
+            ValidateFrameFileSize(destination);
             var bytes = await File.ReadAllBytesAsync(destination, cancellationToken);
             requestFrames.Add(new AiAnalyzeFrameItem(
                 frame.Id,
@@ -1417,6 +1495,7 @@ public class VideoProcessingService(
         var extension = Path.GetExtension(thumbnail.FilePath).TrimStart('.').ToLowerInvariant();
         var objectKey = $"thumbnails/{video.Id}/thumbnail.{extension}";
 
+        ValidateFrameFileSize(thumbnail.FilePath);
         await using var stream = File.OpenRead(thumbnail.FilePath);
         video.ThumbnailUrl = await objectStorageService.UploadAsync(stream, objectKey, GetImageContentType(extension), cancellationToken);
         await dbContext.SaveChangesAsync(cancellationToken);
@@ -1432,6 +1511,7 @@ public class VideoProcessingService(
 
         foreach (var frame in frames)
         {
+            ValidateFrameFileSize(frame.FilePath);
             var extension = Path.GetExtension(frame.FilePath).TrimStart('.').ToLowerInvariant();
             var objectKey = $"frames/{videoId}/frame_{frame.FrameIndex:000000}.{extension}";
 
@@ -1487,7 +1567,56 @@ public class VideoProcessingService(
         }
 
         await dbContext.SaveChangesAsync(cancellationToken);
+        if (ShouldReleaseReservation(errorCode))
+        {
+            await ReleaseReservedScanAsync(job, $"Analysis failed before completion: {errorCode}.", cancellationToken);
+        }
+
         await jobLogService.LogAsync(job.Id, stepName, "Error", safeMessage, new { errorCode }, cancellationToken);
+    }
+
+    private async Task ConsumeReservedScanAsync(AnalysisJob job, CancellationToken cancellationToken)
+    {
+        var reservationId = await GetReservedScanReservationIdAsync(job.Id, cancellationToken);
+        if (reservationId is null)
+        {
+            return;
+        }
+
+        await entitlementService.ConsumeReservationAsync(
+            reservationId.Value,
+            job.VideoId,
+            job.Id,
+            cancellationToken);
+    }
+
+    private async Task ReleaseReservedScanAsync(
+        AnalysisJob job,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        var reservationId = await GetReservedScanReservationIdAsync(job.Id, cancellationToken);
+        if (reservationId is null)
+        {
+            return;
+        }
+
+        await entitlementService.ReleaseReservationAsync(reservationId.Value, reason, cancellationToken);
+    }
+
+    private async Task<long?> GetReservedScanReservationIdAsync(long jobId, CancellationToken cancellationToken)
+    {
+        return await dbContext.ScanReservations
+            .Where(reservation =>
+                reservation.AnalysisJobId == jobId &&
+                reservation.Status == Domain.Constants.ScanReservationStatuses.Reserved)
+            .Select(reservation => (long?)reservation.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+    }
+
+    private static bool ShouldReleaseReservation(string errorCode)
+    {
+        return !string.IsNullOrWhiteSpace(errorCode);
     }
 
     private static string MapProcessingErrorCode(string errorCode, string? currentStep)
@@ -1505,6 +1634,17 @@ public class VideoProcessingService(
     private static string GetImageContentType(string extension)
     {
         return extension is "png" ? "image/png" : "image/jpeg";
+    }
+
+    private void ValidateFrameFileSize(string path)
+    {
+        var length = new FileInfo(path).Length;
+        if (length > _options.MaxFrameFileSizeBytes)
+        {
+            throw new ProcessingException(
+                "FRAME_EXTRACTION_RESOURCE_LIMIT_EXCEEDED",
+                "Extracted video image output exceeded the supported size limit.");
+        }
     }
 
     private static (int? Width, int? Height) ParseResolution(string? resolution)

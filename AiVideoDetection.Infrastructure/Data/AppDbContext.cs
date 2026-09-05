@@ -1,6 +1,8 @@
+using AiVideoDetection.Application.Common;
+using AiVideoDetection.Application.Videos.Options;
+using AiVideoDetection.Domain.Constants;
 using AiVideoDetection.Domain.Entities;
 using AiVideoDetection.Domain.Enums;
-using AiVideoDetection.Application.Common;
 using AiVideoDetection.Infrastructure.Common;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
@@ -64,6 +66,26 @@ public class AppDbContext : IdentityDbContext<User, IdentityRole<long>, long>
 
     public DbSet<RetentionCleanupRun> RetentionCleanupRuns => Set<RetentionCleanupRun>();
 
+    public DbSet<SubscriptionPlan> SubscriptionPlans => Set<SubscriptionPlan>();
+
+    public DbSet<UserSubscription> UserSubscriptions => Set<UserSubscription>();
+
+    public DbSet<PaymentTransaction> PaymentTransactions => Set<PaymentTransaction>();
+
+    public DbSet<ScanReservation> ScanReservations => Set<ScanReservation>();
+
+    public DbSet<ScanUsage> ScanUsages => Set<ScanUsage>();
+
+    public DbSet<DeviceIdentity> DeviceIdentities => Set<DeviceIdentity>();
+
+    public DbSet<AccountDeviceLink> AccountDeviceLinks => Set<AccountDeviceLink>();
+
+    public DbSet<FreeTrialAccountUsage> FreeTrialAccountUsages => Set<FreeTrialAccountUsage>();
+
+    public DbSet<FreeTrialDeviceUsage> FreeTrialDeviceUsages => Set<FreeTrialDeviceUsage>();
+
+    public DbSet<FreeTrialIpUsage> FreeTrialIpUsages => Set<FreeTrialIpUsage>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -120,6 +142,16 @@ public class AppDbContext : IdentityDbContext<User, IdentityRole<long>, long>
         ConfigureApiUsageMonthly(modelBuilder);
         ConfigureAuditLog(modelBuilder);
         ConfigureRetentionCleanupRun(modelBuilder);
+        ConfigureSubscriptionPlan(modelBuilder);
+        ConfigureUserSubscription(modelBuilder);
+        ConfigurePaymentTransaction(modelBuilder);
+        ConfigureScanReservation(modelBuilder);
+        ConfigureScanUsage(modelBuilder);
+        ConfigureDeviceIdentity(modelBuilder);
+        ConfigureAccountDeviceLink(modelBuilder);
+        ConfigureFreeTrialAccountUsage(modelBuilder);
+        ConfigureFreeTrialDeviceUsage(modelBuilder);
+        ConfigureFreeTrialIpUsage(modelBuilder);
     }
 
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
@@ -337,6 +369,197 @@ public class AppDbContext : IdentityDbContext<User, IdentityRole<long>, long>
             if (entry.State == EntityState.Added && entry.Entity.CreatedAt == default)
             {
                 entry.Entity.CreatedAt = now;
+            }
+        }
+
+        foreach (var entry in ChangeTracker.Entries<SubscriptionPlan>())
+        {
+            if (entry.State == EntityState.Added)
+            {
+                if (entry.Entity.CreatedAt == default)
+                {
+                    entry.Entity.CreatedAt = now;
+                }
+
+                if (entry.Entity.UpdatedAt == default)
+                {
+                    entry.Entity.UpdatedAt = now;
+                }
+            }
+            else if (entry.State == EntityState.Modified)
+            {
+                entry.Property(plan => plan.CreatedAt).IsModified = false;
+                entry.Entity.UpdatedAt = now;
+            }
+        }
+
+        foreach (var entry in ChangeTracker.Entries<UserSubscription>())
+        {
+            if (entry.State == EntityState.Added)
+            {
+                if (entry.Entity.CreatedAt == default)
+                {
+                    entry.Entity.CreatedAt = now;
+                }
+
+                if (entry.Entity.UpdatedAt == default)
+                {
+                    entry.Entity.UpdatedAt = now;
+                }
+            }
+            else if (entry.State == EntityState.Modified)
+            {
+                entry.Property(subscription => subscription.CreatedAt).IsModified = false;
+                entry.Entity.UpdatedAt = now;
+                entry.Entity.ConcurrencyStamp = Guid.NewGuid().ToString("N");
+            }
+        }
+
+        foreach (var entry in ChangeTracker.Entries<PaymentTransaction>())
+        {
+            if (entry.State == EntityState.Added)
+            {
+                if (entry.Entity.CreatedAt == default)
+                {
+                    entry.Entity.CreatedAt = now;
+                }
+
+                if (entry.Entity.UpdatedAt == default)
+                {
+                    entry.Entity.UpdatedAt = now;
+                }
+            }
+            else if (entry.State == EntityState.Modified)
+            {
+                entry.Property(payment => payment.CreatedAt).IsModified = false;
+                entry.Entity.UpdatedAt = now;
+                entry.Entity.ConcurrencyStamp = Guid.NewGuid().ToString("N");
+            }
+        }
+
+        foreach (var entry in ChangeTracker.Entries<ScanReservation>())
+        {
+            if (entry.State == EntityState.Added)
+            {
+                if (entry.Entity.CreatedAt == default)
+                {
+                    entry.Entity.CreatedAt = now;
+                }
+
+                if (entry.Entity.UpdatedAt == default)
+                {
+                    entry.Entity.UpdatedAt = now;
+                }
+            }
+            else if (entry.State == EntityState.Modified)
+            {
+                entry.Property(reservation => reservation.CreatedAt).IsModified = false;
+                entry.Entity.UpdatedAt = now;
+                entry.Entity.ConcurrencyStamp = Guid.NewGuid().ToString("N");
+            }
+        }
+
+        foreach (var entry in ChangeTracker.Entries<ScanUsage>())
+        {
+            if (entry.State == EntityState.Added && entry.Entity.CreatedAt == default)
+            {
+                entry.Entity.CreatedAt = now;
+            }
+        }
+
+        foreach (var entry in ChangeTracker.Entries<DeviceIdentity>())
+        {
+            if (entry.State == EntityState.Added)
+            {
+                if (entry.Entity.CreatedAt == default)
+                {
+                    entry.Entity.CreatedAt = now;
+                }
+
+                if (entry.Entity.UpdatedAt == default)
+                {
+                    entry.Entity.UpdatedAt = now;
+                }
+            }
+            else if (entry.State == EntityState.Modified)
+            {
+                entry.Property(device => device.CreatedAt).IsModified = false;
+                entry.Entity.UpdatedAt = now;
+                entry.Entity.ConcurrencyStamp = Guid.NewGuid().ToString("N");
+            }
+        }
+
+        foreach (var entry in ChangeTracker.Entries<AccountDeviceLink>())
+        {
+            if (entry.State == EntityState.Added && entry.Entity.CreatedAt == default)
+            {
+                entry.Entity.CreatedAt = now;
+            }
+        }
+
+        foreach (var entry in ChangeTracker.Entries<FreeTrialAccountUsage>())
+        {
+            if (entry.State == EntityState.Added)
+            {
+                if (entry.Entity.CreatedAt == default)
+                {
+                    entry.Entity.CreatedAt = now;
+                }
+
+                if (entry.Entity.UpdatedAt == default)
+                {
+                    entry.Entity.UpdatedAt = now;
+                }
+            }
+            else if (entry.State == EntityState.Modified)
+            {
+                entry.Property(usage => usage.CreatedAt).IsModified = false;
+                entry.Entity.UpdatedAt = now;
+                entry.Entity.ConcurrencyStamp = Guid.NewGuid().ToString("N");
+            }
+        }
+
+        foreach (var entry in ChangeTracker.Entries<FreeTrialDeviceUsage>())
+        {
+            if (entry.State == EntityState.Added)
+            {
+                if (entry.Entity.CreatedAt == default)
+                {
+                    entry.Entity.CreatedAt = now;
+                }
+
+                if (entry.Entity.UpdatedAt == default)
+                {
+                    entry.Entity.UpdatedAt = now;
+                }
+            }
+            else if (entry.State == EntityState.Modified)
+            {
+                entry.Property(usage => usage.CreatedAt).IsModified = false;
+                entry.Entity.UpdatedAt = now;
+                entry.Entity.ConcurrencyStamp = Guid.NewGuid().ToString("N");
+            }
+        }
+
+        foreach (var entry in ChangeTracker.Entries<FreeTrialIpUsage>())
+        {
+            if (entry.State == EntityState.Added)
+            {
+                if (entry.Entity.CreatedAt == default)
+                {
+                    entry.Entity.CreatedAt = now;
+                }
+
+                if (entry.Entity.UpdatedAt == default)
+                {
+                    entry.Entity.UpdatedAt = now;
+                }
+            }
+            else if (entry.State == EntityState.Modified)
+            {
+                entry.Property(usage => usage.CreatedAt).IsModified = false;
+                entry.Entity.UpdatedAt = now;
+                entry.Entity.ConcurrencyStamp = Guid.NewGuid().ToString("N");
             }
         }
 
@@ -1522,6 +1745,478 @@ public class AppDbContext : IdentityDbContext<User, IdentityRole<long>, long>
 
             entity.HasIndex(match => match.CreatedAt)
                 .HasDatabaseName("ix_source_matches_created_at");
+        });
+    }
+
+    private static void ConfigureSubscriptionPlan(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<SubscriptionPlan>(entity =>
+        {
+            entity.ToTable("subscription_plans", table =>
+            {
+                table.HasCheckConstraint("ck_subscription_plans_price", "price_amount >= 0");
+                table.HasCheckConstraint("ck_subscription_plans_scan_limit", "scan_limit >= 0");
+                table.HasCheckConstraint("ck_subscription_plans_max_video_size", "max_video_size_bytes > 0");
+                table.HasCheckConstraint("ck_subscription_plans_validity_days", "validity_days IS NULL OR validity_days > 0");
+            });
+
+            entity.HasKey(plan => plan.Id);
+            entity.Property(plan => plan.Id).HasColumnName("id").UseIdentityByDefaultColumn();
+            entity.Property(plan => plan.Code).HasColumnName("code").HasMaxLength(40).IsRequired();
+            entity.Property(plan => plan.Name).HasColumnName("name").HasMaxLength(100).IsRequired();
+            entity.Property(plan => plan.PriceAmount).HasColumnName("price_amount").HasPrecision(18, 2).IsRequired();
+            entity.Property(plan => plan.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
+            entity.Property(plan => plan.ScanLimit).HasColumnName("scan_limit").IsRequired();
+            entity.Property(plan => plan.MaxVideoSizeBytes).HasColumnName("max_video_size_bytes").IsRequired();
+            entity.Property(plan => plan.AllowsSmartScan).HasColumnName("allows_smart_scan").IsRequired();
+            entity.Property(plan => plan.AllowsDetailedScan).HasColumnName("allows_detailed_scan").IsRequired();
+            entity.Property(plan => plan.ValidityDays).HasColumnName("validity_days");
+            entity.Property(plan => plan.IsActive).HasColumnName("is_active").HasDefaultValue(true).IsRequired();
+            entity.Property(plan => plan.SortOrder).HasColumnName("sort_order").IsRequired();
+            entity.Property(plan => plan.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("NOW()").IsRequired();
+            entity.Property(plan => plan.UpdatedAt).HasColumnName("updated_at").HasDefaultValueSql("NOW()").IsRequired();
+
+            entity.HasIndex(plan => plan.Code).IsUnique().HasDatabaseName("ux_subscription_plans_code");
+            entity.HasIndex(plan => new { plan.IsActive, plan.SortOrder }).HasDatabaseName("ix_subscription_plans_active_sort");
+
+            var seededAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+            entity.HasData(
+                new SubscriptionPlan
+                {
+                    Id = 1,
+                    Code = SubscriptionPlanCodes.Free,
+                    Name = "Free",
+                    PriceAmount = 0m,
+                    Currency = "PKR",
+                    ScanLimit = 2,
+                    MaxVideoSizeBytes = VideoUploadSizeLimits.FreeMaxVideoSizeBytes,
+                    AllowsSmartScan = true,
+                    AllowsDetailedScan = false,
+                    ValidityDays = null,
+                    IsActive = true,
+                    SortOrder = 1,
+                    CreatedAt = seededAt,
+                    UpdatedAt = seededAt
+                },
+                new SubscriptionPlan
+                {
+                    Id = 2,
+                    Code = SubscriptionPlanCodes.Plus,
+                    Name = "Plus",
+                    PriceAmount = 499m,
+                    Currency = "PKR",
+                    ScanLimit = 10,
+                    MaxVideoSizeBytes = VideoUploadSizeLimits.PlusMaxVideoSizeBytes,
+                    AllowsSmartScan = true,
+                    AllowsDetailedScan = false,
+                    ValidityDays = 30,
+                    IsActive = true,
+                    SortOrder = 2,
+                    CreatedAt = seededAt,
+                    UpdatedAt = seededAt
+                },
+                new SubscriptionPlan
+                {
+                    Id = 3,
+                    Code = SubscriptionPlanCodes.Pro,
+                    Name = "Pro",
+                    PriceAmount = 999m,
+                    Currency = "PKR",
+                    ScanLimit = 25,
+                    MaxVideoSizeBytes = VideoUploadSizeLimits.ProMaxVideoSizeBytes,
+                    AllowsSmartScan = true,
+                    AllowsDetailedScan = true,
+                    ValidityDays = 30,
+                    IsActive = true,
+                    SortOrder = 3,
+                    CreatedAt = seededAt,
+                    UpdatedAt = seededAt
+                });
+        });
+    }
+
+    private static void ConfigureUserSubscription(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<UserSubscription>(entity =>
+        {
+            entity.ToTable("user_subscriptions", table =>
+            {
+                table.HasCheckConstraint("ck_user_subscriptions_dates", "expires_at > starts_at");
+                table.HasCheckConstraint("ck_user_subscriptions_status", "status IN ('Pending', 'Active', 'Expired', 'Cancelled')");
+            });
+
+            entity.HasKey(subscription => subscription.Id);
+            entity.Property(subscription => subscription.Id).HasColumnName("id").UseIdentityByDefaultColumn();
+            entity.Property(subscription => subscription.UserId).HasColumnName("user_id").IsRequired();
+            entity.Property(subscription => subscription.SubscriptionPlanId).HasColumnName("subscription_plan_id").IsRequired();
+            entity.Property(subscription => subscription.Status).HasColumnName("status").HasMaxLength(40).IsRequired();
+            entity.Property(subscription => subscription.StartsAt).HasColumnName("starts_at").IsRequired();
+            entity.Property(subscription => subscription.ExpiresAt).HasColumnName("expires_at").IsRequired();
+            entity.Property(subscription => subscription.ActivatedAt).HasColumnName("activated_at");
+            entity.Property(subscription => subscription.CancelledAt).HasColumnName("cancelled_at");
+            entity.Property(subscription => subscription.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("NOW()").IsRequired();
+            entity.Property(subscription => subscription.UpdatedAt).HasColumnName("updated_at").HasDefaultValueSql("NOW()").IsRequired();
+            entity.Property(subscription => subscription.ConcurrencyStamp)
+                .HasColumnName("concurrency_stamp")
+                .HasMaxLength(64)
+                .IsConcurrencyToken()
+                .IsRequired();
+
+            entity.HasOne(subscription => subscription.User)
+                .WithMany()
+                .HasForeignKey(subscription => subscription.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(subscription => subscription.SubscriptionPlan)
+                .WithMany()
+                .HasForeignKey(subscription => subscription.SubscriptionPlanId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasIndex(subscription => new { subscription.UserId, subscription.Status, subscription.ExpiresAt })
+                .IsDescending(false, false, true)
+                .HasDatabaseName("ix_user_subscriptions_user_status_expires");
+            entity.HasIndex(subscription => subscription.SubscriptionPlanId)
+                .HasDatabaseName("ix_user_subscriptions_plan_id");
+            entity.HasIndex(subscription => subscription.ExpiresAt)
+                .HasDatabaseName("ix_user_subscriptions_expires_at");
+        });
+    }
+
+    private void ConfigurePaymentTransaction(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<PaymentTransaction>(entity =>
+        {
+            entity.ToTable("payment_transactions", table =>
+            {
+                table.HasCheckConstraint("ck_payment_transactions_amount", "amount >= 0");
+                table.HasCheckConstraint("ck_payment_transactions_status", "status IN ('Pending', 'Verified', 'Failed', 'Cancelled', 'Expired')");
+            });
+
+            entity.HasKey(payment => payment.Id);
+            entity.Property(payment => payment.Id).HasColumnName("id").UseIdentityByDefaultColumn();
+            entity.Property(payment => payment.UserId).HasColumnName("user_id").IsRequired();
+            entity.Property(payment => payment.SubscriptionPlanId).HasColumnName("subscription_plan_id").IsRequired();
+            entity.Property(payment => payment.UserSubscriptionId).HasColumnName("user_subscription_id");
+            entity.Property(payment => payment.Provider).HasColumnName("provider").HasMaxLength(80).IsRequired();
+            entity.Property(payment => payment.OrderId).HasColumnName("order_id").HasMaxLength(120).IsRequired();
+            entity.Property(payment => payment.ProviderTransactionId).HasColumnName("provider_transaction_id").HasMaxLength(200);
+            entity.Property(payment => payment.Status).HasColumnName("status").HasMaxLength(40).IsRequired();
+            entity.Property(payment => payment.Amount).HasColumnName("amount").HasPrecision(18, 2).IsRequired();
+            entity.Property(payment => payment.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
+            entity.Property(payment => payment.FailureReason)
+                .HasColumnName("failure_reason")
+                .HasConversion(EncryptedNullableStringConverter());
+            entity.Property(payment => payment.GatewayRequestJson)
+                .HasColumnName("gateway_request_json")
+                .HasColumnType("text")
+                .HasConversion(EncryptedNullableStringConverter());
+            entity.Property(payment => payment.GatewayResponseJson)
+                .HasColumnName("gateway_response_json")
+                .HasColumnType("text")
+                .HasConversion(EncryptedNullableStringConverter());
+            entity.Property(payment => payment.CallbackPayloadJson)
+                .HasColumnName("callback_payload_json")
+                .HasColumnType("text")
+                .HasConversion(EncryptedNullableStringConverter());
+            entity.Property(payment => payment.InitiatedAt).HasColumnName("initiated_at").IsRequired();
+            entity.Property(payment => payment.VerifiedAt).HasColumnName("verified_at");
+            entity.Property(payment => payment.FailedAt).HasColumnName("failed_at");
+            entity.Property(payment => payment.ExpiresAt).HasColumnName("expires_at");
+            entity.Property(payment => payment.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("NOW()").IsRequired();
+            entity.Property(payment => payment.UpdatedAt).HasColumnName("updated_at").HasDefaultValueSql("NOW()").IsRequired();
+            entity.Property(payment => payment.ConcurrencyStamp)
+                .HasColumnName("concurrency_stamp")
+                .HasMaxLength(64)
+                .IsConcurrencyToken()
+                .IsRequired();
+
+            entity.HasOne(payment => payment.User)
+                .WithMany()
+                .HasForeignKey(payment => payment.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(payment => payment.SubscriptionPlan)
+                .WithMany()
+                .HasForeignKey(payment => payment.SubscriptionPlanId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(payment => payment.UserSubscription)
+                .WithMany()
+                .HasForeignKey(payment => payment.UserSubscriptionId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            entity.HasIndex(payment => payment.OrderId).IsUnique().HasDatabaseName("ux_payment_transactions_order_id");
+            entity.HasIndex(payment => new { payment.Provider, payment.ProviderTransactionId })
+                .IsUnique()
+                .HasFilter("provider_transaction_id IS NOT NULL")
+                .HasDatabaseName("ux_payment_transactions_provider_transaction");
+            entity.HasIndex(payment => new { payment.UserId, payment.Status, payment.CreatedAt })
+                .IsDescending(false, false, true)
+                .HasDatabaseName("ix_payment_transactions_user_status_created");
+            entity.HasIndex(payment => payment.Status).HasDatabaseName("ix_payment_transactions_status");
+            entity.HasIndex(payment => payment.UserSubscriptionId).HasDatabaseName("ix_payment_transactions_subscription_id");
+        });
+    }
+
+    private void ConfigureScanReservation(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<ScanReservation>(entity =>
+        {
+            entity.ToTable("scan_reservations", table =>
+            {
+                table.HasCheckConstraint("ck_scan_reservations_file_size", "file_size_bytes >= 0");
+                table.HasCheckConstraint("ck_scan_reservations_status", "status IN ('Reserved', 'Consumed', 'Released')");
+                table.HasCheckConstraint("ck_scan_reservations_kind", "reservation_kind IN ('FreeTrial', 'PaidSubscription', 'InternalUnlimited')");
+            });
+
+            entity.HasKey(reservation => reservation.Id);
+            entity.Property(reservation => reservation.Id).HasColumnName("id").UseIdentityByDefaultColumn();
+            entity.Property(reservation => reservation.UserId).HasColumnName("user_id").IsRequired();
+            entity.Property(reservation => reservation.UserSubscriptionId).HasColumnName("user_subscription_id");
+            entity.Property(reservation => reservation.SubscriptionPlanId).HasColumnName("subscription_plan_id").IsRequired();
+            entity.Property(reservation => reservation.DeviceIdentityId).HasColumnName("device_identity_id");
+            entity.Property(reservation => reservation.VideoId).HasColumnName("video_id");
+            entity.Property(reservation => reservation.AnalysisJobId).HasColumnName("analysis_job_id");
+            entity.Property(reservation => reservation.ReservationKind).HasColumnName("reservation_kind").HasMaxLength(40).IsRequired();
+            entity.Property(reservation => reservation.Status).HasColumnName("status").HasMaxLength(40).IsRequired();
+            entity.Property(reservation => reservation.AnalysisMode).HasColumnName("analysis_mode").HasMaxLength(40).IsRequired();
+            entity.Property(reservation => reservation.FileSizeBytes).HasColumnName("file_size_bytes").IsRequired();
+            entity.Property(reservation => reservation.FreeTrialIpHash).HasColumnName("free_trial_ip_hash").HasMaxLength(128);
+            entity.Property(reservation => reservation.ReservedAt).HasColumnName("reserved_at").IsRequired();
+            entity.Property(reservation => reservation.ExpiresAt).HasColumnName("expires_at");
+            entity.Property(reservation => reservation.LastHeartbeatAt).HasColumnName("last_heartbeat_at");
+            entity.Property(reservation => reservation.ConsumedAt).HasColumnName("consumed_at");
+            entity.Property(reservation => reservation.ReleasedAt).HasColumnName("released_at");
+            entity.Property(reservation => reservation.ReleaseReason)
+                .HasColumnName("release_reason")
+                .HasConversion(EncryptedNullableStringConverter());
+            entity.Property(reservation => reservation.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("NOW()").IsRequired();
+            entity.Property(reservation => reservation.UpdatedAt).HasColumnName("updated_at").HasDefaultValueSql("NOW()").IsRequired();
+            entity.Property(reservation => reservation.ConcurrencyStamp)
+                .HasColumnName("concurrency_stamp")
+                .HasMaxLength(64)
+                .IsConcurrencyToken()
+                .IsRequired();
+
+            entity.HasOne(reservation => reservation.User).WithMany().HasForeignKey(reservation => reservation.UserId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(reservation => reservation.UserSubscription).WithMany().HasForeignKey(reservation => reservation.UserSubscriptionId).OnDelete(DeleteBehavior.SetNull);
+            entity.HasOne(reservation => reservation.SubscriptionPlan).WithMany().HasForeignKey(reservation => reservation.SubscriptionPlanId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(reservation => reservation.DeviceIdentity).WithMany().HasForeignKey(reservation => reservation.DeviceIdentityId).OnDelete(DeleteBehavior.SetNull);
+            entity.HasOne(reservation => reservation.Video).WithMany().HasForeignKey(reservation => reservation.VideoId).OnDelete(DeleteBehavior.SetNull);
+            entity.HasOne(reservation => reservation.AnalysisJob).WithMany().HasForeignKey(reservation => reservation.AnalysisJobId).OnDelete(DeleteBehavior.SetNull);
+
+            entity.HasIndex(reservation => new { reservation.UserId, reservation.Status, reservation.ReservedAt })
+                .IsDescending(false, false, true)
+                .HasDatabaseName("ix_scan_reservations_user_status_reserved");
+            entity.HasIndex(reservation => new { reservation.Status, reservation.ExpiresAt })
+                .HasDatabaseName("ix_scan_reservations_status_expires");
+            entity.HasIndex(reservation => new { reservation.UserSubscriptionId, reservation.Status })
+                .HasDatabaseName("ix_scan_reservations_subscription_status");
+            entity.HasIndex(reservation => new { reservation.DeviceIdentityId, reservation.Status })
+                .HasDatabaseName("ix_scan_reservations_device_status");
+            entity.HasIndex(reservation => reservation.FreeTrialIpHash)
+                .HasDatabaseName("ix_scan_reservations_free_trial_ip_hash");
+            entity.HasIndex(reservation => reservation.AnalysisJobId)
+                .IsUnique()
+                .HasFilter("analysis_job_id IS NOT NULL")
+                .HasDatabaseName("ux_scan_reservations_analysis_job_id");
+            entity.HasIndex(reservation => reservation.VideoId)
+                .HasDatabaseName("ix_scan_reservations_video_id");
+        });
+    }
+
+    private static void ConfigureScanUsage(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<ScanUsage>(entity =>
+        {
+            entity.ToTable("scan_usages", table =>
+            {
+                table.HasCheckConstraint("ck_scan_usages_entitlement_type", "entitlement_type IN ('FreeTrial', 'PaidSubscription', 'InternalUnlimited')");
+            });
+
+            entity.HasKey(usage => usage.Id);
+            entity.Property(usage => usage.Id).HasColumnName("id").UseIdentityByDefaultColumn();
+            entity.Property(usage => usage.UserId).HasColumnName("user_id").IsRequired();
+            entity.Property(usage => usage.UserSubscriptionId).HasColumnName("user_subscription_id");
+            entity.Property(usage => usage.SubscriptionPlanId).HasColumnName("subscription_plan_id").IsRequired();
+            entity.Property(usage => usage.ScanReservationId).HasColumnName("scan_reservation_id");
+            entity.Property(usage => usage.VideoId).HasColumnName("video_id");
+            entity.Property(usage => usage.AnalysisJobId).HasColumnName("analysis_job_id");
+            entity.Property(usage => usage.EntitlementType).HasColumnName("entitlement_type").HasMaxLength(40).IsRequired();
+            entity.Property(usage => usage.AnalysisMode).HasColumnName("analysis_mode").HasMaxLength(40).IsRequired();
+            entity.Property(usage => usage.OccurredAt).HasColumnName("occurred_at").IsRequired();
+            entity.Property(usage => usage.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("NOW()").IsRequired();
+
+            entity.HasOne(usage => usage.User).WithMany().HasForeignKey(usage => usage.UserId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(usage => usage.UserSubscription).WithMany().HasForeignKey(usage => usage.UserSubscriptionId).OnDelete(DeleteBehavior.SetNull);
+            entity.HasOne(usage => usage.SubscriptionPlan).WithMany().HasForeignKey(usage => usage.SubscriptionPlanId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(usage => usage.ScanReservation).WithMany().HasForeignKey(usage => usage.ScanReservationId).OnDelete(DeleteBehavior.SetNull);
+            entity.HasOne(usage => usage.Video).WithMany().HasForeignKey(usage => usage.VideoId).OnDelete(DeleteBehavior.SetNull);
+            entity.HasOne(usage => usage.AnalysisJob).WithMany().HasForeignKey(usage => usage.AnalysisJobId).OnDelete(DeleteBehavior.SetNull);
+
+            entity.HasIndex(usage => new { usage.UserId, usage.OccurredAt })
+                .IsDescending(false, true)
+                .HasDatabaseName("ix_scan_usages_user_occurred");
+            entity.HasIndex(usage => new { usage.UserSubscriptionId, usage.OccurredAt })
+                .IsDescending(false, true)
+                .HasDatabaseName("ix_scan_usages_subscription_occurred");
+            entity.HasIndex(usage => usage.ScanReservationId)
+                .IsUnique()
+                .HasFilter("scan_reservation_id IS NOT NULL")
+                .HasDatabaseName("ux_scan_usages_reservation_id");
+            entity.HasIndex(usage => usage.VideoId).HasDatabaseName("ix_scan_usages_video_id");
+            entity.HasIndex(usage => usage.AnalysisJobId).HasDatabaseName("ix_scan_usages_analysis_job_id");
+        });
+    }
+
+    private static void ConfigureDeviceIdentity(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<DeviceIdentity>(entity =>
+        {
+            entity.ToTable("device_identities", table =>
+            {
+                table.HasCheckConstraint(
+                    "ck_device_identities_hash_present",
+                    "(device_token_hash IS NOT NULL AND device_token_hash <> '') OR (device_fingerprint_hash IS NOT NULL AND device_fingerprint_hash <> '')");
+            });
+
+            entity.HasKey(device => device.Id);
+            entity.Property(device => device.Id).HasColumnName("id").UseIdentityByDefaultColumn();
+            entity.Property(device => device.DeviceTokenHash).HasColumnName("device_token_hash").HasMaxLength(128);
+            entity.Property(device => device.DeviceFingerprintHash).HasColumnName("device_fingerprint_hash").HasMaxLength(128);
+            entity.Property(device => device.HashVersion).HasColumnName("hash_version").HasMaxLength(40).IsRequired();
+            entity.Property(device => device.FirstSeenAt).HasColumnName("first_seen_at").IsRequired();
+            entity.Property(device => device.LastSeenAt).HasColumnName("last_seen_at").IsRequired();
+            entity.Property(device => device.RiskStatus).HasColumnName("risk_status").HasMaxLength(40).IsRequired();
+            entity.Property(device => device.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("NOW()").IsRequired();
+            entity.Property(device => device.UpdatedAt).HasColumnName("updated_at").HasDefaultValueSql("NOW()").IsRequired();
+            entity.Property(device => device.ConcurrencyStamp)
+                .HasColumnName("concurrency_stamp")
+                .HasMaxLength(64)
+                .IsConcurrencyToken()
+                .IsRequired();
+
+            entity.HasIndex(device => device.DeviceTokenHash)
+                .IsUnique()
+                .HasFilter("device_token_hash IS NOT NULL")
+                .HasDatabaseName("ux_device_identities_device_token_hash");
+            entity.HasIndex(device => device.DeviceFingerprintHash)
+                .HasDatabaseName("ix_device_identities_fingerprint_hash");
+            entity.HasIndex(device => device.LastSeenAt)
+                .HasDatabaseName("ix_device_identities_last_seen_at");
+        });
+    }
+
+    private static void ConfigureAccountDeviceLink(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<AccountDeviceLink>(entity =>
+        {
+            entity.ToTable("account_device_links");
+
+            entity.HasKey(link => link.Id);
+            entity.Property(link => link.Id).HasColumnName("id").UseIdentityByDefaultColumn();
+            entity.Property(link => link.UserId).HasColumnName("user_id").IsRequired();
+            entity.Property(link => link.DeviceIdentityId).HasColumnName("device_identity_id").IsRequired();
+            entity.Property(link => link.FirstSeenAt).HasColumnName("first_seen_at").IsRequired();
+            entity.Property(link => link.LastSeenAt).HasColumnName("last_seen_at").IsRequired();
+            entity.Property(link => link.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("NOW()").IsRequired();
+
+            entity.HasOne(link => link.User).WithMany().HasForeignKey(link => link.UserId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(link => link.DeviceIdentity).WithMany().HasForeignKey(link => link.DeviceIdentityId).OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasIndex(link => new { link.UserId, link.DeviceIdentityId })
+                .IsUnique()
+                .HasDatabaseName("ux_account_device_links_user_device");
+            entity.HasIndex(link => new { link.DeviceIdentityId, link.LastSeenAt })
+                .IsDescending(false, true)
+                .HasDatabaseName("ix_account_device_links_device_last_seen");
+        });
+    }
+
+    private static void ConfigureFreeTrialAccountUsage(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<FreeTrialAccountUsage>(entity =>
+        {
+            entity.ToTable("free_trial_account_usages", table =>
+            {
+                table.HasCheckConstraint("ck_free_trial_account_usage_counts", "allocated_scans > 0 AND consumed_scans >= 0 AND reserved_scans >= 0 AND consumed_scans + reserved_scans <= allocated_scans");
+            });
+
+            entity.HasKey(usage => usage.Id);
+            entity.Property(usage => usage.Id).HasColumnName("id").UseIdentityByDefaultColumn();
+            entity.Property(usage => usage.UserId).HasColumnName("user_id").IsRequired();
+            entity.Property(usage => usage.AllocatedScans).HasColumnName("allocated_scans").HasDefaultValue(2).IsRequired();
+            entity.Property(usage => usage.ConsumedScans).HasColumnName("consumed_scans").HasDefaultValue(0).IsRequired();
+            entity.Property(usage => usage.ReservedScans).HasColumnName("reserved_scans").HasDefaultValue(0).IsRequired();
+            entity.Property(usage => usage.FirstUsedAt).HasColumnName("first_used_at");
+            entity.Property(usage => usage.LastUsedAt).HasColumnName("last_used_at");
+            entity.Property(usage => usage.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("NOW()").IsRequired();
+            entity.Property(usage => usage.UpdatedAt).HasColumnName("updated_at").HasDefaultValueSql("NOW()").IsRequired();
+            entity.Property(usage => usage.ConcurrencyStamp)
+                .HasColumnName("concurrency_stamp")
+                .HasMaxLength(64)
+                .IsConcurrencyToken()
+                .IsRequired();
+
+            entity.HasOne(usage => usage.User).WithMany().HasForeignKey(usage => usage.UserId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasIndex(usage => usage.UserId).IsUnique().HasDatabaseName("ux_free_trial_account_usages_user_id");
+        });
+    }
+
+    private static void ConfigureFreeTrialDeviceUsage(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<FreeTrialDeviceUsage>(entity =>
+        {
+            entity.ToTable("free_trial_device_usages", table =>
+            {
+                table.HasCheckConstraint("ck_free_trial_device_usage_counts", "allocated_scans > 0 AND consumed_scans >= 0 AND reserved_scans >= 0 AND consumed_scans + reserved_scans <= allocated_scans");
+            });
+
+            entity.HasKey(usage => usage.Id);
+            entity.Property(usage => usage.Id).HasColumnName("id").UseIdentityByDefaultColumn();
+            entity.Property(usage => usage.DeviceIdentityId).HasColumnName("device_identity_id").IsRequired();
+            entity.Property(usage => usage.AllocatedScans).HasColumnName("allocated_scans").HasDefaultValue(2).IsRequired();
+            entity.Property(usage => usage.ConsumedScans).HasColumnName("consumed_scans").HasDefaultValue(0).IsRequired();
+            entity.Property(usage => usage.ReservedScans).HasColumnName("reserved_scans").HasDefaultValue(0).IsRequired();
+            entity.Property(usage => usage.FirstUsedAt).HasColumnName("first_used_at");
+            entity.Property(usage => usage.LastUsedAt).HasColumnName("last_used_at");
+            entity.Property(usage => usage.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("NOW()").IsRequired();
+            entity.Property(usage => usage.UpdatedAt).HasColumnName("updated_at").HasDefaultValueSql("NOW()").IsRequired();
+            entity.Property(usage => usage.ConcurrencyStamp)
+                .HasColumnName("concurrency_stamp")
+                .HasMaxLength(64)
+                .IsConcurrencyToken()
+                .IsRequired();
+
+            entity.HasOne(usage => usage.DeviceIdentity).WithMany().HasForeignKey(usage => usage.DeviceIdentityId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasIndex(usage => usage.DeviceIdentityId).IsUnique().HasDatabaseName("ux_free_trial_device_usages_device_id");
+        });
+    }
+
+    private static void ConfigureFreeTrialIpUsage(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<FreeTrialIpUsage>(entity =>
+        {
+            entity.ToTable("free_trial_ip_usages", table =>
+            {
+                table.HasCheckConstraint("ck_free_trial_ip_usage_counts", "allocated_scans > 0 AND consumed_scans >= 0 AND reserved_scans >= 0 AND consumed_scans + reserved_scans <= allocated_scans");
+            });
+
+            entity.HasKey(usage => usage.Id);
+            entity.Property(usage => usage.Id).HasColumnName("id").UseIdentityByDefaultColumn();
+            entity.Property(usage => usage.IpHash).HasColumnName("ip_hash").HasMaxLength(128).IsRequired();
+            entity.Property(usage => usage.HashVersion).HasColumnName("hash_version").HasMaxLength(40).IsRequired();
+            entity.Property(usage => usage.AllocatedScans).HasColumnName("allocated_scans").HasDefaultValue(2).IsRequired();
+            entity.Property(usage => usage.ConsumedScans).HasColumnName("consumed_scans").HasDefaultValue(0).IsRequired();
+            entity.Property(usage => usage.ReservedScans).HasColumnName("reserved_scans").HasDefaultValue(0).IsRequired();
+            entity.Property(usage => usage.FirstUsedAt).HasColumnName("first_used_at");
+            entity.Property(usage => usage.LastUsedAt).HasColumnName("last_used_at");
+            entity.Property(usage => usage.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("NOW()").IsRequired();
+            entity.Property(usage => usage.UpdatedAt).HasColumnName("updated_at").HasDefaultValueSql("NOW()").IsRequired();
+            entity.Property(usage => usage.ConcurrencyStamp)
+                .HasColumnName("concurrency_stamp")
+                .HasMaxLength(64)
+                .IsConcurrencyToken()
+                .IsRequired();
+
+            entity.HasIndex(usage => usage.IpHash).IsUnique().HasDatabaseName("ux_free_trial_ip_usages_ip_hash");
         });
     }
 }

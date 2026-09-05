@@ -58,8 +58,8 @@ public sealed class AuditLogMiddleware(RequestDelegate next)
                     DetailsJson = JsonSerializer.Serialize(new
                     {
                         durationMs = stopwatch.ElapsedMilliseconds,
-                        query = context.Request.QueryString.HasValue ? context.Request.QueryString.Value : null,
-                        error = capturedException?.Message
+                        hasQueryString = context.Request.QueryString.HasValue,
+                        exceptionType = capturedException?.GetType().Name
                     }, JsonOptions)
                 }, CancellationToken.None);
             }
@@ -116,6 +116,8 @@ public sealed class AuditLogMiddleware(RequestDelegate next)
     {
         var path = context.Request.Path.Value ?? string.Empty;
         if (path.Contains("/auth/", StringComparison.OrdinalIgnoreCase)) return "Authentication";
+        if (path.Contains("/payments/", StringComparison.OrdinalIgnoreCase)) return "Payment";
+        if (path.Contains("/subscriptions/", StringComparison.OrdinalIgnoreCase)) return "Subscription";
         if (path.Contains("/report/pdf", StringComparison.OrdinalIgnoreCase)) return "Report";
         if (path.Contains("/admin/", StringComparison.OrdinalIgnoreCase)) return "Admin";
         if (path.Contains("/videos", StringComparison.OrdinalIgnoreCase)) return "Video";
@@ -135,6 +137,10 @@ public sealed class AuditLogMiddleware(RequestDelegate next)
         if (path.EndsWith("/auth/reset-password", StringComparison.OrdinalIgnoreCase)) return "PasswordResetCompleted";
         if (path.EndsWith("/auth/confirm-email", StringComparison.OrdinalIgnoreCase)) return "EmailConfirmed";
         if (path.EndsWith("/auth/resend-confirmation-email", StringComparison.OrdinalIgnoreCase)) return "EmailConfirmationResent";
+        if (path.EndsWith("/payments/checkout", StringComparison.OrdinalIgnoreCase)) return "PaymentCheckout";
+        if (path.Contains("/payments/mock/", StringComparison.OrdinalIgnoreCase)) return "MockPaymentCompletion";
+        if (path.Contains("/payments/easypaisa/callback", StringComparison.OrdinalIgnoreCase)) return "EasypaisaCallback";
+        if (path.Contains("/subscriptions/status", StringComparison.OrdinalIgnoreCase)) return "SubscriptionStatus";
         if (path.EndsWith("/report/pdf", StringComparison.OrdinalIgnoreCase)) return "ReportDownload";
         if (path.Contains("/retry-analysis", StringComparison.OrdinalIgnoreCase)) return "RetryAnalysis";
         if (path.Contains("/reanalyze", StringComparison.OrdinalIgnoreCase)) return "ReanalyzeVideo";
@@ -167,6 +173,8 @@ public sealed class AuditLogMiddleware(RequestDelegate next)
         if (path.Contains("/videos/", StringComparison.OrdinalIgnoreCase)) return "Video";
         if (path.Contains("/users/", StringComparison.OrdinalIgnoreCase)) return "User";
         if (path.Contains("/jobs/", StringComparison.OrdinalIgnoreCase)) return "Job";
+        if (path.Contains("/payments/", StringComparison.OrdinalIgnoreCase)) return "Payment";
+        if (path.Contains("/subscriptions/", StringComparison.OrdinalIgnoreCase)) return "Subscription";
         return null;
     }
 

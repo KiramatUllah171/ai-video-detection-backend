@@ -96,6 +96,29 @@ public class RetentionCleanupServiceTests
     }
 
     [Fact]
+    public async Task CleanupTemporaryFilesDeletesOnlyStaleUploadTempFiles()
+    {
+        await using var dbContext = CreateDbContext();
+        var uploadTempRoot = Path.Combine(Path.GetTempPath(), "ai-video-upload-cleanup-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(uploadTempRoot);
+        var oldFile = Path.Combine(uploadTempRoot, "upload-old.mp4");
+        var currentFile = Path.Combine(uploadTempRoot, "upload-current.mp4");
+        await File.WriteAllBytesAsync(oldFile, [1]);
+        await File.WriteAllBytesAsync(currentFile, [2]);
+        File.SetLastWriteTimeUtc(oldFile, DateTime.UtcNow.AddHours(-5));
+        File.SetLastWriteTimeUtc(currentFile, DateTime.UtcNow);
+        var service = CreateService(dbContext, new FakeObjectStorageService(), uploadTempRoot);
+
+        await service.CleanupTemporaryFilesAsync();
+
+        Assert.False(File.Exists(oldFile));
+        Assert.True(File.Exists(currentFile));
+        Assert.True(await dbContext.RetentionCleanupRuns.AnyAsync(run => run.JobName == "temporary-files" && run.Status == "Succeeded"));
+
+        Directory.Delete(uploadTempRoot, recursive: true);
+    }
+
+    [Fact]
     public async Task CleanupExpiredRetainedAssetsDeletesDetailedResultDataAfterRetention()
     {
         await using var dbContext = CreateDbContext();
@@ -203,7 +226,10 @@ public class RetentionCleanupServiceTests
         Assert.Equal(1, metric.SegmentPayloadsCleared);
     }
 
-    private static RetentionCleanupService CreateService(AppDbContext dbContext, IObjectStorageService storage)
+    private static RetentionCleanupService CreateService(
+        AppDbContext dbContext,
+        IObjectStorageService storage,
+        string? uploadTempRoot = null)
     {
         return new RetentionCleanupService(
             dbContext,
@@ -215,6 +241,11 @@ public class RetentionCleanupServiceTests
                 OriginalVideoRetentionDays = 3,
                 ReportRetentionDays = 30,
                 DetailedResultRetentionDays = 30
+            }),
+            Options.Create(new VideoStorageProtectionOptions
+            {
+                UploadTempRootPath = uploadTempRoot ?? Path.Combine(Path.GetTempPath(), "ai-video-upload-cleanup-tests", Guid.NewGuid().ToString("N")),
+                OrphanUploadTempRetentionHours = 4
             }),
             CreateAlertService(),
             NullLogger<RetentionCleanupService>.Instance);

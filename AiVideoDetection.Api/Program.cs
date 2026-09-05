@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Net;
 using System.Threading.RateLimiting;
 using AiVideoDetection.Api.Authorization;
 using AiVideoDetection.Api.Health;
@@ -6,7 +7,10 @@ using AiVideoDetection.Api.Middleware;
 using AiVideoDetection.Api.Options;
 using AiVideoDetection.Application;
 using AiVideoDetection.Application.Common;
+using AiVideoDetection.Application.Payments.Options;
+using AiVideoDetection.Application.Subscriptions.Interfaces;
 using AiVideoDetection.Application.Videos.Interfaces;
+using AiVideoDetection.Application.Videos.Options;
 using AiVideoDetection.Infrastructure;
 using AiVideoDetection.Infrastructure.Data;
 using Hangfire;
@@ -32,6 +36,9 @@ var dataProtectionOptions = builder.Configuration
 var databaseOptions = builder.Configuration
     .GetSection(DatabaseOptions.SectionName)
     .Get<DatabaseOptions>() ?? new DatabaseOptions();
+var forwardedHeadersOptions = builder.Configuration
+    .GetSection(ForwardedHeadersSecurityOptions.SectionName)
+    .Get<ForwardedHeadersSecurityOptions>() ?? new ForwardedHeadersSecurityOptions();
 
 builder.WebHost.ConfigureKestrel(options =>
 {
@@ -73,7 +80,7 @@ if (!string.IsNullOrWhiteSpace(dataProtectionOptions.KeyRingPath))
 builder.Services.AddOptions<RequestLimitOptions>()
     .Bind(builder.Configuration.GetSection(RequestLimitOptions.SectionName))
     .Validate(options => options.MaxApiBodySizeBytes is > 0 and <= 10_485_760, "RequestLimits:MaxApiBodySizeBytes must be between 1 byte and 10 MB.")
-    .Validate(options => options.MaxUploadBodySizeBytes == 524_288_000, "RequestLimits:MaxUploadBodySizeBytes must be 524288000.")
+    .Validate(options => options.MaxUploadBodySizeBytes == VideoUploadSizeLimits.MultipartRequestBodyLimitBytes, $"RequestLimits:MaxUploadBodySizeBytes must be {VideoUploadSizeLimits.MultipartRequestBodyLimitBytes}.")
     .ValidateOnStart();
 builder.Services.AddOptions<SecurityHeadersOptions>()
     .Bind(builder.Configuration.GetSection(SecurityHeadersOptions.SectionName))
@@ -86,6 +93,10 @@ builder.Services.AddOptions<RateLimitingOptions>()
     .Validate(options => options.AuthSensitivePermitLimit > 0, "RateLimiting:AuthSensitivePermitLimit must be greater than zero.")
     .Validate(options => options.RefreshPermitLimit > 0, "RateLimiting:RefreshPermitLimit must be greater than zero.")
     .Validate(options => options.UploadPermitLimit > 0, "RateLimiting:UploadPermitLimit must be greater than zero.")
+    .Validate(options => options.VideoActionPermitLimit > 0, "RateLimiting:VideoActionPermitLimit must be greater than zero.")
+    .Validate(options => options.SubscriptionPermitLimit > 0, "RateLimiting:SubscriptionPermitLimit must be greater than zero.")
+    .Validate(options => options.PaymentPermitLimit > 0, "RateLimiting:PaymentPermitLimit must be greater than zero.")
+    .Validate(options => options.PaymentCallbackPermitLimit > 0, "RateLimiting:PaymentCallbackPermitLimit must be greater than zero.")
     .Validate(options => options.ReportDownloadPermitLimit > 0, "RateLimiting:ReportDownloadPermitLimit must be greater than zero.")
     .Validate(options => options.AdminPermitLimit > 0, "RateLimiting:AdminPermitLimit must be greater than zero.")
     .Validate(options => options.GeneralApiPermitLimit > 0, "RateLimiting:GeneralApiPermitLimit must be greater than zero.")
@@ -101,7 +112,30 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
     options.ForwardedHeaders = ForwardedHeaders.XForwardedFor |
         ForwardedHeaders.XForwardedProto |
         ForwardedHeaders.XForwardedHost;
-    options.ForwardLimit = Math.Max(1, builder.Configuration.GetValue("ForwardedHeaders:ForwardLimit", 2));
+    options.ForwardLimit = Math.Max(1, forwardedHeadersOptions.ForwardLimit);
+
+    if (forwardedHeadersOptions.KnownProxies.Length > 0 || forwardedHeadersOptions.KnownNetworks.Length > 0)
+    {
+        options.KnownProxies.Clear();
+        options.KnownIPNetworks.Clear();
+    }
+
+    foreach (var proxy in forwardedHeadersOptions.KnownProxies)
+    {
+        if (IPAddress.TryParse(proxy, out var address))
+        {
+            options.KnownProxies.Add(address);
+        }
+    }
+
+    foreach (var network in forwardedHeadersOptions.KnownNetworks)
+    {
+        var parsedNetwork = ParseIpNetwork(network);
+        if (parsedNetwork is not null)
+        {
+            options.KnownIPNetworks.Add(parsedNetwork.Value);
+        }
+    }
 });
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
@@ -270,7 +304,7 @@ using (var scope = app.Services.CreateScope())
     _ = await toolValidator.ValidateAsync();
 }
 
-if (app.Configuration.GetValue<bool>("ForwardedHeaders:Enabled") || !app.Environment.IsDevelopment())
+if (forwardedHeadersOptions.Enabled)
 {
     app.UseForwardedHeaders();
 }
@@ -289,7 +323,6 @@ app.UseSerilogRequestLogging(options =>
     {
         diagnosticContext.Set("CorrelationId", httpContext.Response.Headers[CorrelationIdMiddleware.HeaderName].FirstOrDefault() ?? httpContext.TraceIdentifier);
         diagnosticContext.Set("UserId", httpContext.User.FindFirstValue(ClaimTypes.NameIdentifier));
-        diagnosticContext.Set("UserEmail", httpContext.User.FindFirstValue(ClaimTypes.Email));
         diagnosticContext.Set("ClientIp", httpContext.Connection.RemoteIpAddress?.ToString());
         diagnosticContext.Set("RequestHost", httpContext.Request.Host.Value);
         diagnosticContext.Set("RequestPath", httpContext.Request.Path.Value);
@@ -340,6 +373,12 @@ RecurringJob.AddOrUpdate<IRetentionCleanupService>(
     "cleanup-expired-video-retention-assets",
     "analysis",
     service => service.CleanupExpiredRetainedAssetsAsync(),
+    Cron.Hourly());
+
+RecurringJob.AddOrUpdate<IScanReservationReconciliationService>(
+    "reconcile-scan-reservations",
+    "analysis",
+    service => service.ReconcileAsync(),
     Cron.Hourly());
 
 app.Run();
@@ -399,11 +438,13 @@ static void ValidateProductionConfiguration(IConfiguration configuration, IWebHo
 
     var allowedOrigins = configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? [];
     if (allowedOrigins.Length == 0
-        || allowedOrigins.Any(origin => origin.Contains("localhost", StringComparison.OrdinalIgnoreCase)
+        || allowedOrigins.Any(origin => !Uri.TryCreate(origin, UriKind.Absolute, out var uri)
+            || uri.Scheme != Uri.UriSchemeHttps
+            || origin.Contains("localhost", StringComparison.OrdinalIgnoreCase)
             || origin.Contains("127.0.0.1", StringComparison.OrdinalIgnoreCase)
             || origin == "*"))
     {
-        throw new InvalidOperationException("Production CORS allowed origins must contain only real frontend domains.");
+        throw new InvalidOperationException("Production CORS allowed origins must contain only HTTPS frontend domains.");
     }
 
     var allowedHosts = configuration["AllowedHosts"];
@@ -416,6 +457,28 @@ static void ValidateProductionConfiguration(IConfiguration configuration, IWebHo
     if (databaseOptions.ApplyMigrationsOnStartup)
     {
         throw new InvalidOperationException("Production database migrations must be applied through the release process, not on application startup.");
+    }
+
+    var paymentOptions = configuration.GetSection(PaymentOptions.SectionName).Get<PaymentOptions>() ?? new PaymentOptions();
+    if (paymentOptions.MockEnabled)
+    {
+        throw new InvalidOperationException("Mock payments must be disabled in Production.");
+    }
+
+    var subscriptionHmacSecret = Environment.GetEnvironmentVariable("SUBSCRIPTION_HMAC_SECRET")
+        ?? Environment.GetEnvironmentVariable("SubscriptionSecurity__HmacSecret")
+        ?? configuration["SubscriptionSecurity:HmacSecret"];
+    if (string.IsNullOrWhiteSpace(subscriptionHmacSecret) || subscriptionHmacSecret.Length < 32)
+    {
+        throw new InvalidOperationException("Production subscription HMAC secret must be provided through secure configuration.");
+    }
+
+    var forwardedHeaders = configuration.GetSection(ForwardedHeadersSecurityOptions.SectionName).Get<ForwardedHeadersSecurityOptions>() ?? new ForwardedHeadersSecurityOptions();
+    if (forwardedHeaders.Enabled &&
+        !forwardedHeaders.KnownProxies.Any(proxy => IPAddress.TryParse(proxy, out _)) &&
+        !forwardedHeaders.KnownNetworks.Any(network => ParseIpNetwork(network) is not null))
+    {
+        throw new InvalidOperationException("Production forwarded headers require valid trusted proxies or networks.");
     }
 
     var securityHeaders = configuration.GetSection(SecurityHeadersOptions.SectionName).Get<SecurityHeadersOptions>() ?? new SecurityHeadersOptions();
@@ -504,6 +567,30 @@ static RateLimitProfile GetRateLimitProfile(HttpContext context, RateLimitingOpt
         return new RateLimitProfile("video-upload", options.UploadPermitLimit);
     }
 
+    if (path.Contains("/retry-analysis", StringComparison.OrdinalIgnoreCase) ||
+        path.Contains("/reanalyze", StringComparison.OrdinalIgnoreCase) ||
+        path.Contains("/cancel-analysis", StringComparison.OrdinalIgnoreCase) ||
+        path.Contains("/pause-analysis", StringComparison.OrdinalIgnoreCase) ||
+        path.Contains("/resume-analysis", StringComparison.OrdinalIgnoreCase))
+    {
+        return new RateLimitProfile("video-action", options.VideoActionPermitLimit);
+    }
+
+    if (path.StartsWith("/api/subscriptions", StringComparison.OrdinalIgnoreCase))
+    {
+        return new RateLimitProfile("subscriptions", options.SubscriptionPermitLimit);
+    }
+
+    if (path.StartsWith("/api/payments/easypaisa/callback", StringComparison.OrdinalIgnoreCase))
+    {
+        return new RateLimitProfile("payment-callback", options.PaymentCallbackPermitLimit);
+    }
+
+    if (path.StartsWith("/api/payments", StringComparison.OrdinalIgnoreCase))
+    {
+        return new RateLimitProfile("payments", options.PaymentPermitLimit);
+    }
+
     if (path.EndsWith("/report/pdf", StringComparison.OrdinalIgnoreCase))
     {
         return new RateLimitProfile("report-download", options.ReportDownloadPermitLimit);
@@ -545,6 +632,16 @@ static Task WriteSafeHealthResponseAsync(HttpContext context, HealthReport repor
     };
 
     return context.Response.WriteAsJsonAsync(response);
+}
+
+static System.Net.IPNetwork? ParseIpNetwork(string value)
+{
+    if (!System.Net.IPNetwork.TryParse(value, out var network))
+    {
+        return null;
+    }
+
+    return network;
 }
 
 internal sealed record RateLimitProfile(string Name, int PermitLimit);
