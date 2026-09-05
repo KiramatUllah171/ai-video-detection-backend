@@ -78,7 +78,9 @@ public class UploadVideoRequestValidatorTests
     [InlineData("sample.mkv", "video/x-mkv")]
     [InlineData("sample.mkv", "application/x-matroska")]
     [InlineData("sample.mkv", "application/octet-stream")]
-    public async Task AcceptsConfiguredVideoContainerMimeAliases(string fileName, string contentType)
+    [InlineData("sample.mkv", "")]
+    [InlineData("sample.avi", "")]
+    public async Task AcceptsConfiguredVideoContainerMimeAliasesAndEmptyBrowserMime(string fileName, string contentType)
     {
         var validator = new UploadVideoRequestValidator(Options.Create(new VideoUploadOptions
         {
@@ -141,11 +143,11 @@ public class UploadVideoRequestValidatorTests
         });
 
         Assert.False(result.IsValid);
-        Assert.Contains(result.Errors, error => error.ErrorMessage == "The maximum allowed video size for Smart Scan is 10 MB.");
+        Assert.Contains(result.Errors, error => error.ErrorMessage == "The maximum allowed video size is 10 MB.");
     }
 
     [Fact]
-    public async Task AppliesDetailedScanLimitWhenDetailedModeSelected()
+    public async Task AllowsSmartUploadAboveFreeLimitWhenWithinAbsoluteTechnicalLimit()
     {
         var validator = new UploadVideoRequestValidator(Options.Create(new VideoUploadOptions
         {
@@ -160,14 +162,14 @@ public class UploadVideoRequestValidatorTests
         {
             File = CreateFile("sample.mp4", "video/mp4", 15 * OneMegabyte),
             ConsentAccepted = true,
-            AnalysisMode = AnalysisMode.Detailed
+            AnalysisMode = AnalysisMode.Basic
         });
 
         Assert.True(result.IsValid);
     }
 
     [Fact]
-    public async Task AppliesSmartScanLimitByDefault()
+    public async Task EnforcesAbsoluteTechnicalLimitByDefault()
     {
         var validator = new UploadVideoRequestValidator(Options.Create(new VideoUploadOptions
         {
@@ -180,12 +182,12 @@ public class UploadVideoRequestValidatorTests
 
         var result = await validator.ValidateAsync(new UploadVideoRequest
         {
-            File = CreateFile("sample.mp4", "video/mp4", 15 * OneMegabyte),
+            File = CreateFile("sample.mp4", "video/mp4", 21 * OneMegabyte),
             ConsentAccepted = true
         });
 
         Assert.False(result.IsValid);
-        Assert.Contains(result.Errors, error => error.ErrorMessage == "The maximum allowed video size for Smart Scan is 10 MB.");
+        Assert.Contains(result.Errors, error => error.ErrorMessage == "The maximum allowed video size is 20 MB.");
     }
 
     [Theory]
@@ -217,36 +219,36 @@ public class UploadVideoRequestValidatorTests
     }
 
     [Fact]
-    public async Task EnforcesProductionSmartScanAndDetailedScanSizeBoundaries()
+    public async Task EnforcesProductionAbsoluteTechnicalSizeBoundary()
     {
         var validator = new UploadVideoRequestValidator(Options.Create(new VideoUploadOptions()));
 
         var smartAtLimit = await validator.ValidateAsync(new UploadVideoRequest
         {
-            File = CreateFile("smart.mp4", "video/mp4", 209_715_200),
+            File = CreateFile("smart.mp4", "video/mp4", VideoUploadSizeLimits.AbsoluteMaxVideoSizeBytes),
             ConsentAccepted = true,
             AnalysisMode = AnalysisMode.Basic
         });
-        var smartOverLimit = await validator.ValidateAsync(new UploadVideoRequest
+        var overLimit = await validator.ValidateAsync(new UploadVideoRequest
         {
-            File = CreateFile("smart-too-large.mp4", "video/mp4", 209_715_201),
+            File = CreateFile("too-large.mp4", "video/mp4", VideoUploadSizeLimits.AbsoluteMaxVideoSizeBytes + 1),
             ConsentAccepted = true,
             AnalysisMode = AnalysisMode.Basic
         });
         var detailedAtLimit = await validator.ValidateAsync(new UploadVideoRequest
         {
-            File = CreateFile("detailed.mp4", "video/mp4", 524_288_000),
+            File = CreateFile("detailed.mp4", "video/mp4", VideoUploadSizeLimits.AbsoluteMaxVideoSizeBytes),
             ConsentAccepted = true,
             AnalysisMode = AnalysisMode.Detailed
         });
 
         Assert.True(smartAtLimit.IsValid);
-        Assert.False(smartOverLimit.IsValid);
-        Assert.Contains(smartOverLimit.Errors, error => error.ErrorMessage == "The maximum allowed video size for Smart Scan is 200 MB.");
+        Assert.False(overLimit.IsValid);
+        Assert.Contains(overLimit.Errors, error => error.ErrorMessage == "Videos larger than 300 MB are not supported at this time.");
         Assert.True(detailedAtLimit.IsValid);
     }
 
-    private static IFormFile CreateFile(string fileName, string contentType, int bytes)
+    private static IFormFile CreateFile(string fileName, string contentType, long bytes)
     {
         var stream = new SparseMemoryStream(bytes);
         return new FormFile(stream, 0, stream.Length, "file", fileName)

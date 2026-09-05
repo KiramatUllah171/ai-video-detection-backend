@@ -58,12 +58,28 @@ public class ProcessRunner(IFfmpegToolLocator toolLocator, IOptions<VideoProcess
                 exception);
         }
 
-        var outputTask = process.StandardOutput.ReadToEndAsync(timeoutCts.Token);
-        var errorTask = process.StandardError.ReadToEndAsync(timeoutCts.Token);
+        var outputTask = ReadToEndBoundedAsync(process.StandardOutput, _options.MaxProcessOutputBytes, timeoutCts.Token);
+        var errorTask = ReadToEndBoundedAsync(process.StandardError, _options.MaxProcessOutputBytes, timeoutCts.Token);
+        var waitTask = process.WaitForExitAsync(timeoutCts.Token);
 
         try
         {
-            await process.WaitForExitAsync(timeoutCts.Token);
+            var pendingTasks = new List<Task> { waitTask, outputTask, errorTask };
+            while (pendingTasks.Count > 0)
+            {
+                var completed = await Task.WhenAny(pendingTasks);
+                pendingTasks.Remove(completed);
+                await completed;
+                if (completed == waitTask)
+                {
+                    break;
+                }
+            }
+
+            return new ProcessRunResult(
+                process.ExitCode,
+                await outputTask,
+                await errorTask);
         }
         catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested && timeoutCts.IsCancellationRequested)
         {
@@ -73,11 +89,16 @@ public class ProcessRunner(IFfmpegToolLocator toolLocator, IOptions<VideoProcess
                 $"{toolName} timed out after {Math.Ceiling(timeout.TotalSeconds)} seconds.",
                 exception);
         }
-
-        return new ProcessRunResult(
-            process.ExitCode,
-            await outputTask,
-            await errorTask);
+        catch (OperationCanceledException)
+        {
+            KillProcessTree(process);
+            throw;
+        }
+        catch (ProcessingException)
+        {
+            KillProcessTree(process);
+            throw;
+        }
     }
 
     private static string GetNotFoundErrorCode(string toolName)
@@ -112,6 +133,36 @@ public class ProcessRunner(IFfmpegToolLocator toolLocator, IOptions<VideoProcess
         }
         catch (InvalidOperationException)
         {
+        }
+    }
+
+    private static async Task<string> ReadToEndBoundedAsync(
+        StreamReader reader,
+        int maxBytes,
+        CancellationToken cancellationToken)
+    {
+        var limit = Math.Max(1024, maxBytes);
+        var builder = new System.Text.StringBuilder(capacity: Math.Min(limit, 8192));
+        var buffer = new char[4096];
+        var totalBytes = 0;
+
+        while (true)
+        {
+            var read = await reader.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken);
+            if (read == 0)
+            {
+                return builder.ToString();
+            }
+
+            totalBytes += reader.CurrentEncoding.GetByteCount(buffer.AsSpan(0, read));
+            if (totalBytes > limit)
+            {
+                throw new ProcessingException(
+                    "PROCESS_OUTPUT_LIMIT_EXCEEDED",
+                    "Media processing tool produced too much diagnostic output.");
+            }
+
+            builder.Append(buffer, 0, read);
         }
     }
 }

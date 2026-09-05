@@ -14,6 +14,14 @@ public sealed class RateLimitingOptions
 
     public int UploadPermitLimit { get; init; } = 10;
 
+    public int VideoActionPermitLimit { get; init; } = 30;
+
+    public int SubscriptionPermitLimit { get; init; } = 120;
+
+    public int PaymentPermitLimit { get; init; } = 20;
+
+    public int PaymentCallbackPermitLimit { get; init; } = 60;
+
     public int ReportDownloadPermitLimit { get; init; } = 30;
 
     public int AdminPermitLimit { get; init; } = 120;

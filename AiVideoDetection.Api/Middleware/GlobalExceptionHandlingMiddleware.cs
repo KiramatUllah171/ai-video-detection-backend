@@ -13,6 +13,17 @@ public class GlobalExceptionHandlingMiddleware(
         {
             await next(context);
         }
+        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+        {
+            logger.LogInformation(
+                "Request was cancelled by the client. CorrelationId: {CorrelationId}",
+                correlationIdAccessor.CorrelationId ?? context.TraceIdentifier);
+
+            if (!context.Response.HasStarted)
+            {
+                context.Response.StatusCode = 499;
+            }
+        }
         catch (Exception exception)
         {
             var correlationId = correlationIdAccessor.CorrelationId ?? context.TraceIdentifier;

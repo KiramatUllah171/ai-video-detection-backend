@@ -70,7 +70,7 @@ public class UploadVideoRequestValidator : AbstractValidator<UploadVideoRequest>
     {
         if (string.IsNullOrWhiteSpace(file.ContentType))
         {
-            return false;
+            return true;
         }
 
         var extension = Path.GetExtension(file.FileName);
@@ -97,17 +97,15 @@ public class UploadVideoRequestValidator : AbstractValidator<UploadVideoRequest>
 
     private long GetMaxFileSizeBytes(AnalysisMode analysisMode)
     {
-        var modeLimit = analysisMode == AnalysisMode.Detailed
-            ? _options.DetailedScanMaxFileSizeBytes
-            : _options.SmartScanMaxFileSizeBytes;
-
-        return Math.Min(_options.MaxFileSizeBytes, modeLimit);
+        return _options.MaxFileSizeBytes;
     }
 
     private string GetMaxFileSizeMessage(AnalysisMode analysisMode)
     {
-        var scanName = analysisMode == AnalysisMode.Detailed ? "Detailed Scan" : "Smart Scan";
-        return $"The maximum allowed video size for {scanName} is {ToMegabytes(GetMaxFileSizeBytes(analysisMode))} MB.";
+        var maxFileSizeBytes = GetMaxFileSizeBytes(analysisMode);
+        return maxFileSizeBytes == VideoUploadSizeLimits.AbsoluteMaxVideoSizeBytes
+            ? "Videos larger than 300 MB are not supported at this time."
+            : $"The maximum allowed video size is {ToMegabytes(maxFileSizeBytes)} MB.";
     }
 
     private static long ToMegabytes(long bytes)

@@ -12,4 +12,15 @@ public sealed record ExtractedMetadataResult(
     DateTimeOffset? CreationTime,
     bool HasMissingMetadata,
     IReadOnlyList<string> Warnings,
-    string RawJson);
+    string RawJson)
+{
+    public int VideoStreamCount { get; init; }
+
+    public int AudioStreamCount { get; init; }
+
+    public int SubtitleStreamCount { get; init; }
+
+    public int AttachmentStreamCount { get; init; }
+
+    public int TotalStreamCount { get; init; }
+}

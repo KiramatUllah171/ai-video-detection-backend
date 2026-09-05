@@ -14,11 +14,13 @@ public class RetentionCleanupService(
     AppDbContext dbContext,
     IObjectStorageService objectStorageService,
     IOptions<VideoProcessingOptions> options,
+    IOptions<VideoStorageProtectionOptions> storageProtectionOptions,
     IMonitoringAlertService monitoringAlertService,
     ILogger<RetentionCleanupService> logger) : IRetentionCleanupService
 {
     private const int BatchSize = 100;
     private readonly VideoProcessingOptions _options = options.Value;
+    private readonly VideoStorageProtectionOptions _storageProtectionOptions = storageProtectionOptions.Value;
 
     public async Task CleanupTemporaryFilesAsync()
     {
@@ -27,6 +29,7 @@ public class RetentionCleanupService(
         {
             var cutoff = DateTimeOffset.UtcNow.Subtract(_options.TemporaryFileRetention);
             await CleanupWorkingDirectoriesAsync(cutoff, metrics);
+            await CleanupOrphanUploadTemporaryFilesAsync(DateTimeOffset.UtcNow.Subtract(_storageProtectionOptions.OrphanUploadTempRetention), metrics);
             await CleanupStoredFrameImagesAsync(cutoff, metrics);
         });
     }
@@ -173,6 +176,48 @@ public class RetentionCleanupService(
             }
 
             await dbContext.SaveChangesAsync();
+        }
+    }
+
+    private async Task CleanupOrphanUploadTemporaryFilesAsync(DateTimeOffset cutoff, CleanupMetrics metrics)
+    {
+        var rootPath = Path.GetFullPath(_storageProtectionOptions.UploadTempRootPath);
+        if (!Directory.Exists(rootPath))
+        {
+            return;
+        }
+
+        foreach (var file in Directory.EnumerateFiles(rootPath, "upload-*", SearchOption.TopDirectoryOnly))
+        {
+            try
+            {
+                var fullPath = Path.GetFullPath(file);
+                if (!IsInsideDirectory(fullPath, rootPath))
+                {
+                    logger.LogWarning("Skipped unsafe upload temp cleanup path {Path}.", fullPath);
+                    continue;
+                }
+
+                if (File.GetLastWriteTimeUtc(fullPath) > cutoff.UtcDateTime)
+                {
+                    continue;
+                }
+
+                File.Delete(fullPath);
+                metrics.UploadTemporaryFilesDeleted++;
+                logger.LogInformation("Deleted expired upload temp file {Path}.", fullPath);
+            }
+            catch (Exception exception)
+            {
+                metrics.FailureCount++;
+                metrics.ErrorMessage ??= exception.Message;
+                logger.LogWarning(exception, "Failed to delete expired upload temp file {Path}.", file);
+                await monitoringAlertService.RecordCleanupFailureAsync(
+                    "upload-temp-file",
+                    file,
+                    exception.Message,
+                    CancellationToken.None);
+            }
         }
     }
 
@@ -387,6 +432,8 @@ public class RetentionCleanupService(
     private sealed class CleanupMetrics
     {
         public int WorkDirectoriesDeleted { get; set; }
+
+        public int UploadTemporaryFilesDeleted { get; set; }
 
         public int FrameObjectsCleared { get; set; }
 

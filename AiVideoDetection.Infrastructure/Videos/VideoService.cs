@@ -1,6 +1,9 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using AiVideoDetection.Application.Common;
+using AiVideoDetection.Application.Subscriptions;
+using AiVideoDetection.Application.Subscriptions.Interfaces;
+using AiVideoDetection.Application.Videos;
 using AiVideoDetection.Application.Videos.DTOs;
 using AiVideoDetection.Application.Videos.Interfaces;
 using AiVideoDetection.Domain.Entities;
@@ -11,6 +14,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using AiVideoDetection.Application.Videos.Options;
+using AiVideoDetection.Application.Videos.Processing;
+using AiVideoDetection.Infrastructure.Videos.Processing;
 
 namespace AiVideoDetection.Infrastructure.Videos;
 
@@ -19,10 +24,19 @@ public class VideoService(
     IObjectStorageService objectStorageService,
     IAnalysisJobQueue analysisJobQueue,
     IJobLogService jobLogService,
+    IEntitlementService entitlementService,
+    IDeviceIdentityService deviceIdentityService,
+    IMetadataExtractionService metadataExtractionService,
+    IVideoStorageCapacityService storageCapacityService,
+    IVideoWorkloadGate workloadGate,
     IValidator<UploadVideoRequest> uploadValidator,
+    IOptions<VideoUploadOptions> uploadOptions,
+    IOptions<VideoStorageProtectionOptions> storageProtectionOptions,
     IOptions<VideoProcessingOptions> processingOptions,
     ILogger<VideoService> logger) : IVideoService
 {
+    private readonly VideoUploadOptions _uploadOptions = uploadOptions.Value;
+    private readonly VideoStorageProtectionOptions _storageProtectionOptions = storageProtectionOptions.Value;
     private readonly VideoProcessingOptions _processingOptions = processingOptions.Value;
     public async Task<ApiResponse<UploadVideoResponse>> UploadAsync(
         UploadVideoRequest request,
@@ -44,10 +58,32 @@ public class VideoService(
         var objectKey = CreateObjectKey(currentUserId, extension);
         string? uploadedObjectKey = null;
         var databaseCommitted = false;
-        var tempFilePath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}{extension}");
+        long? reservationId = null;
+        var reservationReleased = false;
+        string? tempFilePath = null;
+
+        await using var uploadLease = await workloadGate.TryEnterUploadAsync(cancellationToken);
+        if (uploadLease is null)
+        {
+            return ApiResponse<UploadVideoResponse>.ErrorResponse(
+                "The upload service is busy. Please try again shortly.",
+                errorCode: VideoInfrastructureErrorCodes.UploadConcurrencyLimitReached);
+        }
+
+        var capacity = await storageCapacityService.CheckUploadCapacityAsync(file.Length, cancellationToken);
+        if (!capacity.HasCapacity)
+        {
+            return ApiResponse<UploadVideoResponse>.ErrorResponse(
+                capacity.Message ?? "The server is temporarily unable to accept this video. Please try again later.",
+                errorCode: capacity.ErrorCode ?? VideoInfrastructureErrorCodes.ServerStorageCapacityLow);
+        }
 
         try
         {
+            var uploadTempRoot = Path.GetFullPath(_storageProtectionOptions.UploadTempRootPath);
+            Directory.CreateDirectory(uploadTempRoot);
+            tempFilePath = Path.Combine(uploadTempRoot, $"upload-{Guid.NewGuid():N}{extension}");
+
             string sha256Hash;
             await using (var tempFile = File.Create(tempFilePath))
             await using (var input = file.OpenReadStream())
@@ -65,7 +101,7 @@ public class VideoService(
                 sha256Hash = Convert.ToHexString(sha256.Hash!).ToLowerInvariant();
             }
 
-            if (!HasSupportedVideoSignature(tempFilePath, extension))
+            if (!await HasSupportedVideoContentAsync(tempFilePath, extension, cancellationToken))
             {
                 return ApiResponse<UploadVideoResponse>.ErrorResponse(
                     "The uploaded file content does not match a supported video format.");
@@ -98,6 +134,26 @@ public class VideoService(
                     ToUploadResponse(duplicateVideo, duplicateJob, "This video has already been uploaded. Use the existing analysis record."),
                     "Video already uploaded.");
             }
+
+            var clientContextResult = await TryResolveClientContextAsync(currentUserId, cancellationToken);
+            if (clientContextResult.ErrorResponse is not null)
+            {
+                return clientContextResult.ErrorResponse;
+            }
+
+            var reservation = await entitlementService.ReserveScanAsync(new ScanReservationRequest
+            {
+                UserId = currentUserId,
+                AnalysisMode = request.AnalysisMode,
+                FileSizeBytes = file.Length,
+                ClientContext = clientContextResult.Context
+            }, cancellationToken);
+            if (!reservation.Success)
+            {
+                return ToUploadErrorResponse(reservation);
+            }
+
+            reservationId = reservation.ReservationId;
 
             if (string.Equals(file.ContentType, "application/octet-stream", StringComparison.OrdinalIgnoreCase))
             {
@@ -144,6 +200,7 @@ public class VideoService(
                 dbContext.Videos.Add(video);
                 dbContext.AnalysisJobs.Add(job);
                 await dbContext.SaveChangesAsync(cancellationToken);
+                await LinkReservationToJobAsync(reservationId, video.Id, job.Id, cancellationToken);
                 await transaction.CommitAsync(cancellationToken);
                 databaseCommitted = true;
             }
@@ -152,10 +209,32 @@ public class VideoService(
                 dbContext.Videos.Add(video);
                 dbContext.AnalysisJobs.Add(job);
                 await dbContext.SaveChangesAsync(cancellationToken);
+                await LinkReservationToJobAsync(reservationId, video.Id, job.Id, cancellationToken);
                 databaseCommitted = true;
             }
 
-            var backgroundJobId = analysisJobQueue.EnqueueAnalysisJob(job.Id);
+            string backgroundJobId;
+            try
+            {
+                backgroundJobId = analysisJobQueue.EnqueueAnalysisJob(job.Id);
+            }
+            catch (Exception exception)
+            {
+                logger.LogError(exception, "Failed to enqueue analysis job {AnalysisJobId} for uploaded video {VideoId}.", job.Id, video.Id);
+                await MarkQueueFailureAsync(
+                    video,
+                    job,
+                    reservationId,
+                    "Upload failed before analysis could be queued.",
+                    deleteUploadedObjectKey: uploadedObjectKey,
+                    previousVideoStatus: VideoStatus.Failed);
+                reservationReleased = true;
+
+                return ApiResponse<UploadVideoResponse>.ErrorResponse(
+                    "Analysis queue is temporarily unavailable. Please try uploading again shortly.",
+                    errorCode: VideoInfrastructureErrorCodes.AnalysisQueueUnavailable);
+            }
+
             logger.LogInformation(
                 "Enqueued analysis job {AnalysisJobId} as Hangfire job {BackgroundJobId}.",
                 job.Id,
@@ -165,8 +244,38 @@ public class VideoService(
                 ToUploadResponse(video, job, "Video uploaded and queued for processing."),
                 "Video uploaded successfully.");
         }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            if (reservationId is not null && !reservationReleased)
+            {
+                await entitlementService.ReleaseReservationAsync(
+                    reservationId.Value,
+                    "Upload failed because server temporary storage was unavailable.",
+                    CancellationToken.None);
+                reservationReleased = true;
+            }
+
+            if (!databaseCommitted && !string.IsNullOrWhiteSpace(uploadedObjectKey))
+            {
+                await objectStorageService.DeleteAsync(uploadedObjectKey, CancellationToken.None);
+            }
+
+            logger.LogWarning(exception, "Video upload failed because server storage was unavailable.");
+            return ApiResponse<UploadVideoResponse>.ErrorResponse(
+                "The server is temporarily unable to accept this video. Please try again later.",
+                errorCode: VideoInfrastructureErrorCodes.ServerStorageCapacityLow);
+        }
         catch
         {
+            if (reservationId is not null && !reservationReleased)
+            {
+                await entitlementService.ReleaseReservationAsync(
+                    reservationId.Value,
+                    "Upload failed before analysis could be queued.",
+                    CancellationToken.None);
+                reservationReleased = true;
+            }
+
             if (!databaseCommitted && !string.IsNullOrWhiteSpace(uploadedObjectKey))
             {
                 await objectStorageService.DeleteAsync(uploadedObjectKey, cancellationToken);
@@ -176,10 +285,27 @@ public class VideoService(
         }
         finally
         {
-            if (File.Exists(tempFilePath))
+            TryDeleteFile(tempFilePath);
+        }
+    }
+
+    private static void TryDeleteFile(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        try
+        {
+            if (File.Exists(path))
             {
-                File.Delete(tempFilePath);
+                File.Delete(path);
             }
+        }
+        catch
+        {
+            // Upload temp cleanup is best effort; retention cleanup removes stale files after crashes.
         }
     }
 
@@ -322,6 +448,51 @@ public class VideoService(
             return ApiResponse<UploadVideoResponse>.ErrorResponse("The original video file is no longer available for reanalysis.");
         }
 
+        if (ExceedsCurrentAbsoluteUploadLimit(video))
+        {
+            return BuildCurrentSizeLimitError();
+        }
+
+        var activeJob = await dbContext.AnalysisJobs
+            .Where(job => job.VideoId == video.Id)
+            .Where(job => job.Status == JobStatus.Queued
+                || job.Status == JobStatus.Preparing
+                || job.Status == JobStatus.Processing
+                || job.Status == JobStatus.Retrying
+                || job.Status == JobStatus.Finalizing
+                || job.Status == JobStatus.PauseRequested
+                || job.Status == JobStatus.Paused
+                || job.Status == JobStatus.ResumeRequested
+                || job.Status == JobStatus.CancelRequested)
+            .OrderByDescending(job => job.CreatedAt)
+            .ThenByDescending(job => job.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (activeJob is not null)
+        {
+            return ApiResponse<UploadVideoResponse>.SuccessResponse(
+                ToUploadResponse(video, activeJob, "Analysis is already queued or processing."),
+                "Analysis is already queued or processing.");
+        }
+
+        var analysisMode = await GetLatestAnalysisModeAsync(video.Id, AnalysisMode.Basic, cancellationToken);
+        var clientContextResult = await TryResolveClientContextAsync(currentUserId, cancellationToken);
+        if (clientContextResult.ErrorResponse is not null)
+        {
+            return clientContextResult.ErrorResponse;
+        }
+
+        var reservation = await entitlementService.ReserveScanAsync(new ScanReservationRequest
+        {
+            UserId = currentUserId,
+            AnalysisMode = analysisMode,
+            FileSizeBytes = video.FileSize,
+            ClientContext = clientContextResult.Context
+        }, cancellationToken);
+        if (!reservation.Success)
+        {
+            return ToUploadErrorResponse(reservation);
+        }
+
         var job = new AnalysisJob
         {
             VideoId = video.Id,
@@ -330,14 +501,52 @@ public class VideoService(
             CurrentStep = "Waiting for reanalysis worker",
             RetryCount = 0,
             MaxRetryCount = _processingOptions.UserRetryLimit,
+            ScanMode = analysisMode.ToString(),
             LastActivityAt = DateTimeOffset.UtcNow
         };
 
-        video.Status = VideoStatus.Queued;
-        dbContext.AnalysisJobs.Add(job);
-        await dbContext.SaveChangesAsync(cancellationToken);
+        var previousVideoStatus = video.Status;
+        try
+        {
+            video.Status = VideoStatus.Queued;
+            dbContext.AnalysisJobs.Add(job);
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await LinkReservationToJobAsync(reservation.ReservationId, video.Id, job.Id, cancellationToken);
+        }
+        catch
+        {
+            if (reservation.ReservationId is not null)
+            {
+                await entitlementService.ReleaseReservationAsync(
+                    reservation.ReservationId.Value,
+                    "Reanalysis failed before it could be queued.",
+                    CancellationToken.None);
+            }
 
-        var backgroundJobId = analysisJobQueue.EnqueueAnalysisJob(job.Id);
+            throw;
+        }
+
+        string backgroundJobId;
+        try
+        {
+            backgroundJobId = analysisJobQueue.EnqueueAnalysisJob(job.Id);
+        }
+        catch (Exception exception)
+        {
+            logger.LogError(exception, "Failed to enqueue reanalysis job {AnalysisJobId} for video {VideoId}.", job.Id, video.Id);
+            await MarkQueueFailureAsync(
+                video,
+                job,
+                reservation.ReservationId,
+                "Reanalysis failed before it could be queued.",
+                deleteUploadedObjectKey: null,
+                previousVideoStatus: previousVideoStatus);
+
+            return ApiResponse<UploadVideoResponse>.ErrorResponse(
+                "Analysis queue is temporarily unavailable. Please try again shortly.",
+                errorCode: VideoInfrastructureErrorCodes.AnalysisQueueUnavailable);
+        }
+
         logger.LogInformation(
             "Queued reanalysis job {AnalysisJobId} as Hangfire job {BackgroundJobId} for video {VideoId}.",
             job.Id,
@@ -354,10 +563,6 @@ public class VideoService(
         long currentUserId,
         CancellationToken cancellationToken = default)
     {
-        await using var transaction = dbContext.Database.IsRelational()
-            ? await dbContext.Database.BeginTransactionAsync(cancellationToken)
-            : null;
-
         var video = await dbContext.Videos
             .Include(existingVideo => existingVideo.AnalysisJobs)
             .FirstOrDefaultAsync(existingVideo => existingVideo.Id == videoId
@@ -376,6 +581,11 @@ public class VideoService(
             return ApiResponse<UploadVideoResponse>.ErrorResponse("The original video file is no longer available for retry.");
         }
 
+        if (ExceedsCurrentAbsoluteUploadLimit(video))
+        {
+            return BuildCurrentSizeLimitError();
+        }
+
         var latestJob = video.AnalysisJobs
             .OrderByDescending(job => job.CreatedAt)
             .ThenByDescending(job => job.Id)
@@ -388,11 +598,6 @@ public class VideoService(
             .FirstOrDefault();
         if (activeJob is not null)
         {
-            if (transaction is not null)
-            {
-                await transaction.CommitAsync(cancellationToken);
-            }
-
             return ApiResponse<UploadVideoResponse>.SuccessResponse(
                 ToUploadResponse(video, activeJob, "Analysis retry is already queued or processing."),
                 "Analysis retry is already queued or processing.");
@@ -411,6 +616,25 @@ public class VideoService(
         if (latestJob.RetryCount >= latestJob.MaxRetryCount)
         {
             return ApiResponse<UploadVideoResponse>.ErrorResponse("Maximum retry count was reached.");
+        }
+
+        var analysisMode = ParseAnalysisMode(latestJob.ScanMode, AnalysisMode.Basic);
+        var clientContextResult = await TryResolveClientContextAsync(currentUserId, cancellationToken);
+        if (clientContextResult.ErrorResponse is not null)
+        {
+            return clientContextResult.ErrorResponse;
+        }
+
+        var reservation = await entitlementService.ReserveScanAsync(new ScanReservationRequest
+        {
+            UserId = currentUserId,
+            AnalysisMode = analysisMode,
+            FileSizeBytes = video.FileSize,
+            ClientContext = clientContextResult.Context
+        }, cancellationToken);
+        if (!reservation.Success)
+        {
+            return ToUploadErrorResponse(reservation);
         }
 
         var job = new AnalysisJob
@@ -434,13 +658,52 @@ public class VideoService(
 
         video.Status = VideoStatus.Queued;
         dbContext.AnalysisJobs.Add(job);
-        await dbContext.SaveChangesAsync(cancellationToken);
-        if (transaction is not null)
+        try
         {
-            await transaction.CommitAsync(cancellationToken);
+            await using var transaction = dbContext.Database.IsRelational()
+                ? await dbContext.Database.BeginTransactionAsync(cancellationToken)
+                : null;
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await LinkReservationToJobAsync(reservation.ReservationId, video.Id, job.Id, cancellationToken);
+            if (transaction is not null)
+            {
+                await transaction.CommitAsync(cancellationToken);
+            }
+        }
+        catch
+        {
+            if (reservation.ReservationId is not null)
+            {
+                await entitlementService.ReleaseReservationAsync(
+                    reservation.ReservationId.Value,
+                    "Retry failed before it could be queued.",
+                    CancellationToken.None);
+            }
+
+            throw;
         }
 
-        var backgroundJobId = analysisJobQueue.EnqueueAnalysisJob(job.Id);
+        string backgroundJobId;
+        try
+        {
+            backgroundJobId = analysisJobQueue.EnqueueAnalysisJob(job.Id);
+        }
+        catch (Exception exception)
+        {
+            logger.LogError(exception, "Failed to enqueue retry analysis job {AnalysisJobId} for video {VideoId}.", job.Id, video.Id);
+            await MarkQueueFailureAsync(
+                video,
+                job,
+                reservation.ReservationId,
+                "Retry failed before it could be queued.",
+                deleteUploadedObjectKey: null,
+                previousVideoStatus: VideoStatus.Failed);
+
+            return ApiResponse<UploadVideoResponse>.ErrorResponse(
+                "Analysis queue is temporarily unavailable. Please try again shortly.",
+                errorCode: VideoInfrastructureErrorCodes.AnalysisQueueUnavailable);
+        }
+
         logger.LogInformation(
             "Queued retry analysis job {AnalysisJobId} as Hangfire job {BackgroundJobId} for video {VideoId} from failed job {FailedJobId}.",
             job.Id,
@@ -702,6 +965,7 @@ public class VideoService(
             }
 
             await dbContext.SaveChangesAsync(cancellationToken);
+            await ReleaseReservationForJobAsync(job.Id, "Paused analysis was cancelled by the user.", cancellationToken);
             await jobLogService.LogAsync(job.Id, "Cancelled", "Information", "Paused analysis was cancelled by the user.", null, cancellationToken);
             logger.LogInformation("Paused analysis job {JobId} video {VideoId} was cancelled by user {UserId}.", job.Id, videoId, currentUserId);
             return ApiResponse<JobStatusDto>.SuccessResponse(MapJob(job), "Cancellation requested.");
@@ -1008,6 +1272,166 @@ public class VideoService(
         return !string.IsNullOrWhiteSpace(video.FileUrl);
     }
 
+    private bool ExceedsCurrentAbsoluteUploadLimit(Video video)
+    {
+        return video.FileSize > _uploadOptions.MaxFileSizeBytes;
+    }
+
+    private static ApiResponse<UploadVideoResponse> BuildCurrentSizeLimitError()
+    {
+        return ApiResponse<UploadVideoResponse>.ErrorResponse(
+            "Videos larger than 300 MB are not supported at this time.",
+            errorCode: SubscriptionErrorCodes.VideoSizeLimitExceeded);
+    }
+
+    private async Task<(SubscriptionClientContext? Context, ApiResponse<UploadVideoResponse>? ErrorResponse)> TryResolveClientContextAsync(
+        long currentUserId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return (await deviceIdentityService.ResolveAsync(currentUserId, cancellationToken), null);
+        }
+        catch (InvalidOperationException exception)
+            when (exception.Message == SubscriptionErrorCodes.SubscriptionSecurityNotConfigured)
+        {
+            return (null, ApiResponse<UploadVideoResponse>.ErrorResponse(
+                "Subscription security is not configured.",
+                errorCode: SubscriptionErrorCodes.SubscriptionSecurityNotConfigured));
+        }
+    }
+
+    private async Task LinkReservationToJobAsync(
+        long? reservationId,
+        long videoId,
+        long jobId,
+        CancellationToken cancellationToken)
+    {
+        if (reservationId is null)
+        {
+            return;
+        }
+
+        var reservation = await dbContext.ScanReservations
+            .FirstOrDefaultAsync(candidate => candidate.Id == reservationId.Value, cancellationToken);
+        if (reservation is null)
+        {
+            return;
+        }
+
+        reservation.VideoId = videoId;
+        reservation.AnalysisJobId = jobId;
+        reservation.ExpiresAt = null;
+        reservation.LastHeartbeatAt = DateTimeOffset.UtcNow;
+        await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task<AnalysisMode> GetLatestAnalysisModeAsync(
+        long videoId,
+        AnalysisMode fallback,
+        CancellationToken cancellationToken)
+    {
+        var latestScanMode = await dbContext.AnalysisJobs
+            .Where(job => job.VideoId == videoId)
+            .OrderByDescending(job => job.CreatedAt)
+            .ThenByDescending(job => job.Id)
+            .Select(job => job.ScanMode)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return ParseAnalysisMode(latestScanMode, fallback);
+    }
+
+    private static AnalysisMode ParseAnalysisMode(string? scanMode, AnalysisMode fallback)
+    {
+        if (string.IsNullOrWhiteSpace(scanMode))
+        {
+            return fallback;
+        }
+
+        return scanMode.Contains("Detailed", StringComparison.OrdinalIgnoreCase)
+            ? AnalysisMode.Detailed
+            : scanMode.Contains("Smart", StringComparison.OrdinalIgnoreCase) || scanMode.Contains("Basic", StringComparison.OrdinalIgnoreCase)
+                ? AnalysisMode.Basic
+                : fallback;
+    }
+
+    private static ApiResponse<UploadVideoResponse> ToUploadErrorResponse(ScanReservationResult reservation)
+    {
+        return ApiResponse<UploadVideoResponse>.ErrorResponse(
+            reservation.Message,
+            errorCode: reservation.ErrorCode);
+    }
+
+    private async Task ReleaseReservationForJobAsync(
+        long jobId,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        var reservationId = await dbContext.ScanReservations
+            .Where(reservation =>
+                reservation.AnalysisJobId == jobId &&
+                reservation.Status == Domain.Constants.ScanReservationStatuses.Reserved)
+            .Select(reservation => (long?)reservation.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (reservationId is null)
+        {
+            return;
+        }
+
+        await entitlementService.ReleaseReservationAsync(reservationId.Value, reason, cancellationToken);
+    }
+
+    private async Task MarkQueueFailureAsync(
+        Video video,
+        AnalysisJob job,
+        long? reservationId,
+        string reservationReleaseReason,
+        string? deleteUploadedObjectKey,
+        VideoStatus previousVideoStatus)
+    {
+        if (reservationId is not null)
+        {
+            await entitlementService.ReleaseReservationAsync(
+                reservationId.Value,
+                reservationReleaseReason,
+                CancellationToken.None);
+        }
+
+        if (!string.IsNullOrWhiteSpace(deleteUploadedObjectKey))
+        {
+            try
+            {
+                await objectStorageService.DeleteAsync(deleteUploadedObjectKey, CancellationToken.None);
+                video.FileUrl = string.Empty;
+            }
+            catch (Exception exception)
+            {
+                logger.LogWarning(exception, "Failed to clean uploaded object after queue failure for video {VideoId}.", video.Id);
+            }
+        }
+
+        job.Status = JobStatus.Failed;
+        job.Progress = 0;
+        job.CurrentStep = "Failed: Analysis queue is temporarily unavailable. Please try again shortly.";
+        job.ErrorCode = VideoInfrastructureErrorCodes.AnalysisQueueUnavailable;
+        job.ErrorMessage = "Analysis queue is temporarily unavailable. Please try again shortly.";
+        job.FailedStage = "QueueAnalysis";
+        job.FailedAt = DateTimeOffset.UtcNow;
+        job.CompletedAt = DateTimeOffset.UtcNow;
+        job.LastActivityAt = DateTimeOffset.UtcNow;
+        video.Status = previousVideoStatus;
+        video.UpdatedAt = DateTimeOffset.UtcNow;
+
+        try
+        {
+            await dbContext.SaveChangesAsync(CancellationToken.None);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Failed to persist queue failure compensation for analysis job {AnalysisJobId}.", job.Id);
+        }
+    }
+
     private static bool IsActiveJob(AnalysisJob job)
     {
         return job.Status is JobStatus.Queued
@@ -1307,27 +1731,85 @@ public class VideoService(
 
     private static bool HasSupportedVideoSignature(string filePath, string extension)
     {
-        Span<byte> header = stackalloc byte[16];
+        Span<byte> header = stackalloc byte[4096];
         using var stream = File.OpenRead(filePath);
         var bytesRead = stream.Read(header);
         var slice = header[..bytesRead];
 
         return extension switch
         {
-            ".mp4" or ".mov" => HasIsoBaseMediaSignature(slice),
+            ".mp4" => HasIsoBaseMediaSignature(slice, allowQuickTimeWithoutFileTypeBox: false),
+            ".mov" => HasIsoBaseMediaSignature(slice, allowQuickTimeWithoutFileTypeBox: true),
             ".mkv" or ".webm" => StartsWith(slice, [0x1A, 0x45, 0xDF, 0xA3]),
             ".avi" => HasAviSignature(slice),
             _ => false
         };
     }
 
-    private static bool HasIsoBaseMediaSignature(ReadOnlySpan<byte> header)
+    private async Task<bool> HasSupportedVideoContentAsync(
+        string filePath,
+        string extension,
+        CancellationToken cancellationToken)
     {
-        return header.Length >= 12
-            && header[4] == (byte)'f'
-            && header[5] == (byte)'t'
-            && header[6] == (byte)'y'
-            && header[7] == (byte)'p';
+        if (HasSupportedVideoSignature(filePath, extension))
+        {
+            return true;
+        }
+
+        try
+        {
+            var metadata = await metadataExtractionService.ExtractMetadataAsync(
+                new VideoProcessingInput(0, 0, filePath, Path.GetTempPath(), null),
+                cancellationToken);
+
+            return !string.IsNullOrWhiteSpace(metadata.Codec);
+        }
+        catch (ProcessingException exception)
+        {
+            logger.LogInformation(
+                exception,
+                "Uploaded video signature fallback validation failed for extension {Extension}.",
+                extension);
+            return false;
+        }
+    }
+
+    private static bool HasIsoBaseMediaSignature(ReadOnlySpan<byte> header, bool allowQuickTimeWithoutFileTypeBox)
+    {
+        var offset = 0;
+        while (offset + 8 <= header.Length)
+        {
+            var size = ReadBigEndianUInt32(header.Slice(offset, 4));
+            var boxType = header.Slice(offset + 4, 4);
+            if (SequenceEqualsAscii(boxType, "ftyp"))
+            {
+                return true;
+            }
+
+            if (allowQuickTimeWithoutFileTypeBox && IsQuickTimeTopLevelBox(boxType))
+            {
+                return true;
+            }
+
+            if (size < 8)
+            {
+                return false;
+            }
+
+            if (size == 1)
+            {
+                return false;
+            }
+
+            if (size > int.MaxValue)
+            {
+                return false;
+            }
+
+            offset += (int)size;
+        }
+
+        return false;
     }
 
     private static bool HasAviSignature(ReadOnlySpan<byte> header)
@@ -1345,5 +1827,39 @@ public class VideoService(
     private static bool StartsWith(ReadOnlySpan<byte> value, ReadOnlySpan<byte> prefix)
     {
         return value.Length >= prefix.Length && value[..prefix.Length].SequenceEqual(prefix);
+    }
+
+    private static uint ReadBigEndianUInt32(ReadOnlySpan<byte> value)
+    {
+        return ((uint)value[0] << 24)
+            | ((uint)value[1] << 16)
+            | ((uint)value[2] << 8)
+            | value[3];
+    }
+
+    private static bool SequenceEqualsAscii(ReadOnlySpan<byte> value, string expected)
+    {
+        if (value.Length != expected.Length)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < expected.Length; index++)
+        {
+            if (value[index] != (byte)expected[index])
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsQuickTimeTopLevelBox(ReadOnlySpan<byte> boxType)
+    {
+        return SequenceEqualsAscii(boxType, "moov")
+            || SequenceEqualsAscii(boxType, "mdat")
+            || SequenceEqualsAscii(boxType, "wide")
+            || SequenceEqualsAscii(boxType, "free");
     }
 }

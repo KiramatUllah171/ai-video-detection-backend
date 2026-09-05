@@ -15,6 +15,10 @@ set "PasswordReset__SenderEmail=kiramatullahcomputer@gmail.com"
 set "PasswordReset__SenderName=SachAI"
 set "PasswordReset__FrontendBaseUrl=http://localhost:5173"
 
+if "%Jwt__Secret%"=="" set "Jwt__Secret=sachai-local-development-jwt-secret-change-before-production-2026"
+if "%SubscriptionSecurity__HmacSecret%"=="" set "SubscriptionSecurity__HmacSecret=sachai-local-development-subscription-hmac-secret-change-before-production-2026"
+if "%Easypaisa__CallbackSecret%"=="" set "Easypaisa__CallbackSecret=sachai-local-development-easypaisa-callback-secret-change-before-production-2026"
+
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\Ensure-BackendPortFree.ps1" -Port 5166
 if errorlevel 1 exit /b 1
 

@@ -56,6 +56,10 @@ public class MetadataExtractionService(
             ? streamsElement.EnumerateArray().ToArray()
             : [];
 
+        var videoStreamCount = streams.Count(stream => GetString(stream, "codec_type") == "video");
+        var audioStreamCount = streams.Count(stream => GetString(stream, "codec_type") == "audio");
+        var subtitleStreamCount = streams.Count(stream => GetString(stream, "codec_type") == "subtitle");
+        var attachmentStreamCount = streams.Count(stream => GetString(stream, "codec_type") == "attachment");
         var videoStream = streams.FirstOrDefault(stream => GetString(stream, "codec_type") == "video");
         var audioStream = streams.FirstOrDefault(stream => GetString(stream, "codec_type") == "audio");
 
@@ -113,7 +117,14 @@ public class MetadataExtractionService(
             creationTime,
             warnings.Count > 0,
             warnings,
-            rawJson);
+            rawJson)
+        {
+            VideoStreamCount = videoStreamCount,
+            AudioStreamCount = audioStreamCount,
+            SubtitleStreamCount = subtitleStreamCount,
+            AttachmentStreamCount = attachmentStreamCount,
+            TotalStreamCount = streams.Length
+        };
     }
 
     private static string? GetString(JsonElement? element, string propertyName)

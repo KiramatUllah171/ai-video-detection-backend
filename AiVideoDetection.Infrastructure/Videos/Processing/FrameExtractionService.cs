@@ -35,6 +35,7 @@ public class FrameExtractionService(
         {
             throw new ProcessingException("THUMBNAIL_FAILED", "Video thumbnail could not be generated.");
         }
+        ValidateOutputFileSize(outputPath, "THUMBNAIL_RESOURCE_LIMIT_EXCEEDED");
 
         return new ThumbnailResult(outputPath, timestamp, null, null);
     }
@@ -68,9 +69,24 @@ public class FrameExtractionService(
             throw new ProcessingException("FRAME_EXTRACTION_FAILED", "Video frames could not be extracted.");
         }
 
-        return Directory
+        var extractedFrames = Directory
             .EnumerateFiles(frameDirectory, $"frame_*.{extension}")
             .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (extractedFrames.Count > maxFrames)
+        {
+            throw new ProcessingException(
+                "FRAME_EXTRACTION_RESOURCE_LIMIT_EXCEEDED",
+                "Video frame extraction exceeded the supported frame limit.");
+        }
+
+        foreach (var path in extractedFrames)
+        {
+            ValidateOutputFileSize(path, "FRAME_EXTRACTION_RESOURCE_LIMIT_EXCEEDED");
+        }
+
+        return extractedFrames
             .Select((path, index) => new ExtractedFrameResult(
                 path,
                 index + 1,
@@ -79,6 +95,17 @@ public class FrameExtractionService(
                 null,
                 false))
             .ToList();
+    }
+
+    private void ValidateOutputFileSize(string path, string errorCode)
+    {
+        var length = new FileInfo(path).Length;
+        if (length > _options.MaxFrameFileSizeBytes)
+        {
+            throw new ProcessingException(
+                errorCode,
+                "Extracted video image output exceeded the supported size limit.");
+        }
     }
 
     private decimal ResolveThumbnailTimestamp(decimal? durationSeconds)

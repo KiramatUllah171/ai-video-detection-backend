@@ -1,6 +1,10 @@
 using AiVideoDetection.Application.Admin.Interfaces;
 using AiVideoDetection.Application.Auth.Interfaces;
 using AiVideoDetection.Application.Common;
+using AiVideoDetection.Application.Payments.Interfaces;
+using AiVideoDetection.Application.Payments.Options;
+using AiVideoDetection.Application.Subscriptions.Interfaces;
+using AiVideoDetection.Application.Subscriptions.Options;
 using AiVideoDetection.Application.Videos.Interfaces;
 using AiVideoDetection.Application.Videos.Options;
 using AiVideoDetection.Infrastructure.Admin;
@@ -9,13 +13,16 @@ using AiVideoDetection.Domain.Enums;
 using AiVideoDetection.Infrastructure.Auth;
 using AiVideoDetection.Infrastructure.Common;
 using AiVideoDetection.Infrastructure.Data;
+using AiVideoDetection.Infrastructure.Payments;
 using AiVideoDetection.Infrastructure.Storage;
+using AiVideoDetection.Infrastructure.Subscriptions;
 using AiVideoDetection.Infrastructure.Videos;
 using AiVideoDetection.Infrastructure.Videos.Ai;
 using AiVideoDetection.Infrastructure.Videos.Matching;
 using AiVideoDetection.Infrastructure.Videos.Processing;
 using AiVideoDetection.Infrastructure.Videos.Retention;
 using AiVideoDetection.Infrastructure.Videos.Reports;
+using AiVideoDetection.Infrastructure.Videos.StorageProtection;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -70,6 +77,50 @@ public static class DependencyInjection
 
         services.Configure<JwtOptions>(configuration.GetSection(JwtOptions.SectionName));
         services.Configure<PasswordResetOptions>(configuration.GetSection(PasswordResetOptions.SectionName));
+        services.AddOptions<PaymentOptions>()
+            .Bind(configuration.GetSection(PaymentOptions.SectionName))
+            .Validate(options => options.PendingPaymentExpiryMinutes is >= 5 and <= 1440, "Payments:PendingPaymentExpiryMinutes must be 5-1440.")
+            .Validate(options => !string.IsNullOrWhiteSpace(options.OrderPrefix), "Payments:OrderPrefix is required.")
+            .ValidateOnStart();
+        services.AddOptions<EasypaisaOptions>()
+            .Bind(configuration.GetSection(EasypaisaOptions.SectionName))
+            .Validate(options => !options.Enabled || !string.IsNullOrWhiteSpace(options.CheckoutBaseUrl), "Easypaisa:CheckoutBaseUrl is required when Easypaisa is enabled.")
+            .Validate(options => !options.Enabled || !string.IsNullOrWhiteSpace(options.MerchantId), "Easypaisa:MerchantId is required when Easypaisa is enabled.")
+            .Validate(options => !options.Enabled || !string.IsNullOrWhiteSpace(options.StoreId), "Easypaisa:StoreId is required when Easypaisa is enabled.")
+            .Validate(options => !options.Enabled || !string.IsNullOrWhiteSpace(options.CallbackSecret), "Easypaisa:CallbackSecret is required when Easypaisa is enabled.")
+            .Validate(options => string.IsNullOrWhiteSpace(options.CallbackSecret) || options.CallbackSecret.Length >= 32, "Easypaisa:CallbackSecret must be at least 32 characters.")
+            .ValidateOnStart();
+        services.PostConfigure<EasypaisaOptions>(options =>
+        {
+            options.MerchantId = Environment.GetEnvironmentVariable("EASYPAISA_MERCHANT_ID")
+                ?? Environment.GetEnvironmentVariable("Easypaisa__MerchantId")
+                ?? options.MerchantId;
+            options.StoreId = Environment.GetEnvironmentVariable("EASYPAISA_STORE_ID")
+                ?? Environment.GetEnvironmentVariable("Easypaisa__StoreId")
+                ?? options.StoreId;
+            options.CallbackSecret = Environment.GetEnvironmentVariable("EASYPAISA_CALLBACK_SECRET")
+                ?? Environment.GetEnvironmentVariable("Easypaisa__CallbackSecret")
+                ?? options.CallbackSecret;
+        });
+        services.AddOptions<SubscriptionSecurityOptions>()
+            .Bind(configuration.GetSection(SubscriptionSecurityOptions.SectionName))
+            .Validate(options => !string.IsNullOrWhiteSpace(options.DeviceCookieName), "SubscriptionSecurity:DeviceCookieName is required.")
+            .Validate(options => options.DeviceCookieDays is >= 1 and <= 730, "SubscriptionSecurity:DeviceCookieDays must be 1-730.")
+            .Validate(options => !string.IsNullOrWhiteSpace(options.DeviceFingerprintHeaderName), "SubscriptionSecurity:DeviceFingerprintHeaderName is required.")
+            .Validate(options => string.IsNullOrWhiteSpace(options.HmacSecret) || options.HmacSecret.Length >= 32, "SubscriptionSecurity:HmacSecret must be at least 32 characters.")
+            .ValidateOnStart();
+        services.PostConfigure<SubscriptionSecurityOptions>(options =>
+        {
+            options.HmacSecret = Environment.GetEnvironmentVariable("SUBSCRIPTION_HMAC_SECRET")
+                ?? Environment.GetEnvironmentVariable("SubscriptionSecurity__HmacSecret")
+                ?? options.HmacSecret;
+        });
+        services.AddOptions<ScanReservationOptions>()
+            .Bind(configuration.GetSection(ScanReservationOptions.SectionName))
+            .Validate(options => options.UnlinkedReservationTtlMinutes is >= 5 and <= 1440, "ScanReservations:UnlinkedReservationTtlMinutes must be 5-1440.")
+            .Validate(options => options.ActiveJobSafetyMarginMinutes is >= 1 and <= 120, "ScanReservations:ActiveJobSafetyMarginMinutes must be 1-120.")
+            .Validate(options => options.ReconciliationBatchSize is >= 1 and <= 1000, "ScanReservations:ReconciliationBatchSize must be 1-1000.")
+            .ValidateOnStart();
         services.AddOptions<AuthSecurityOptions>()
             .Bind(configuration.GetSection(AuthSecurityOptions.SectionName))
             .Validate(options => options.MaxFailedAccessAttempts is >= 1 and <= 20, "AuthSecurity:MaxFailedAccessAttempts must be 1-20.")
@@ -93,11 +144,25 @@ public static class DependencyInjection
         });
         services.AddOptions<VideoUploadOptions>()
             .Bind(configuration.GetSection(VideoUploadOptions.SectionName))
-            .Validate(options => options.MaxFileSizeBytes == 524_288_000, "VideoUpload:MaxFileSizeBytes must be 524288000.")
-            .Validate(options => options.SmartScanMaxFileSizeBytes == 209_715_200, "VideoUpload:SmartScanMaxFileSizeBytes must be 209715200.")
-            .Validate(options => options.DetailedScanMaxFileSizeBytes == 524_288_000, "VideoUpload:DetailedScanMaxFileSizeBytes must be 524288000.")
+            .Validate(options => options.MaxFileSizeBytes == VideoUploadSizeLimits.AbsoluteMaxVideoSizeBytes, $"VideoUpload:MaxFileSizeBytes must be {VideoUploadSizeLimits.AbsoluteMaxVideoSizeBytes}.")
+            .Validate(options => options.SmartScanMaxFileSizeBytes == VideoUploadSizeLimits.AbsoluteMaxVideoSizeBytes, $"VideoUpload:SmartScanMaxFileSizeBytes must be {VideoUploadSizeLimits.AbsoluteMaxVideoSizeBytes}.")
+            .Validate(options => options.DetailedScanMaxFileSizeBytes == VideoUploadSizeLimits.ProMaxVideoSizeBytes, $"VideoUpload:DetailedScanMaxFileSizeBytes must be {VideoUploadSizeLimits.ProMaxVideoSizeBytes}.")
             .Validate(options => options.UploadChunkSizeBytes is >= 5_242_880 and <= 20_971_520, "VideoUpload:UploadChunkSizeBytes must be 5-20 MB.")
             .Validate(options => options.AllowedExtensions.Length > 0 && options.AllowedContentTypes.Length > 0, "VideoUpload allowed types must be configured.")
+            .Validate(options => options.MaxDurationSeconds is >= 60 and <= 86_400, "VideoUpload:MaxDurationSeconds must be 60-86400 seconds.")
+            .ValidateOnStart();
+        services.AddOptions<VideoStorageProtectionOptions>()
+            .Bind(configuration.GetSection(VideoStorageProtectionOptions.SectionName))
+            .Validate(options => !string.IsNullOrWhiteSpace(options.UploadTempRootPath), "VideoStorageProtection:UploadTempRootPath is required.")
+            .Validate(options => options.MultipartTempSpaceMultiplier is >= 0 and <= 5, "VideoStorageProtection:MultipartTempSpaceMultiplier must be 0-5.")
+            .Validate(options => options.UploadTempSpaceMultiplier is >= 1 and <= 5, "VideoStorageProtection:UploadTempSpaceMultiplier must be 1-5.")
+            .Validate(options => options.LocalStorageSpaceMultiplier is >= 0 and <= 5, "VideoStorageProtection:LocalStorageSpaceMultiplier must be 0-5.")
+            .Validate(options => options.ProcessingWorkingSpaceMultiplier is >= 1 and <= 10, "VideoStorageProtection:ProcessingWorkingSpaceMultiplier must be 1-10.")
+            .Validate(options => options.MinimumFreeSpaceReserveBytes is >= 104_857_600 and <= 107_374_182_400, "VideoStorageProtection:MinimumFreeSpaceReserveBytes must be 100 MB-100 GB.")
+            .Validate(options => options.MaxConcurrentUploads is >= 1 and <= 100, "VideoStorageProtection:MaxConcurrentUploads must be 1-100.")
+            .Validate(options => options.MaxConcurrentProcessingJobs is >= 1 and <= 32, "VideoStorageProtection:MaxConcurrentProcessingJobs must be 1-32.")
+            .Validate(options => options.UploadConcurrencyWaitTimeoutSeconds is >= 0 and <= 120, "VideoStorageProtection:UploadConcurrencyWaitTimeoutSeconds must be 0-120.")
+            .Validate(options => options.OrphanUploadTempRetentionHours is >= 1 and <= 168, "VideoStorageProtection:OrphanUploadTempRetentionHours must be 1-168.")
             .ValidateOnStart();
         services.AddOptions<VideoProcessingOptions>()
             .Bind(configuration.GetSection(VideoProcessingOptions.SectionName))
@@ -105,6 +170,16 @@ public static class DependencyInjection
             .Validate(options => options.MaxSegmentCount is >= 1 and <= 100, "Max segment count must be 1-100.")
             .Validate(options => options.SegmentConcurrency is >= 1 and <= 8, "Segment concurrency must be 1-8.")
             .Validate(options => options.MaxConcurrentProviderRequests is >= 1 and <= 32, "Max concurrent provider requests must be 1-32.")
+            .Validate(options => options.MaxFrameFileSizeBytes is >= 1_048_576 and <= 52_428_800, "VideoProcessing:MaxFrameFileSizeBytes must be 1-50 MB.")
+            .Validate(options => options.MaxVideoWidth is >= 640 and <= 8192, "VideoProcessing:MaxVideoWidth must be 640-8192.")
+            .Validate(options => options.MaxVideoHeight is >= 360 and <= 8192, "VideoProcessing:MaxVideoHeight must be 360-8192.")
+            .Validate(options => options.MaxFramesPerSecond is >= 1 and <= 240, "VideoProcessing:MaxFramesPerSecond must be 1-240.")
+            .Validate(options => options.MaxVideoStreams is >= 1 and <= 8, "VideoProcessing:MaxVideoStreams must be 1-8.")
+            .Validate(options => options.MaxAudioStreams is >= 0 and <= 32, "VideoProcessing:MaxAudioStreams must be 0-32.")
+            .Validate(options => options.MaxSubtitleStreams is >= 0 and <= 64, "VideoProcessing:MaxSubtitleStreams must be 0-64.")
+            .Validate(options => options.MaxAttachmentStreams is >= 0 and <= 64, "VideoProcessing:MaxAttachmentStreams must be 0-64.")
+            .Validate(options => options.MaxTotalStreams is >= 1 and <= 128, "VideoProcessing:MaxTotalStreams must be 1-128.")
+            .Validate(options => options.MaxProcessOutputBytes is >= 65_536 and <= 10_485_760, "VideoProcessing:MaxProcessOutputBytes must be 64 KB-10 MB.")
             .Validate(options => options.FfmpegTimeoutSeconds is >= 10 and <= 3600, "FFmpeg timeout must be 10-3600 seconds.")
             .Validate(options => options.FfprobeTimeoutSeconds is >= 10 and <= 600, "FFprobe timeout must be 10-600 seconds.")
             .Validate(options => options.WorkerTimeoutMinutes is >= 1 and <= 240, "Worker timeout must be 1-240 minutes.")
@@ -213,8 +288,16 @@ public static class DependencyInjection
         services.AddScoped<IAdminDashboardService, AdminDashboardService>();
         services.AddScoped<IAuditLogService, AuditLogService>();
         services.AddScoped<ICorrelationIdAccessor, CorrelationIdAccessor>();
+        services.AddHttpContextAccessor();
         services.AddSingleton<IMonitoringAlertService, LoggingMonitoringAlertService>();
         services.AddSingleton<IApplicationEncryptionService, AesApplicationEncryptionService>();
+        services.AddScoped<IHashPseudonymizationService, HmacPseudonymizationService>();
+        services.AddScoped<IClientIpResolver, ClientIpResolver>();
+        services.AddScoped<IDeviceIdentityService, DeviceIdentityService>();
+        services.AddScoped<IEntitlementService, EntitlementService>();
+        services.AddScoped<IScanReservationReconciliationService, ScanReservationReconciliationService>();
+        services.AddScoped<IPaymentGateway, EasypaisaPaymentGateway>();
+        services.AddScoped<IPaymentService, PaymentService>();
         services.AddScoped<IJwtTokenService, JwtTokenService>();
         services.AddScoped<IPasswordHasher, PasswordHasher>();
         services.AddSingleton<IAuthThrottleService, InMemoryAuthThrottleService>();
@@ -222,6 +305,8 @@ public static class DependencyInjection
         services.AddScoped<IEmailConfirmationSender, SmtpAuthEmailSender>();
         services.AddScoped<IObjectStorageService, LocalObjectStorageService>();
         services.AddScoped<IVideoService, VideoService>();
+        services.AddScoped<IVideoStorageCapacityService, DiskVideoStorageCapacityService>();
+        services.AddSingleton<IVideoWorkloadGate, VideoWorkloadGate>();
         services.AddScoped<IAnalysisReportService, AnalysisReportService>();
         services.AddScoped<IJobService, JobService>();
         services.AddScoped<IAnalysisJobQueue, HangfireAnalysisJobQueue>();

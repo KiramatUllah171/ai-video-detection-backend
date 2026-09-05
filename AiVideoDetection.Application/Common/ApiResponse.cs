@@ -12,6 +12,8 @@ public class ApiResponse<T>
 
     public string? CorrelationId { get; init; }
 
+    public string? ErrorCode { get; init; }
+
     public static ApiResponse<T> SuccessResponse(
         T data,
         string message = "Request completed successfully.",
@@ -29,14 +31,16 @@ public class ApiResponse<T>
     public static ApiResponse<T> ErrorResponse(
         string message,
         IEnumerable<string>? errors = null,
-        string? correlationId = null)
+        string? correlationId = null,
+        string? errorCode = null)
     {
         return new ApiResponse<T>
         {
             Success = false,
             Message = message,
             Errors = errors?.ToList() ?? [],
-            CorrelationId = correlationId
+            CorrelationId = correlationId,
+            ErrorCode = errorCode
         };
     }
 }
