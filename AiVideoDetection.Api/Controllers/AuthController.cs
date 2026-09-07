@@ -70,10 +70,17 @@ public class AuthController(
         var validationResponse = await ValidateAsync<RefreshTokenRequest, AuthResponse>(refreshTokenValidator, request, cancellationToken);
         if (validationResponse is not null)
         {
+            ClearRefreshTokenCookie();
             return BadRequest(validationResponse);
         }
 
         var response = await authService.RefreshAsync(request, GetIpAddress(), cancellationToken);
+        if (!response.Success)
+        {
+            ClearRefreshTokenCookie();
+            return ToActionResult(response);
+        }
+
         AttachRefreshTokenCookie(response);
         return ToActionResult(response);
     }

@@ -13,7 +13,9 @@ set "PasswordReset__UseSsl=false"
 set "PasswordReset__Username=kiramatullahcomputer@gmail.com"
 set "PasswordReset__SenderEmail=kiramatullahcomputer@gmail.com"
 set "PasswordReset__SenderName=SachAI"
-set "PasswordReset__FrontendBaseUrl=http://localhost:5173"
+for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "$route = Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Sort-Object RouteMetric,InterfaceMetric | Select-Object -First 1; $ip = $null; if ($route) { $ip = Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $route.InterfaceIndex | Where-Object { $_.IPAddress -notlike '169.254*' -and $_.IPAddress -ne '127.0.0.1' } | Select-Object -First 1 -ExpandProperty IPAddress }; if (-not $ip) { $ip = 'localhost' }; $ip"`) do set "SACHAI_DEV_HOST=%%I"
+set "PasswordReset__FrontendBaseUrl=http://%SACHAI_DEV_HOST%:5173"
+echo SachAI dev frontend URL: http://%SACHAI_DEV_HOST%:5173
 
 if "%Jwt__Secret%"=="" set "Jwt__Secret=sachai-local-development-jwt-secret-change-before-production-2026"
 if "%SubscriptionSecurity__HmacSecret%"=="" set "SubscriptionSecurity__HmacSecret=sachai-local-development-subscription-hmac-secret-change-before-production-2026"

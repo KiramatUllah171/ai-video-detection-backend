@@ -206,6 +206,17 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("ReactFrontend", policy =>
     {
+        if (builder.Environment.IsDevelopment())
+        {
+            policy
+                .SetIsOriginAllowed(origin => IsAllowedDevelopmentFrontendOrigin(origin, allowedOrigins))
+                .AllowAnyHeader()
+                .AllowAnyMethod()
+                .AllowCredentials();
+
+            return;
+        }
+
         policy
             .WithOrigins(allowedOrigins)
             .AllowAnyHeader()
@@ -632,6 +643,55 @@ static Task WriteSafeHealthResponseAsync(HttpContext context, HealthReport repor
     };
 
     return context.Response.WriteAsJsonAsync(response);
+}
+
+static bool IsAllowedDevelopmentFrontendOrigin(string origin, string[] configuredOrigins)
+{
+    if (configuredOrigins.Contains(origin, StringComparer.OrdinalIgnoreCase))
+    {
+        return true;
+    }
+
+    if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri))
+    {
+        return false;
+    }
+
+    if (!string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+        && !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+    {
+        return false;
+    }
+
+    if (uri.Port is not (3000 or 5173))
+    {
+        return false;
+    }
+
+    if (string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase))
+    {
+        return true;
+    }
+
+    if (!IPAddress.TryParse(uri.Host, out var address))
+    {
+        return false;
+    }
+
+    return IPAddress.IsLoopback(address) || IsPrivateIpv4Address(address);
+}
+
+static bool IsPrivateIpv4Address(IPAddress address)
+{
+    var bytes = address.GetAddressBytes();
+    if (bytes.Length != 4)
+    {
+        return false;
+    }
+
+    return bytes[0] == 10
+        || bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31
+        || bytes[0] == 192 && bytes[1] == 168;
 }
 
 static System.Net.IPNetwork? ParseIpNetwork(string value)
