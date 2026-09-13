@@ -964,7 +964,7 @@ public class VideoProcessingService(
             _aiServiceOptions.LocalFallbackEnabled);
         if (configuredMode == "local"
             || !_aiServiceOptions.BitMindEnabled
-            || string.Equals(_aiServiceOptions.ExternalProviderPolicy, "Disabled", StringComparison.OrdinalIgnoreCase))
+            || IsExternalProviderPolicyDisabled(_aiServiceOptions.ExternalProviderPolicy))
         {
             return "local";
         }
@@ -1672,9 +1672,17 @@ public class VideoProcessingService(
         return providerMode?.Trim().ToLowerInvariant() switch
         {
             "bitmind" => "bitmind",
+            "external" => "bitmind",
             "hybrid" => "hybrid",
             _ => "local"
         };
+    }
+
+    private static bool IsExternalProviderPolicyDisabled(string? policy)
+    {
+        var normalized = policy?.Trim().Replace("_", string.Empty, StringComparison.OrdinalIgnoreCase);
+        return string.Equals(normalized, "disabled", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(normalized, "never", StringComparison.OrdinalIgnoreCase);
     }
 
     private static object? ParseJson(string? json)

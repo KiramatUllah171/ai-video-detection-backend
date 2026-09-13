@@ -10,6 +10,7 @@ public sealed class ProviderConfigurationHealthCheck(IOptions<AiServiceOptions> 
     {
         "local",
         "bitmind",
+        "hybrid",
         "external",
         "fallbacklocal"
     };
@@ -18,6 +19,7 @@ public sealed class ProviderConfigurationHealthCheck(IOptions<AiServiceOptions> 
     {
         "always",
         "onuncertain",
+        "disabled",
         "never"
     };
 
