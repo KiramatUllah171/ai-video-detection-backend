@@ -30,8 +30,7 @@ public class AuthService(
     ILogger<AuthService> logger) : IAuthService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-    private const string EmailNotFoundMessage = "We could not find an account with this email address.";
-    private const string InvalidPasswordMessage = "The password you entered is incorrect. Please try again.";
+    private const string InvalidCredentialsMessage = "The email address or password you entered is incorrect.";
     private const string ForgotPasswordMessage = "If an eligible account exists for this email address, a secure password reset link has been sent.";
     private const string InvalidResetTokenMessage = "This password reset link is invalid or has expired. Please request a new link.";
     private const string UsedResetTokenMessage = "This password reset link has already been used. Please request a new reset link if you need to change your password again.";
@@ -107,7 +106,7 @@ public class AuthService(
         {
             logger.LogInformation("Login failed because the email address was not found.");
             await LogAuthAsync(null, null, normalizedEmail, "LoginFailed", "Warning", "Login failed because the email address was not found.", ipAddress, cancellationToken);
-            return ApiResponse<AuthResponse>.ErrorResponse(EmailNotFoundMessage);
+            return ApiResponse<AuthResponse>.ErrorResponse(InvalidCredentialsMessage);
         }
 
         var now = DateTimeOffset.UtcNow;
@@ -125,7 +124,7 @@ public class AuthService(
             await LogAuthAsync(user.Id, user.Name, user.Email, "LoginFailed", "Warning", "Login failed because the password was incorrect.", ipAddress, cancellationToken);
             return IsLockedOut(user, now)
                 ? ApiResponse<AuthResponse>.ErrorResponse(AccountLockedMessage)
-                : ApiResponse<AuthResponse>.ErrorResponse(InvalidPasswordMessage);
+                : ApiResponse<AuthResponse>.ErrorResponse(InvalidCredentialsMessage);
         }
 
         if (!user.IsActive)
