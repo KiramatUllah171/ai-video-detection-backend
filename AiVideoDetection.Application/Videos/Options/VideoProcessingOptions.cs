@@ -66,9 +66,9 @@ public class VideoProcessingOptions
 
     public int OriginalVideoRetentionDays { get; set; } = 3;
 
-    public int ReportRetentionDays { get; set; } = 30;
+    public int ReportRetentionDays { get; set; } = 3;
 
-    public int DetailedResultRetentionDays { get; set; } = 30;
+    public int DetailedResultRetentionDays { get; set; } = 3;
 
     public TimeSpan TemporaryFileRetention => TimeSpan.FromHours(TemporaryFileRetentionHours);
 

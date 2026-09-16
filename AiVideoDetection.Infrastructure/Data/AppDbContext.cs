@@ -853,6 +853,16 @@ public class AppDbContext : IdentityDbContext<User, IdentityRole<long>, long>
             entity.Property(video => video.RetentionDeleteAt)
                 .HasColumnName("retention_delete_at");
 
+            entity.Property(video => video.GuestAccessTokenHash)
+                .HasColumnName("guest_access_token_hash")
+                .HasMaxLength(128);
+
+            entity.Property(video => video.GuestAccessExpiresAt)
+                .HasColumnName("guest_access_expires_at");
+
+            entity.Property(video => video.GuestClaimedAt)
+                .HasColumnName("guest_claimed_at");
+
             entity.Property(video => video.DeletedAt)
                 .HasColumnName("deleted_at");
 
@@ -888,6 +898,9 @@ public class AppDbContext : IdentityDbContext<User, IdentityRole<long>, long>
 
             entity.HasIndex(video => video.RetentionDeleteAt)
                 .HasDatabaseName("ix_videos_retention_delete_at");
+
+            entity.HasIndex(video => video.GuestAccessTokenHash)
+                .HasDatabaseName("ix_videos_guest_access_token_hash");
 
             entity.HasIndex(video => video.Sha256Hash)
                 .HasDatabaseName("ix_videos_sha256_hash");

@@ -10,6 +10,7 @@ public sealed class RequestBodySizeLimitMiddleware(
     IOptions<RequestLimitOptions> options)
 {
     private const string UploadPath = "/api/videos/upload";
+    private const string GuestUploadPath = "/api/videos/guest-upload";
     private readonly RequestLimitOptions _options = options.Value;
 
     public async Task InvokeAsync(HttpContext context, ICorrelationIdAccessor correlationIdAccessor)
@@ -39,8 +40,14 @@ public sealed class RequestBodySizeLimitMiddleware(
 
     private long GetLimit(HttpContext context)
     {
-        return context.Request.Path.StartsWithSegments(UploadPath, StringComparison.OrdinalIgnoreCase)
+        return IsUploadRequest(context)
             ? _options.MaxUploadBodySizeBytes
             : _options.MaxApiBodySizeBytes;
+    }
+
+    private static bool IsUploadRequest(HttpContext context)
+    {
+        return context.Request.Path.StartsWithSegments(UploadPath, StringComparison.OrdinalIgnoreCase) ||
+            context.Request.Path.StartsWithSegments(GuestUploadPath, StringComparison.OrdinalIgnoreCase);
     }
 }

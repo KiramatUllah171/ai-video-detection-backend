@@ -11,6 +11,17 @@ public interface IVideoService
         string? ipAddress,
         CancellationToken cancellationToken = default);
 
+    Task<ApiResponse<UploadVideoResponse>> UploadGuestAsync(
+        UploadVideoRequest request,
+        string? ipAddress,
+        CancellationToken cancellationToken = default);
+
+    Task<ApiResponse<bool>> ClaimGuestVideoAsync(
+        long videoId,
+        long currentUserId,
+        string guestAccessToken,
+        CancellationToken cancellationToken = default);
+
     Task<ApiResponse<PagedResponse<VideoHistoryItemDto>>> GetHistoryAsync(
         long currentUserId,
         int page,

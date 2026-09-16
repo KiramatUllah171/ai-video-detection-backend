@@ -49,6 +49,21 @@ public class VideosController(
         return ToActionResult(response);
     }
 
+    [HttpPost("guest-upload")]
+    [AllowAnonymous]
+    [Consumes("multipart/form-data")]
+    [RequestSizeLimit(VideoUploadSizeLimits.MultipartRequestBodyLimitBytes)]
+    [RequestFormLimits(MultipartBodyLengthLimit = VideoUploadSizeLimits.MultipartRequestBodyLimitBytes)]
+    [ProducesResponseType(typeof(ApiResponse<UploadVideoResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<UploadVideoResponse>), StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<ApiResponse<UploadVideoResponse>>> GuestUpload(
+        [FromForm] UploadVideoRequest request,
+        CancellationToken cancellationToken)
+    {
+        var response = await videoService.UploadGuestAsync(request, GetIpAddress(), cancellationToken);
+        return ToActionResult(response);
+    }
+
     [HttpGet("history")]
     [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
     [ProducesResponseType(typeof(ApiResponse<PagedResponse<VideoHistoryItemDto>>), StatusCodes.Status200OK)]
@@ -148,6 +163,24 @@ public class VideosController(
 
         var response = await videoService.GetAnalysisAsync(videoId, currentUserId, cancellationToken);
         return response.Success ? Ok(response) : NotFound(response);
+    }
+
+    [HttpPost("{videoId:long}/claim-guest")]
+    [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status401Unauthorized)]
+    public async Task<ActionResult<ApiResponse<bool>>> ClaimGuestVideo(
+        long videoId,
+        ClaimGuestVideoRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetCurrentUserId(out var currentUserId))
+        {
+            return Unauthorized(ApiResponse<bool>.ErrorResponse("Unauthorized."));
+        }
+
+        var response = await videoService.ClaimGuestVideoAsync(videoId, currentUserId, request.GuestAccessToken, cancellationToken);
+        return ToActionResult(response);
     }
 
     [HttpGet("{videoId:long}/report/pdf")]

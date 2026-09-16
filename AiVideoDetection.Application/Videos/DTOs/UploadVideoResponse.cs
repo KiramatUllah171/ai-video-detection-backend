@@ -20,5 +20,7 @@ public class UploadVideoResponse
 
     public int MaxRetryCount { get; init; }
 
+    public string? GuestAccessToken { get; init; }
+
     public string Message { get; init; } = string.Empty;
 }

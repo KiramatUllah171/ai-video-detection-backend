@@ -38,6 +38,7 @@ public class VideoService(
     private readonly VideoUploadOptions _uploadOptions = uploadOptions.Value;
     private readonly VideoStorageProtectionOptions _storageProtectionOptions = storageProtectionOptions.Value;
     private readonly VideoProcessingOptions _processingOptions = processingOptions.Value;
+
     public async Task<ApiResponse<UploadVideoResponse>> UploadAsync(
         UploadVideoRequest request,
         long currentUserId,
@@ -107,13 +108,17 @@ public class VideoService(
                     "The uploaded file content does not match a supported video format.");
             }
 
-            var reportCutoff = DateTimeOffset.UtcNow.Subtract(_processingOptions.ReportRetention);
+            var now = DateTimeOffset.UtcNow;
+            var reportCutoff = now.Subtract(_processingOptions.ReportRetention);
+            var videoRetentionCutoff = now.Subtract(_processingOptions.OriginalVideoRetention);
             var duplicateVideo = await dbContext.Videos
                 .Include(video => video.AnalysisJobs)
                 .Where(video => video.UserId == currentUserId
                     && video.DeletedAt == null
                     && video.Status != VideoStatus.Deleted
                     && video.Sha256Hash == sha256Hash
+                    && ((video.RetentionDeleteAt != null && video.RetentionDeleteAt > now)
+                        || (video.RetentionDeleteAt == null && video.CreatedAt > videoRetentionCutoff))
                     && (video.FileUrl != string.Empty || video.AiResults.Any(result => result.CreatedAt > reportCutoff)))
                 .OrderByDescending(video => video.CreatedAt)
                 .ThenByDescending(video => video.Id)
@@ -287,6 +292,117 @@ public class VideoService(
         {
             TryDeleteFile(tempFilePath);
         }
+    }
+
+    public async Task<ApiResponse<UploadVideoResponse>> UploadGuestAsync(
+        UploadVideoRequest request,
+        string? ipAddress,
+        CancellationToken cancellationToken = default)
+    {
+        if (request.AnalysisMode != AnalysisMode.Basic)
+        {
+            return ApiResponse<UploadVideoResponse>.ErrorResponse("Please create an account or sign in to use Detailed Scan.");
+        }
+
+        var validationResult = await uploadValidator.ValidateAsync(request, cancellationToken);
+        if (!validationResult.IsValid)
+        {
+            return ApiResponse<UploadVideoResponse>.ErrorResponse(
+                "Validation failed.",
+                validationResult.Errors.Select(error => error.ErrorMessage));
+        }
+
+        var token = GuestVideoAccessToken.Generate();
+        var tokenHash = GuestVideoAccessToken.Hash(token);
+        var guestId = Guid.NewGuid().ToString("N");
+        var guestEmail = $"guest-{guestId}@guest.sachai.invalid";
+        var guestUser = new User
+        {
+            Name = "Guest user",
+            Email = guestEmail,
+            NormalizedEmail = guestEmail.ToUpperInvariant(),
+            UserName = guestEmail,
+            NormalizedUserName = guestEmail.ToUpperInvariant(),
+            PasswordHash = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)),
+            SecurityStamp = Guid.NewGuid().ToString("N"),
+            ConcurrencyStamp = Guid.NewGuid().ToString("N"),
+            Role = UserRole.User,
+            IsActive = true,
+            EmailConfirmed = false,
+            LockoutEnabled = true
+        };
+
+        dbContext.Users.Add(guestUser);
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        var response = await UploadAsync(request, guestUser.Id, ipAddress, cancellationToken);
+        if (!response.Success || response.Data is null)
+        {
+            return response;
+        }
+
+        var video = await dbContext.Videos
+            .FirstOrDefaultAsync(candidate => candidate.Id == response.Data.VideoId && candidate.UserId == guestUser.Id, cancellationToken);
+        if (video is null)
+        {
+            return ApiResponse<UploadVideoResponse>.ErrorResponse("Guest upload could not be prepared.");
+        }
+
+        video.GuestAccessTokenHash = tokenHash;
+        video.GuestAccessExpiresAt = DateTimeOffset.UtcNow.Add(_processingOptions.OriginalVideoRetention);
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        return ApiResponse<UploadVideoResponse>.SuccessResponse(
+            ToGuestUploadResponse(response.Data, token),
+            response.Message);
+    }
+
+    public async Task<ApiResponse<bool>> ClaimGuestVideoAsync(
+        long videoId,
+        long currentUserId,
+        string guestAccessToken,
+        CancellationToken cancellationToken = default)
+    {
+        if (!GuestVideoAccessToken.IsValid(guestAccessToken))
+        {
+            return ApiResponse<bool>.ErrorResponse("Guest upload access has expired or is invalid.");
+        }
+
+        var video = await dbContext.Videos
+            .FirstOrDefaultAsync(candidate => candidate.Id == videoId
+                && candidate.DeletedAt == null
+                && candidate.Status != VideoStatus.Deleted,
+                cancellationToken);
+        if (video is null)
+        {
+            return ApiResponse<bool>.ErrorResponse("Video was not found.");
+        }
+
+        if (video.UserId == currentUserId)
+        {
+            return ApiResponse<bool>.SuccessResponse(true, "Video is already linked to this account.");
+        }
+
+        if (string.IsNullOrWhiteSpace(video.GuestAccessTokenHash)
+            || !string.Equals(video.GuestAccessTokenHash, GuestVideoAccessToken.Hash(guestAccessToken), StringComparison.Ordinal)
+            || video.GuestAccessExpiresAt <= DateTimeOffset.UtcNow)
+        {
+            return ApiResponse<bool>.ErrorResponse("Guest upload access has expired or is invalid.");
+        }
+
+        var userExists = await dbContext.Users.AnyAsync(user => user.Id == currentUserId && user.IsActive, cancellationToken);
+        if (!userExists)
+        {
+            return ApiResponse<bool>.ErrorResponse("User was not found.");
+        }
+
+        video.UserId = currentUserId;
+        video.GuestClaimedAt = DateTimeOffset.UtcNow;
+        video.GuestAccessTokenHash = null;
+        video.GuestAccessExpiresAt = null;
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        return ApiResponse<bool>.SuccessResponse(true, "Video linked to your account.");
     }
 
     private static void TryDeleteFile(string? path)
@@ -1264,6 +1380,24 @@ public class VideoService(
             RetryCount = job.RetryCount,
             MaxRetryCount = job.MaxRetryCount,
             Message = message
+        };
+    }
+
+    private static UploadVideoResponse ToGuestUploadResponse(UploadVideoResponse response, string guestAccessToken)
+    {
+        return new UploadVideoResponse
+        {
+            VideoId = response.VideoId,
+            JobId = response.JobId,
+            Status = response.Status,
+            JobStatus = response.JobStatus,
+            OriginalName = response.OriginalName,
+            FileSize = response.FileSize,
+            ContentType = response.ContentType,
+            RetryCount = response.RetryCount,
+            MaxRetryCount = response.MaxRetryCount,
+            GuestAccessToken = guestAccessToken,
+            Message = response.Message
         };
     }
 

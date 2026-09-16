@@ -26,4 +26,17 @@ public class JobsController(IJobService jobService) : ControllerBase
         var response = await jobService.GetStatusByVideoIdAsync(videoId, currentUserId, cancellationToken);
         return response.Success ? Ok(response) : NotFound(response);
     }
+
+    [HttpGet("guest/{videoId:long}/status")]
+    [AllowAnonymous]
+    [ProducesResponseType(typeof(ApiResponse<JobStatusDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<JobStatusDto>), StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ApiResponse<JobStatusDto>>> GuestStatus(
+        long videoId,
+        [FromHeader(Name = "X-Guest-Video-Token")] string? guestAccessToken,
+        CancellationToken cancellationToken)
+    {
+        var response = await jobService.GetGuestStatusByVideoIdAsync(videoId, guestAccessToken ?? string.Empty, cancellationToken);
+        return response.Success ? Ok(response) : NotFound(response);
+    }
 }

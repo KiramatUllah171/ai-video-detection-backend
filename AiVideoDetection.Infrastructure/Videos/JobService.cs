@@ -32,6 +32,33 @@ public class JobService(
             : ApiResponse<JobStatusDto>.SuccessResponse(VideoService.MapJob(job));
     }
 
+    public async Task<ApiResponse<JobStatusDto>> GetGuestStatusByVideoIdAsync(
+        long videoId,
+        string guestAccessToken,
+        CancellationToken cancellationToken = default)
+    {
+        if (!GuestVideoAccessToken.IsValid(guestAccessToken))
+        {
+            return ApiResponse<JobStatusDto>.ErrorResponse("Guest upload access has expired or is invalid.");
+        }
+
+        var tokenHash = GuestVideoAccessToken.Hash(guestAccessToken);
+        var job = await dbContext.AnalysisJobs
+            .AsNoTracking()
+            .Include(existingJob => existingJob.Video)
+            .Where(existingJob => existingJob.VideoId == videoId
+                && existingJob.Video.DeletedAt == null
+                && existingJob.Video.Status != VideoStatus.Deleted
+                && existingJob.Video.GuestAccessTokenHash == tokenHash
+                && existingJob.Video.GuestAccessExpiresAt > DateTimeOffset.UtcNow)
+            .OrderByDescending(existingJob => existingJob.CreatedAt)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return job is null
+            ? ApiResponse<JobStatusDto>.ErrorResponse("Guest upload access has expired or is invalid.")
+            : ApiResponse<JobStatusDto>.SuccessResponse(VideoService.MapJob(job));
+    }
+
     public async Task<ApiResponse<JobStatusDto>> RetryJobAsync(
         long jobId,
         CancellationToken cancellationToken = default)

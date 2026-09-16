@@ -20,6 +20,7 @@ echo SachAI dev frontend URL: http://%SACHAI_DEV_HOST%:5173
 if "%Jwt__Secret%"=="" set "Jwt__Secret=sachai-local-development-jwt-secret-change-before-production-2026"
 if "%SubscriptionSecurity__HmacSecret%"=="" set "SubscriptionSecurity__HmacSecret=sachai-local-development-subscription-hmac-secret-change-before-production-2026"
 if "%Easypaisa__CallbackSecret%"=="" set "Easypaisa__CallbackSecret=sachai-local-development-easypaisa-callback-secret-change-before-production-2026"
+if "%AI_SERVICE_API_KEY%"=="" set "AI_SERVICE_API_KEY=sachai-local-development-ai-service-key-change-before-production-2026"
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\Ensure-BackendPortFree.ps1" -Port 5166
 if errorlevel 1 exit /b 1

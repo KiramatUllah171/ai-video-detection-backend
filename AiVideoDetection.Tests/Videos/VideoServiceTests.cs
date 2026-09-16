@@ -18,6 +18,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using System.Security.Cryptography;
 
 namespace AiVideoDetection.Tests.Videos;
 
@@ -240,6 +241,51 @@ public class VideoServiceTests
         Assert.Equal(first.Data.VideoId, second.Data.VideoId);
         Assert.Equal(1, await dbContext.Videos.CountAsync());
         Assert.Equal(1, await dbContext.AnalysisJobs.CountAsync());
+        Assert.Equal(1, storage.UploadCalls);
+        Assert.Equal(1, queue.EnqueueCalls);
+    }
+
+    [Fact]
+    public async Task UploadSameVideoAfterRetentionExpiryCreatesNewRecord()
+    {
+        await using var dbContext = CreateDbContext();
+        var now = DateTimeOffset.UtcNow;
+        var content = CreateMp4Header();
+        dbContext.Users.Add(CreateUser(1, "owner@example.com"));
+        dbContext.Videos.Add(new Video
+        {
+            Id = 10,
+            UserId = 1,
+            OriginalName = "expired.mp4",
+            FileUrl = "videos/1/expired.mp4",
+            FileSize = content.Length,
+            Sha256Hash = Convert.ToHexString(SHA256.HashData(content)).ToLowerInvariant(),
+            Status = VideoStatus.Completed,
+            CreatedAt = now.AddDays(-4),
+            UpdatedAt = now.AddDays(-4),
+            RetentionDeleteAt = now.AddSeconds(-1)
+        });
+        dbContext.AnalysisJobs.Add(new AnalysisJob
+        {
+            Id = 20,
+            VideoId = 10,
+            Status = JobStatus.Completed,
+            Progress = 100,
+            CreatedAt = now.AddDays(-4),
+            UpdatedAt = now.AddDays(-4)
+        });
+        await dbContext.SaveChangesAsync();
+        var storage = new FakeObjectStorageService();
+        var queue = new FakeAnalysisJobQueue();
+        var service = CreateService(dbContext, storage, queue);
+
+        var response = await service.UploadAsync(CreateUploadRequest(content), 1, null);
+
+        Assert.True(response.Success);
+        Assert.NotNull(response.Data);
+        Assert.NotEqual(10, response.Data.VideoId);
+        Assert.Equal(2, await dbContext.Videos.CountAsync());
+        Assert.Equal(2, await dbContext.AnalysisJobs.CountAsync());
         Assert.Equal(1, storage.UploadCalls);
         Assert.Equal(1, queue.EnqueueCalls);
     }
