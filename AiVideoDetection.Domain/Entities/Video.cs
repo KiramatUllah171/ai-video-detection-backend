@@ -32,6 +32,12 @@ public class Video
 
     public DateTimeOffset? RetentionDeleteAt { get; set; }
 
+    public string? GuestAccessTokenHash { get; set; }
+
+    public DateTimeOffset? GuestAccessExpiresAt { get; set; }
+
+    public DateTimeOffset? GuestClaimedAt { get; set; }
+
     public DateTimeOffset? DeletedAt { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; }

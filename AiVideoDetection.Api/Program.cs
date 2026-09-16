@@ -573,7 +573,8 @@ static RateLimitProfile GetRateLimitProfile(HttpContext context, RateLimitingOpt
         return new RateLimitProfile("auth-sensitive", options.AuthSensitivePermitLimit);
     }
 
-    if (path.StartsWith("/api/videos/upload", StringComparison.OrdinalIgnoreCase))
+    if (path.StartsWith("/api/videos/upload", StringComparison.OrdinalIgnoreCase) ||
+        path.StartsWith("/api/videos/guest-upload", StringComparison.OrdinalIgnoreCase))
     {
         return new RateLimitProfile("video-upload", options.UploadPermitLimit);
     }

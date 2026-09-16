@@ -15,11 +15,11 @@ namespace AiVideoDetection.Tests.Videos;
 public class RetentionCleanupServiceTests
 {
     [Fact]
-    public async Task CleanupExpiredRetainedAssetsDeletesOriginalMediaButKeepsVideoSummary()
+    public async Task CleanupExpiredRetainedAssetsHardDeletesExpiredVideoAndReportData()
     {
         await using var dbContext = CreateDbContext();
         var now = DateTimeOffset.UtcNow;
-        dbContext.Videos.Add(new Video
+        var video = new Video
         {
             Id = 1,
             UserId = 1,
@@ -30,6 +30,38 @@ public class RetentionCleanupServiceTests
             Status = VideoStatus.Completed,
             CreatedAt = now.AddDays(-4),
             RetentionDeleteAt = now.AddDays(-1)
+        };
+        dbContext.Videos.Add(video);
+        dbContext.AnalysisJobs.Add(new AnalysisJob
+        {
+            Id = 1,
+            Video = video,
+            VideoId = video.Id,
+            Status = JobStatus.Completed,
+            Progress = 100,
+            CreatedAt = now.AddDays(-4),
+            UpdatedAt = now.AddDays(-4)
+        });
+        dbContext.AiResults.Add(new AiResult
+        {
+            Id = 1,
+            Video = video,
+            VideoId = video.Id,
+            VisualScore = 0.2m,
+            FinalScore = 0.2m,
+            Confidence = 0.8m,
+            Label = AnalysisLabel.LikelyReal,
+            CreatedAt = now.AddDays(-4)
+        });
+        dbContext.VideoFrames.Add(new VideoFrame
+        {
+            Id = 1,
+            Video = video,
+            VideoId = video.Id,
+            FrameUrl = "frames/1/expired.jpg",
+            FrameIndex = 1,
+            TimestampSeconds = 1,
+            CreatedAt = now.AddDays(-4)
         });
         await dbContext.SaveChangesAsync();
         var storage = new FakeObjectStorageService();
@@ -37,19 +69,21 @@ public class RetentionCleanupServiceTests
 
         await service.CleanupExpiredRetainedAssetsAsync();
 
-        var video = await dbContext.Videos.SingleAsync();
-        Assert.Equal(VideoStatus.Completed, video.Status);
-        Assert.Null(video.DeletedAt);
-        Assert.Equal(string.Empty, video.FileUrl);
-        Assert.Null(video.ThumbnailUrl);
+        Assert.False(await dbContext.Videos.AnyAsync());
+        Assert.False(await dbContext.AnalysisJobs.AnyAsync());
+        Assert.False(await dbContext.AiResults.AnyAsync());
+        Assert.False(await dbContext.VideoFrames.AnyAsync());
         Assert.Contains("videos/1/expired.mp4", storage.DeletedObjects);
         Assert.Contains("thumbnails/1/expired.jpg", storage.DeletedObjects);
+        Assert.Contains("frames/1/expired.jpg", storage.DeletedObjects);
 
         var metric = await dbContext.RetentionCleanupRuns.SingleAsync();
         Assert.Equal("retained-assets", metric.JobName);
         Assert.Equal("Succeeded", metric.Status);
         Assert.Equal(1, metric.OriginalVideosCleared);
         Assert.Equal(1, metric.ThumbnailsCleared);
+        Assert.Equal(1, metric.FrameObjectsCleared);
+        Assert.Equal(1, metric.AnalysisPayloadsCleared);
         Assert.Equal(0, metric.FailureCount);
     }
 
@@ -119,10 +153,10 @@ public class RetentionCleanupServiceTests
     }
 
     [Fact]
-    public async Task CleanupExpiredRetainedAssetsDeletesDetailedResultDataAfterRetention()
+    public async Task CleanupExpiredRetainedAssetsDeletesExpiredVideoDatabaseRowsAfterRetention()
     {
         await using var dbContext = CreateDbContext();
-        var cutoff = DateTimeOffset.UtcNow.AddDays(-31);
+        var cutoff = DateTimeOffset.UtcNow.AddDays(-4);
         var video = new Video
         {
             Id = 1,
@@ -131,7 +165,18 @@ public class RetentionCleanupServiceTests
             FileUrl = string.Empty,
             FileSize = 100,
             Status = VideoStatus.Completed,
-            CreatedAt = cutoff
+            CreatedAt = cutoff,
+            RetentionDeleteAt = cutoff.AddDays(3)
+        };
+        var job = new AnalysisJob
+        {
+            Id = 1,
+            Video = video,
+            VideoId = video.Id,
+            Status = JobStatus.Completed,
+            Progress = 100,
+            CreatedAt = cutoff,
+            UpdatedAt = cutoff
         };
         var result = new AiResult
         {
@@ -149,6 +194,7 @@ public class RetentionCleanupServiceTests
             CreatedAt = cutoff
         };
         dbContext.Videos.Add(video);
+        dbContext.AnalysisJobs.Add(job);
         dbContext.AiResults.Add(result);
         dbContext.EvidenceItems.Add(new EvidenceItem
         {
@@ -176,7 +222,8 @@ public class RetentionCleanupServiceTests
             Id = 1,
             Video = video,
             VideoId = video.Id,
-            AnalysisJobId = 1,
+            AnalysisJob = job,
+            AnalysisJobId = job.Id,
             UserId = 1,
             ProviderName = "BitMind",
             ProviderMode = "hybrid",
@@ -189,7 +236,8 @@ public class RetentionCleanupServiceTests
         dbContext.AnalysisSegments.Add(new AnalysisSegment
         {
             Id = 1,
-            AnalysisJobId = 1,
+            AnalysisJob = job,
+            AnalysisJobId = job.Id,
             Video = video,
             VideoId = video.Id,
             SegmentIndex = 1,
@@ -205,20 +253,18 @@ public class RetentionCleanupServiceTests
 
         await service.CleanupExpiredRetainedAssetsAsync();
 
-        var preservedResult = await dbContext.AiResults.SingleAsync();
-        Assert.Equal(0.2m, preservedResult.FinalScore);
-        Assert.Equal("{}", preservedResult.RawModelOutputJson);
-        Assert.Null(preservedResult.LocalResultJson);
-        Assert.Null(preservedResult.HybridResultJson);
-        Assert.Null(preservedResult.ExternalRawResponseJson);
+        Assert.False(await dbContext.Videos.AnyAsync());
+        Assert.False(await dbContext.AnalysisJobs.AnyAsync());
+        Assert.False(await dbContext.AiResults.AnyAsync());
         Assert.False(await dbContext.EvidenceItems.AnyAsync());
         Assert.False(await dbContext.SourceMatches.AnyAsync());
-        Assert.Null((await dbContext.AiProviderRequests.SingleAsync()).RawResponseJson);
-        Assert.Null((await dbContext.AnalysisSegments.SingleAsync()).ResultJson);
+        Assert.False(await dbContext.AiProviderRequests.AnyAsync());
+        Assert.False(await dbContext.AnalysisSegments.AnyAsync());
 
         var metric = await dbContext.RetentionCleanupRuns.SingleAsync();
         Assert.Equal("retained-assets", metric.JobName);
         Assert.Equal("Succeeded", metric.Status);
+        Assert.Equal(1, metric.OriginalVideosCleared);
         Assert.Equal(1, metric.EvidenceRowsDeleted);
         Assert.Equal(1, metric.SourceMatchRowsDeleted);
         Assert.Equal(1, metric.ProviderPayloadsCleared);
@@ -239,8 +285,8 @@ public class RetentionCleanupServiceTests
                 WorkingRootPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")),
                 TemporaryFileRetentionHours = 24,
                 OriginalVideoRetentionDays = 3,
-                ReportRetentionDays = 30,
-                DetailedResultRetentionDays = 30
+                ReportRetentionDays = 3,
+                DetailedResultRetentionDays = 3
             }),
             Options.Create(new VideoStorageProtectionOptions
             {

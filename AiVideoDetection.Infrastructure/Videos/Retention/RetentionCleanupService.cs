@@ -40,8 +40,7 @@ public class RetentionCleanupService(
         await RunTrackedCleanupAsync("retained-assets", metrics, async () =>
         {
             var now = DateTimeOffset.UtcNow;
-            await CleanupExpiredOriginalMediaAsync(now, metrics);
-            await CleanupExpiredDetailedResultsAsync(now.Subtract(_options.DetailedResultRetention), metrics);
+            await CleanupExpiredVideoRecordsAsync(now, metrics);
         });
     }
 
@@ -221,16 +220,15 @@ public class RetentionCleanupService(
         }
     }
 
-    private async Task CleanupExpiredOriginalMediaAsync(DateTimeOffset now, CleanupMetrics metrics)
+    private async Task CleanupExpiredVideoRecordsAsync(DateTimeOffset now, CleanupMetrics metrics)
     {
         var fallbackCutoff = now.Subtract(_options.OriginalVideoRetention);
 
         while (true)
         {
             var videos = await dbContext.Videos
-                .Where(video => video.FileUrl != string.Empty
-                    && ((video.RetentionDeleteAt != null && video.RetentionDeleteAt <= now)
-                        || (video.RetentionDeleteAt == null && video.CreatedAt <= fallbackCutoff)))
+                .Where(video => (video.RetentionDeleteAt != null && video.RetentionDeleteAt <= now)
+                    || (video.RetentionDeleteAt == null && video.CreatedAt <= fallbackCutoff))
                 .OrderBy(video => video.Id)
                 .Take(BatchSize)
                 .ToListAsync();
@@ -240,9 +238,16 @@ public class RetentionCleanupService(
                 return;
             }
 
+            var videoIds = videos.Select(video => video.Id).ToArray();
+            var frameObjects = await dbContext.VideoFrames
+                .Where(frame => videoIds.Contains(frame.VideoId) && frame.FrameUrl != string.Empty)
+                .Select(frame => frame.FrameUrl)
+                .ToListAsync();
+
             foreach (var video in videos)
             {
-                if (!await DeleteObjectQuietlyAsync(video.FileUrl, "original video", metrics))
+                if (!string.IsNullOrWhiteSpace(video.FileUrl) &&
+                    !await DeleteObjectQuietlyAsync(video.FileUrl, "original video", metrics))
                 {
                     metrics.FailureCount++;
                 }
@@ -254,18 +259,151 @@ public class RetentionCleanupService(
                         metrics.FailureCount++;
                     }
 
-                    video.ThumbnailUrl = null;
                     metrics.ThumbnailsCleared++;
                 }
-
-                video.FileUrl = string.Empty;
-                video.RetentionDeleteAt ??= video.CreatedAt.Add(_options.OriginalVideoRetention);
-                video.UpdatedAt = now;
-                metrics.OriginalVideosCleared++;
             }
 
-            await dbContext.SaveChangesAsync();
+            foreach (var frameObject in frameObjects.Distinct(StringComparer.Ordinal))
+            {
+                if (!await DeleteObjectQuietlyAsync(frameObject, "frame image", metrics))
+                {
+                    metrics.FailureCount++;
+                }
+
+                metrics.FrameObjectsCleared++;
+            }
+
+            await DeleteExpiredVideoDatabaseRecordsAsync(videoIds, metrics);
         }
+    }
+
+    private async Task DeleteExpiredVideoDatabaseRecordsAsync(long[] videoIds, CleanupMetrics metrics)
+    {
+        var jobIds = await dbContext.AnalysisJobs
+            .Where(job => videoIds.Contains(job.VideoId))
+            .Select(job => job.Id)
+            .ToArrayAsync();
+        var resultIds = await dbContext.AiResults
+            .Where(result => videoIds.Contains(result.VideoId))
+            .Select(result => result.Id)
+            .ToArrayAsync();
+        var frameIds = await dbContext.VideoFrames
+            .Where(frame => videoIds.Contains(frame.VideoId))
+            .Select(frame => frame.Id)
+            .ToArrayAsync();
+
+        var reservations = await dbContext.ScanReservations
+            .Where(reservation =>
+                (reservation.VideoId != null && videoIds.Contains(reservation.VideoId.Value)) ||
+                (reservation.AnalysisJobId != null && jobIds.Contains(reservation.AnalysisJobId.Value)))
+            .ToListAsync();
+        foreach (var reservation in reservations)
+        {
+            if (reservation.VideoId != null && videoIds.Contains(reservation.VideoId.Value))
+            {
+                reservation.VideoId = null;
+            }
+
+            if (reservation.AnalysisJobId != null && jobIds.Contains(reservation.AnalysisJobId.Value))
+            {
+                reservation.AnalysisJobId = null;
+            }
+        }
+
+        var usages = await dbContext.ScanUsages
+            .Where(usage =>
+                (usage.VideoId != null && videoIds.Contains(usage.VideoId.Value)) ||
+                (usage.AnalysisJobId != null && jobIds.Contains(usage.AnalysisJobId.Value)))
+            .ToListAsync();
+        foreach (var usage in usages)
+        {
+            if (usage.VideoId != null && videoIds.Contains(usage.VideoId.Value))
+            {
+                usage.VideoId = null;
+            }
+
+            if (usage.AnalysisJobId != null && jobIds.Contains(usage.AnalysisJobId.Value))
+            {
+                usage.AnalysisJobId = null;
+            }
+        }
+
+        await dbContext.SaveChangesAsync();
+
+        if (resultIds.Length > 0)
+        {
+            var evidence = await dbContext.EvidenceItems
+                .Where(item => resultIds.Contains(item.AiResultId))
+                .ToListAsync();
+            metrics.EvidenceRowsDeleted += evidence.Count;
+            dbContext.EvidenceItems.RemoveRange(evidence);
+        }
+
+        if (videoIds.Length > 0)
+        {
+            var sourceMatches = await dbContext.SourceMatches
+                .Where(match => videoIds.Contains(match.VideoId))
+                .ToListAsync();
+            metrics.SourceMatchRowsDeleted += sourceMatches.Count;
+            dbContext.SourceMatches.RemoveRange(sourceMatches);
+
+            var metadata = await dbContext.MetadataResults
+                .Where(metadataResult => videoIds.Contains(metadataResult.VideoId))
+                .ToListAsync();
+            dbContext.MetadataResults.RemoveRange(metadata);
+
+            var frameHashes = await dbContext.FrameHashes
+                .Where(hash => videoIds.Contains(hash.VideoId) || frameIds.Contains(hash.FrameId))
+                .ToListAsync();
+            dbContext.FrameHashes.RemoveRange(frameHashes);
+
+            var frames = await dbContext.VideoFrames
+                .Where(frame => videoIds.Contains(frame.VideoId))
+                .ToListAsync();
+            dbContext.VideoFrames.RemoveRange(frames);
+
+            var providerRequests = await dbContext.AiProviderRequests
+                .Where(request => videoIds.Contains(request.VideoId) || jobIds.Contains(request.AnalysisJobId))
+                .ToListAsync();
+            metrics.ProviderPayloadsCleared += providerRequests.Count;
+            dbContext.AiProviderRequests.RemoveRange(providerRequests);
+
+            var segments = await dbContext.AnalysisSegments
+                .Where(segment => videoIds.Contains(segment.VideoId) || jobIds.Contains(segment.AnalysisJobId))
+                .ToListAsync();
+            metrics.SegmentPayloadsCleared += segments.Count;
+            dbContext.AnalysisSegments.RemoveRange(segments);
+        }
+
+        if (jobIds.Length > 0)
+        {
+            var logs = await dbContext.JobLogs
+                .Where(log => jobIds.Contains(log.JobId))
+                .ToListAsync();
+            dbContext.JobLogs.RemoveRange(logs);
+
+            var jobs = await dbContext.AnalysisJobs
+                .Where(job => jobIds.Contains(job.Id))
+                .ToListAsync();
+            dbContext.AnalysisJobs.RemoveRange(jobs);
+        }
+
+        if (resultIds.Length > 0)
+        {
+            var results = await dbContext.AiResults
+                .Where(result => resultIds.Contains(result.Id))
+                .ToListAsync();
+            metrics.AnalysisPayloadsCleared += results.Count;
+            dbContext.AiResults.RemoveRange(results);
+        }
+
+        var videos = await dbContext.Videos
+            .Where(video => videoIds.Contains(video.Id))
+            .ToListAsync();
+        metrics.OriginalVideosCleared += videos.Count;
+        dbContext.Videos.RemoveRange(videos);
+
+        await dbContext.SaveChangesAsync();
     }
 
     private async Task CleanupExpiredDetailedResultsAsync(DateTimeOffset cutoff, CleanupMetrics metrics)
