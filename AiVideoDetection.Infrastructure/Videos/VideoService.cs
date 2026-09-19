@@ -45,6 +45,16 @@ public class VideoService(
         string? ipAddress,
         CancellationToken cancellationToken = default)
     {
+        return await UploadCoreAsync(request, currentUserId, ipAddress, isGuestUpload: false, cancellationToken);
+    }
+
+    private async Task<ApiResponse<UploadVideoResponse>> UploadCoreAsync(
+        UploadVideoRequest request,
+        long currentUserId,
+        string? ipAddress,
+        bool isGuestUpload,
+        CancellationToken cancellationToken = default)
+    {
         var validationResult = await uploadValidator.ValidateAsync(request, cancellationToken);
         if (!validationResult.IsValid)
         {
@@ -151,7 +161,8 @@ public class VideoService(
                 UserId = currentUserId,
                 AnalysisMode = request.AnalysisMode,
                 FileSizeBytes = file.Length,
-                ClientContext = clientContextResult.Context
+                ClientContext = clientContextResult.Context,
+                IsGuestUpload = isGuestUpload
             }, cancellationToken);
             if (!reservation.Success)
             {
@@ -312,6 +323,28 @@ public class VideoService(
                 validationResult.Errors.Select(error => error.ErrorMessage));
         }
 
+        var guestContextResult = await TryResolveAnonymousClientContextAsync(cancellationToken);
+        if (guestContextResult.ErrorResponse is not null)
+        {
+            return guestContextResult.ErrorResponse;
+        }
+
+        var guestStatus = await entitlementService.GetGuestUploadStatusAsync(guestContextResult.Context, cancellationToken);
+        if (!guestStatus.Success || guestStatus.Data is null)
+        {
+            return ApiResponse<UploadVideoResponse>.ErrorResponse(
+                guestStatus.Message,
+                guestStatus.Errors,
+                errorCode: guestStatus.ErrorCode);
+        }
+
+        if (!guestStatus.Data.CanUpload)
+        {
+            return ApiResponse<UploadVideoResponse>.ErrorResponse(
+                "Guest upload limit reached. Please sign in or create an account to continue.",
+                errorCode: guestStatus.Data.BlockReasonCode ?? SubscriptionErrorCodes.GuestLimitReached);
+        }
+
         var token = GuestVideoAccessToken.Generate();
         var tokenHash = GuestVideoAccessToken.Hash(token);
         var guestId = Guid.NewGuid().ToString("N");
@@ -335,7 +368,7 @@ public class VideoService(
         dbContext.Users.Add(guestUser);
         await dbContext.SaveChangesAsync(cancellationToken);
 
-        var response = await UploadAsync(request, guestUser.Id, ipAddress, cancellationToken);
+        var response = await UploadCoreAsync(request, guestUser.Id, ipAddress, isGuestUpload: true, cancellationToken);
         if (!response.Success || response.Data is null)
         {
             return response;
@@ -1425,6 +1458,22 @@ public class VideoService(
         try
         {
             return (await deviceIdentityService.ResolveAsync(currentUserId, cancellationToken), null);
+        }
+        catch (InvalidOperationException exception)
+            when (exception.Message == SubscriptionErrorCodes.SubscriptionSecurityNotConfigured)
+        {
+            return (null, ApiResponse<UploadVideoResponse>.ErrorResponse(
+                "Subscription security is not configured.",
+                errorCode: SubscriptionErrorCodes.SubscriptionSecurityNotConfigured));
+        }
+    }
+
+    private async Task<(SubscriptionClientContext? Context, ApiResponse<UploadVideoResponse>? ErrorResponse)> TryResolveAnonymousClientContextAsync(
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return (await deviceIdentityService.ResolveAnonymousAsync(cancellationToken), null);
         }
         catch (InvalidOperationException exception)
             when (exception.Message == SubscriptionErrorCodes.SubscriptionSecurityNotConfigured)

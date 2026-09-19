@@ -15,6 +15,31 @@ public class SubscriptionsController(
     IEntitlementService entitlementService,
     IDeviceIdentityService deviceIdentityService) : ControllerBase
 {
+    [AllowAnonymous]
+    [HttpGet("guest-upload-status")]
+    [ProducesResponseType(typeof(ApiResponse<GuestUploadStatusResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<GuestUploadStatusResponse>), StatusCodes.Status500InternalServerError)]
+    public async Task<ActionResult<ApiResponse<GuestUploadStatusResponse>>> GuestUploadStatus(CancellationToken cancellationToken)
+    {
+        SubscriptionClientContext? clientContext = null;
+        try
+        {
+            clientContext = await deviceIdentityService.ResolveAnonymousAsync(cancellationToken);
+        }
+        catch (InvalidOperationException exception)
+            when (exception.Message == SubscriptionErrorCodes.SubscriptionSecurityNotConfigured)
+        {
+            return StatusCode(
+                StatusCodes.Status500InternalServerError,
+                ApiResponse<GuestUploadStatusResponse>.ErrorResponse(
+                    "Subscription security is not configured.",
+                    errorCode: SubscriptionErrorCodes.SubscriptionSecurityNotConfigured));
+        }
+
+        var response = await entitlementService.GetGuestUploadStatusAsync(clientContext, cancellationToken);
+        return response.Success ? Ok(response) : BadRequest(response);
+    }
+
     [HttpGet("status")]
     [ProducesResponseType(typeof(ApiResponse<SubscriptionStatusResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<SubscriptionStatusResponse>), StatusCodes.Status401Unauthorized)]

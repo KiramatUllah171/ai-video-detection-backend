@@ -83,6 +83,63 @@ public class EntitlementServiceTests
     }
 
     [Fact]
+    public async Task ReserveScanAsyncAllowsOnlyOneGuestUploadForSharedDeviceAndIp()
+    {
+        await using var dbContext = CreateDbContext();
+        var sharedDevice = CreateDevice();
+        dbContext.Users.AddRange(CreateUser(1), CreateUser(2));
+        dbContext.DeviceIdentities.Add(sharedDevice);
+        dbContext.SubscriptionPlans.Add(CreateFreePlan());
+        await dbContext.SaveChangesAsync();
+        var service = new EntitlementService(dbContext);
+        var context = new SubscriptionClientContext
+        {
+            DeviceIdentityId = sharedDevice.Id,
+            IpHash = "guest-ip-hash"
+        };
+
+        var first = await service.ReserveScanAsync(CreateRequest(1, context, isGuestUpload: true));
+        var second = await service.ReserveScanAsync(CreateRequest(2, context, isGuestUpload: true));
+        var authenticatedSecond = await service.ReserveScanAsync(CreateRequest(2, context));
+
+        Assert.True(first.Success);
+        Assert.False(second.Success);
+        Assert.Equal(SubscriptionErrorCodes.GuestLimitReached, second.ErrorCode);
+        Assert.True(authenticatedSecond.Success);
+        Assert.Equal(2, await dbContext.ScanReservations.CountAsync());
+    }
+
+    [Fact]
+    public async Task GetGuestUploadStatusAsyncReportsLimitReachedAfterGuestUsage()
+    {
+        await using var dbContext = CreateDbContext();
+        var sharedDevice = CreateDevice();
+        dbContext.Users.Add(CreateUser(1));
+        dbContext.DeviceIdentities.Add(sharedDevice);
+        dbContext.SubscriptionPlans.Add(CreateFreePlan());
+        await dbContext.SaveChangesAsync();
+        var service = new EntitlementService(dbContext);
+        var context = new SubscriptionClientContext
+        {
+            DeviceIdentityId = sharedDevice.Id,
+            IpHash = "guest-ip-hash"
+        };
+
+        var initial = await service.GetGuestUploadStatusAsync(context);
+        var reservation = await service.ReserveScanAsync(CreateRequest(1, context, isGuestUpload: true));
+        var used = await service.GetGuestUploadStatusAsync(context);
+
+        Assert.True(initial.Success);
+        Assert.True(initial.Data!.CanUpload);
+        Assert.Equal(1, initial.Data.RemainingUploads);
+        Assert.True(reservation.Success);
+        Assert.True(used.Success);
+        Assert.False(used.Data!.CanUpload);
+        Assert.Equal(0, used.Data.RemainingUploads);
+        Assert.Equal(SubscriptionErrorCodes.GuestLimitReached, used.Data.BlockReasonCode);
+    }
+
+    [Fact]
     public async Task ReserveScanAsyncExhaustsFreeTrialForMultiAccountReuseOfSameDevice()
     {
         await using var dbContext = CreateDbContext();
@@ -714,14 +771,18 @@ public class EntitlementServiceTests
         });
     }
 
-    private static ScanReservationRequest CreateRequest(long userId, SubscriptionClientContext context)
+    private static ScanReservationRequest CreateRequest(
+        long userId,
+        SubscriptionClientContext context,
+        bool isGuestUpload = false)
     {
         return new ScanReservationRequest
         {
             UserId = userId,
             AnalysisMode = AnalysisMode.Basic,
             FileSizeBytes = 100_000_000,
-            ClientContext = context
+            ClientContext = context,
+            IsGuestUpload = isGuestUpload
         };
     }
 

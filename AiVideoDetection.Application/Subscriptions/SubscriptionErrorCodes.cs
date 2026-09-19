@@ -8,6 +8,7 @@ public static class SubscriptionErrorCodes
     public const string VideoSizeLimitExceeded = "VIDEO_SIZE_LIMIT_EXCEEDED";
     public const string ScanQuotaExhausted = "SCAN_QUOTA_EXHAUSTED";
     public const string FreeTrialExhausted = "FREE_TRIAL_EXHAUSTED";
+    public const string GuestLimitReached = "GUEST_LIMIT_REACHED";
     public const string DeviceIdentityRequired = "DEVICE_IDENTITY_REQUIRED";
     public const string ClientIpRequired = "CLIENT_IP_REQUIRED";
     public const string ReservationNotFound = "RESERVATION_NOT_FOUND";

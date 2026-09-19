@@ -12,6 +12,7 @@ using AiVideoDetection.Domain.Constants;
 using AiVideoDetection.Domain.Entities;
 using AiVideoDetection.Domain.Enums;
 using AiVideoDetection.Infrastructure.Data;
+using AiVideoDetection.Infrastructure.Subscriptions;
 using AiVideoDetection.Infrastructure.Videos;
 using AiVideoDetection.Infrastructure.Videos.Processing;
 using Microsoft.AspNetCore.Http;
@@ -100,6 +101,33 @@ public class VideoServiceTests
         Assert.Equal(0, storage.UploadCalls);
         Assert.Equal(0, queue.EnqueueCalls);
         Assert.Equal(0, await dbContext.Videos.CountAsync());
+    }
+
+    [Fact]
+    public async Task UploadGuestAsyncRejectsSecondGuestUploadForSameDeviceAndIp()
+    {
+        await using var dbContext = CreateDbContext();
+        dbContext.SubscriptionPlans.Add(CreateFreePlan());
+        await dbContext.SaveChangesAsync();
+        var storage = new FakeObjectStorageService();
+        var queue = new FakeAnalysisJobQueue();
+        var service = CreateService(
+            dbContext,
+            storage,
+            queue,
+            new EntitlementService(dbContext),
+            new FakeDeviceIdentityService());
+
+        var first = await service.UploadGuestAsync(CreateUploadRequest(), "127.0.0.1");
+        var second = await service.UploadGuestAsync(CreateUploadRequest(), "127.0.0.1");
+
+        Assert.True(first.Success);
+        Assert.NotNull(first.Data?.GuestAccessToken);
+        Assert.False(second.Success);
+        Assert.Equal(SubscriptionErrorCodes.GuestLimitReached, second.ErrorCode);
+        Assert.Equal(1, storage.UploadCalls);
+        Assert.Equal(1, queue.EnqueueCalls);
+        Assert.Equal(1, await dbContext.Videos.CountAsync());
     }
 
     [Fact]
@@ -1336,6 +1364,24 @@ public class VideoServiceTests
         };
     }
 
+    private static SubscriptionPlan CreateFreePlan()
+    {
+        return new SubscriptionPlan
+        {
+            Id = 1,
+            Code = SubscriptionPlanCodes.Free,
+            Name = "Free Trial",
+            Currency = "PKR",
+            PriceAmount = 0,
+            ScanLimit = 2,
+            MaxVideoSizeBytes = VideoUploadSizeLimits.FreeMaxVideoSizeBytes,
+            AllowsSmartScan = true,
+            AllowsDetailedScan = false,
+            IsActive = true,
+            SortOrder = 0
+        };
+    }
+
     private static UploadVideoRequest CreateUploadRequest(
         byte[]? content = null,
         AnalysisMode analysisMode = AnalysisMode.Basic,
@@ -1568,6 +1614,11 @@ public class VideoServiceTests
     {
         public Task<SubscriptionClientContext> ResolveAsync(long userId, CancellationToken cancellationToken = default)
         {
+            return ResolveAnonymousAsync(cancellationToken);
+        }
+
+        public Task<SubscriptionClientContext> ResolveAnonymousAsync(CancellationToken cancellationToken = default)
+        {
             return Task.FromResult(new SubscriptionClientContext
             {
                 DeviceIdentityId = 1,
@@ -1598,6 +1649,18 @@ public class VideoServiceTests
                 SubscriptionStatus = SubscriptionStatuses.Active,
                 AllowsSmartScan = true,
                 AllowsDetailedScan = true
+            }));
+        }
+
+        public Task<ApiResponse<GuestUploadStatusResponse>> GetGuestUploadStatusAsync(
+            SubscriptionClientContext? clientContext = null,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(ApiResponse<GuestUploadStatusResponse>.SuccessResponse(new GuestUploadStatusResponse
+            {
+                CanUpload = true,
+                RemainingUploads = 1,
+                MaxVideoSizeBytes = VideoUploadSizeLimits.FreeMaxVideoSizeBytes
             }));
         }
 

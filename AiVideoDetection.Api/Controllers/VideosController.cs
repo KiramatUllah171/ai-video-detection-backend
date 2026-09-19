@@ -473,6 +473,7 @@ public class VideosController(
                 or SubscriptionErrorCodes.ScanQuotaExhausted
                 or SubscriptionErrorCodes.SubscriptionRequired
                 or SubscriptionErrorCodes.DetailedScanNotAllowed => StatusCode(StatusCodes.Status402PaymentRequired, response),
+            SubscriptionErrorCodes.GuestLimitReached => StatusCode(StatusCodes.Status403Forbidden, response),
             SubscriptionErrorCodes.VideoSizeLimitExceeded => StatusCode(StatusCodes.Status413PayloadTooLarge, response),
             SubscriptionErrorCodes.SubscriptionSecurityNotConfigured => StatusCode(StatusCodes.Status500InternalServerError, response),
             VideoInfrastructureErrorCodes.ServerStorageCapacityLow

@@ -780,6 +780,18 @@ public class VideoProcessingServiceTests
             return Task.FromResult(ApiResponse<SubscriptionStatusResponse>.SuccessResponse(new SubscriptionStatusResponse()));
         }
 
+        public Task<ApiResponse<GuestUploadStatusResponse>> GetGuestUploadStatusAsync(
+            SubscriptionClientContext? clientContext = null,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(ApiResponse<GuestUploadStatusResponse>.SuccessResponse(new GuestUploadStatusResponse
+            {
+                CanUpload = true,
+                RemainingUploads = 1,
+                MaxVideoSizeBytes = VideoUploadSizeLimits.FreeMaxVideoSizeBytes
+            }));
+        }
+
         public Task<ScanReservationResult> ReserveScanAsync(
             ScanReservationRequest request,
             CancellationToken cancellationToken = default)

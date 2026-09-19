@@ -23,11 +23,46 @@ public class DeviceIdentityService(
 
     public async Task<SubscriptionClientContext> ResolveAsync(long userId, CancellationToken cancellationToken = default)
     {
+        var now = DateTimeOffset.UtcNow;
+        var device = await ResolveDeviceAsync(now, cancellationToken);
+
+        var link = await dbContext.AccountDeviceLinks
+            .FirstOrDefaultAsync(
+                accountDeviceLink => accountDeviceLink.UserId == userId && accountDeviceLink.DeviceIdentityId == device.Id,
+                cancellationToken);
+
+        if (link is null)
+        {
+            dbContext.AccountDeviceLinks.Add(new AccountDeviceLink
+            {
+                UserId = userId,
+                DeviceIdentityId = device.Id,
+                FirstSeenAt = now,
+                LastSeenAt = now
+            });
+        }
+        else
+        {
+            link.LastSeenAt = now;
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        return BuildClientContext(device);
+    }
+
+    public async Task<SubscriptionClientContext> ResolveAnonymousAsync(CancellationToken cancellationToken = default)
+    {
+        var device = await ResolveDeviceAsync(DateTimeOffset.UtcNow, cancellationToken);
+        return BuildClientContext(device);
+    }
+
+    private async Task<DeviceIdentity> ResolveDeviceAsync(DateTimeOffset now, CancellationToken cancellationToken)
+    {
         var httpContext = httpContextAccessor.HttpContext;
         var deviceToken = GetOrCreateDeviceToken(httpContext);
         var deviceTokenHash = hashService.HashValue("device-token", deviceToken);
         var fingerprintHash = TryGetFingerprintHash(httpContext);
-        var now = DateTimeOffset.UtcNow;
 
         var device = await dbContext.DeviceIdentities
             .FirstOrDefaultAsync(identity => identity.DeviceTokenHash == deviceTokenHash, cancellationToken);
@@ -58,29 +93,11 @@ public class DeviceIdentityService(
         }
 
         await dbContext.SaveChangesAsync(cancellationToken);
+        return device;
+    }
 
-        var link = await dbContext.AccountDeviceLinks
-            .FirstOrDefaultAsync(
-                accountDeviceLink => accountDeviceLink.UserId == userId && accountDeviceLink.DeviceIdentityId == device.Id,
-                cancellationToken);
-
-        if (link is null)
-        {
-            dbContext.AccountDeviceLinks.Add(new AccountDeviceLink
-            {
-                UserId = userId,
-                DeviceIdentityId = device.Id,
-                FirstSeenAt = now,
-                LastSeenAt = now
-            });
-        }
-        else
-        {
-            link.LastSeenAt = now;
-        }
-
-        await dbContext.SaveChangesAsync(cancellationToken);
-
+    private SubscriptionClientContext BuildClientContext(DeviceIdentity device)
+    {
         var ipAddress = clientIpResolver.GetClientIpAddress();
         return new SubscriptionClientContext
         {

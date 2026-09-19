@@ -8,4 +8,5 @@ public class ScanReservationRequest
     public AnalysisMode AnalysisMode { get; init; }
     public long FileSizeBytes { get; init; }
     public SubscriptionClientContext? ClientContext { get; init; }
+    public bool IsGuestUpload { get; init; }
 }

@@ -20,6 +20,7 @@ public class EntitlementService(
     AppDbContext dbContext,
     IOptions<ScanReservationOptions>? reservationOptions = null) : IEntitlementService
 {
+    private const int GuestUploadLimit = 1;
     private static readonly ConcurrentDictionary<string, ReservationLockEntry> ReservationLocks = new();
     private readonly ScanReservationOptions _reservationOptions = reservationOptions?.Value ?? new ScanReservationOptions();
 
@@ -71,6 +72,57 @@ public class EntitlementService(
 
         var freeStatus = await BuildFreeStatusAsync(userId, freePlan, clientContext, cancellationToken);
         return ApiResponse<SubscriptionStatusResponse>.SuccessResponse(freeStatus);
+    }
+
+    public async Task<ApiResponse<GuestUploadStatusResponse>> GetGuestUploadStatusAsync(
+        SubscriptionClientContext? clientContext = null,
+        CancellationToken cancellationToken = default)
+    {
+        var freePlan = await GetPlanAsync(SubscriptionPlanCodes.Free, cancellationToken);
+        if (freePlan is null)
+        {
+            return ApiResponse<GuestUploadStatusResponse>.ErrorResponse(
+                "Free guest upload is not available.",
+                errorCode: SubscriptionErrorCodes.SubscriptionRequired);
+        }
+
+        if (clientContext?.DeviceIdentityId is null)
+        {
+            return ApiResponse<GuestUploadStatusResponse>.SuccessResponse(new GuestUploadStatusResponse
+            {
+                CanUpload = false,
+                RemainingUploads = 0,
+                BlockReasonCode = SubscriptionErrorCodes.DeviceIdentityRequired,
+                MaxVideoSizeBytes = freePlan.MaxVideoSizeBytes
+            });
+        }
+
+        if (string.IsNullOrWhiteSpace(clientContext.IpHash))
+        {
+            return ApiResponse<GuestUploadStatusResponse>.SuccessResponse(new GuestUploadStatusResponse
+            {
+                CanUpload = false,
+                RemainingUploads = 0,
+                BlockReasonCode = SubscriptionErrorCodes.ClientIpRequired,
+                MaxVideoSizeBytes = freePlan.MaxVideoSizeBytes
+            });
+        }
+
+        var deviceUsage = await dbContext.FreeTrialDeviceUsages
+            .AsNoTracking()
+            .FirstOrDefaultAsync(usage => usage.DeviceIdentityId == clientContext.DeviceIdentityId.Value, cancellationToken);
+        var ipUsage = await dbContext.FreeTrialIpUsages
+            .AsNoTracking()
+            .FirstOrDefaultAsync(usage => usage.IpHash == clientContext.IpHash, cancellationToken);
+        var remaining = GetGuestRemainingUploads(deviceUsage, ipUsage);
+
+        return ApiResponse<GuestUploadStatusResponse>.SuccessResponse(new GuestUploadStatusResponse
+        {
+            CanUpload = remaining > 0,
+            RemainingUploads = remaining,
+            BlockReasonCode = remaining > 0 ? null : SubscriptionErrorCodes.GuestLimitReached,
+            MaxVideoSizeBytes = freePlan.MaxVideoSizeBytes
+        });
     }
 
     public async Task<ScanReservationResult> ReserveScanAsync(
@@ -424,6 +476,13 @@ public class EntitlementService(
         var accountUsage = await GetOrCreateAccountUsageAsync(request.UserId, now, cancellationToken);
         var deviceUsage = await GetOrCreateDeviceUsageAsync(request.ClientContext.DeviceIdentityId.Value, now, cancellationToken);
         var ipUsage = await GetOrCreateIpUsageAsync(request.ClientContext.IpHash, now, cancellationToken);
+
+        if (request.IsGuestUpload && GetGuestRemainingUploads(deviceUsage, ipUsage) <= 0)
+        {
+            return ScanReservationResult.Failed(
+                "Guest upload limit reached. Please sign in or create an account to continue.",
+                SubscriptionErrorCodes.GuestLimitReached);
+        }
 
         var remaining = new[]
         {
@@ -792,5 +851,17 @@ public class EntitlementService(
     private static int Remaining(int allocatedScans, int consumedScans, int reservedScans)
     {
         return Math.Max(0, allocatedScans - consumedScans - reservedScans);
+    }
+
+    private static int GetGuestRemainingUploads(FreeTrialDeviceUsage? deviceUsage, FreeTrialIpUsage? ipUsage)
+    {
+        var usedUploads = new[]
+            {
+                deviceUsage is null ? 0 : deviceUsage.ConsumedScans + deviceUsage.ReservedScans,
+                ipUsage is null ? 0 : ipUsage.ConsumedScans + ipUsage.ReservedScans
+            }
+            .Max();
+
+        return Math.Max(0, GuestUploadLimit - usedUploads);
     }
 }

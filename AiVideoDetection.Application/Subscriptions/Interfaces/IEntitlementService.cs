@@ -10,6 +10,10 @@ public interface IEntitlementService
         SubscriptionClientContext? clientContext = null,
         CancellationToken cancellationToken = default);
 
+    Task<ApiResponse<GuestUploadStatusResponse>> GetGuestUploadStatusAsync(
+        SubscriptionClientContext? clientContext = null,
+        CancellationToken cancellationToken = default);
+
     Task<ScanReservationResult> ReserveScanAsync(
         ScanReservationRequest request,
         CancellationToken cancellationToken = default);
