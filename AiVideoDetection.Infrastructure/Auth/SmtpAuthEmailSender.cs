@@ -1,17 +1,35 @@
 using AiVideoDetection.Application.Auth.Interfaces;
 using AiVideoDetection.Domain.Entities;
+using MailKit.Security;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using System.Net;
-using System.Net.Mail;
+using MimeKit;
+using MailKitSmtpClient = MailKit.Net.Smtp.SmtpClient;
 
 namespace AiVideoDetection.Infrastructure.Auth;
 
-public class SmtpAuthEmailSender(
-    IOptions<PasswordResetOptions> options,
-    ILogger<SmtpAuthEmailSender> logger) : IPasswordResetEmailSender, IEmailConfirmationSender
+public class SmtpAuthEmailSender : IPasswordResetEmailSender, IEmailConfirmationSender
 {
-    private readonly PasswordResetOptions _options = options.Value;
+    private readonly PasswordResetOptions _options;
+    private readonly ILogger<SmtpAuthEmailSender> _logger;
+    private readonly Func<IAuthSmtpClient> _smtpClientFactory;
+
+    public SmtpAuthEmailSender(
+        IOptions<PasswordResetOptions> options,
+        ILogger<SmtpAuthEmailSender> logger)
+        : this(options, logger, static () => new MailKitAuthSmtpClient())
+    {
+    }
+
+    internal SmtpAuthEmailSender(
+        IOptions<PasswordResetOptions> options,
+        ILogger<SmtpAuthEmailSender> logger,
+        Func<IAuthSmtpClient> smtpClientFactory)
+    {
+        _options = options.Value;
+        _logger = logger;
+        _smtpClientFactory = smtpClientFactory;
+    }
 
     public Task SendPasswordResetAsync(User user, string resetUrl, CancellationToken cancellationToken = default)
     {
@@ -77,13 +95,15 @@ SachAI Team
         var password = string.IsNullOrWhiteSpace(_options.Password) ? _options.SmtpPassword : _options.Password;
         var senderEmail = string.IsNullOrWhiteSpace(_options.SenderEmail) ? _options.FromEmail : _options.SenderEmail;
         var senderName = string.IsNullOrWhiteSpace(_options.SenderName) ? _options.FromName : _options.SenderName;
+        var recipientEmail = user.Email;
 
         if (string.IsNullOrWhiteSpace(host)
             || string.IsNullOrWhiteSpace(username)
             || string.IsNullOrWhiteSpace(password)
-            || string.IsNullOrWhiteSpace(senderEmail))
+            || string.IsNullOrWhiteSpace(senderEmail)
+            || string.IsNullOrWhiteSpace(recipientEmail))
         {
-            logger.LogError("SMTP email delivery is not configured. Provider={Provider}; HostConfigured={HostConfigured}; UsernameConfigured={UsernameConfigured}; SenderConfigured={SenderConfigured}; PasswordConfigured={PasswordConfigured}.",
+            _logger.LogError("SMTP email delivery is not configured. Provider={Provider}; HostConfigured={HostConfigured}; UsernameConfigured={UsernameConfigured}; SenderConfigured={SenderConfigured}; PasswordConfigured={PasswordConfigured}.",
                 _options.Provider,
                 !string.IsNullOrWhiteSpace(host),
                 !string.IsNullOrWhiteSpace(username),
@@ -92,24 +112,59 @@ SachAI Team
             throw new InvalidOperationException("SMTP email delivery is not configured.");
         }
 
-        using var message = new MailMessage
-        {
-            From = new MailAddress(senderEmail, senderName),
-            Subject = subject,
-            Body = body,
-            IsBodyHtml = false
-        };
-        message.To.Add(user.Email);
+        using var message = new MimeMessage();
+        message.From.Add(new MailboxAddress(senderName, senderEmail));
+        message.To.Add(MailboxAddress.Parse(recipientEmail));
+        message.Subject = subject;
+        message.Body = new TextPart("plain") { Text = body };
 
-        using var client = new SmtpClient(host, port)
-        {
-            EnableSsl = _options.UseStartTls || _options.UseSsl || _options.SmtpEnableSsl,
-            DeliveryMethod = SmtpDeliveryMethod.Network,
-            UseDefaultCredentials = false,
-            Credentials = new NetworkCredential(username, password)
-        };
+        using var client = _smtpClientFactory();
+        await client.ConnectAsync(host, port, SecureSocketOptions.StartTls, cancellationToken);
+        await client.AuthenticateAsync(username, password, cancellationToken);
+        await client.SendAsync(message, cancellationToken);
+        await client.DisconnectAsync(quit: true, cancellationToken);
 
-        await client.SendMailAsync(message, cancellationToken);
-        logger.LogInformation(successLogMessage, user.Id);
+        _logger.LogInformation(successLogMessage, user.Id);
+    }
+}
+
+internal interface IAuthSmtpClient : IDisposable
+{
+    Task ConnectAsync(string host, int port, SecureSocketOptions options, CancellationToken cancellationToken);
+
+    Task AuthenticateAsync(string userName, string password, CancellationToken cancellationToken);
+
+    Task SendAsync(MimeMessage message, CancellationToken cancellationToken);
+
+    Task DisconnectAsync(bool quit, CancellationToken cancellationToken);
+}
+
+internal sealed class MailKitAuthSmtpClient : IAuthSmtpClient
+{
+    private readonly MailKitSmtpClient _client = new();
+
+    public Task ConnectAsync(string host, int port, SecureSocketOptions options, CancellationToken cancellationToken)
+    {
+        return _client.ConnectAsync(host, port, options, cancellationToken);
+    }
+
+    public Task AuthenticateAsync(string userName, string password, CancellationToken cancellationToken)
+    {
+        return _client.AuthenticateAsync(userName, password, cancellationToken);
+    }
+
+    public Task SendAsync(MimeMessage message, CancellationToken cancellationToken)
+    {
+        return _client.SendAsync(message, cancellationToken);
+    }
+
+    public Task DisconnectAsync(bool quit, CancellationToken cancellationToken)
+    {
+        return _client.DisconnectAsync(quit, cancellationToken);
+    }
+
+    public void Dispose()
+    {
+        _client.Dispose();
     }
 }
