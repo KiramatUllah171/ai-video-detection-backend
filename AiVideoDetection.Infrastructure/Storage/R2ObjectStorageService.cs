@@ -78,14 +78,21 @@ public sealed class R2ObjectStorageService(
         Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
 
         var tempDestinationPath = destinationPath + ".decrypting";
+        var tempEncryptedPath = Path.Combine(Path.GetTempPath(), $"r2-download-{Guid.NewGuid():N}.tmp");
         DeleteTempFile(tempDestinationPath);
 
         try
         {
             using var response = await s3Client.GetObjectAsync(_options.BucketName, safeObjectKey, cancellationToken);
+            await using (var encryptedDestination = File.Create(tempEncryptedPath))
+            {
+                await response.ResponseStream.CopyToAsync(encryptedDestination, cancellationToken);
+            }
+
+            await using (var source = File.OpenRead(tempEncryptedPath))
             await using (var destination = File.Create(tempDestinationPath))
             {
-                await encryptionService.UnprotectStreamAsync(response.ResponseStream, destination, cancellationToken);
+                await encryptionService.UnprotectStreamAsync(source, destination, cancellationToken);
             }
 
             if (File.Exists(destinationPath))
@@ -99,6 +106,10 @@ public sealed class R2ObjectStorageService(
         {
             DeleteTempFile(tempDestinationPath);
             throw;
+        }
+        finally
+        {
+            DeleteTempFile(tempEncryptedPath);
         }
     }
 
