@@ -374,23 +374,27 @@ app.MapHealthChecks("/health/ready", new HealthCheckOptions
 });
 app.MapControllers();
 
-RecurringJob.AddOrUpdate<IRetentionCleanupService>(
-    "cleanup-temporary-video-files",
-    "analysis",
-    service => service.CleanupTemporaryFilesAsync(),
-    Cron.Hourly());
+using (var scope = app.Services.CreateScope())
+{
+    var recurringJobManager = scope.ServiceProvider.GetRequiredService<IRecurringJobManager>();
+    recurringJobManager.AddOrUpdate<IRetentionCleanupService>(
+        "cleanup-temporary-video-files",
+        "analysis",
+        service => service.CleanupTemporaryFilesAsync(),
+        Cron.Hourly());
 
-RecurringJob.AddOrUpdate<IRetentionCleanupService>(
-    "cleanup-expired-video-retention-assets",
-    "analysis",
-    service => service.CleanupExpiredRetainedAssetsAsync(),
-    Cron.Hourly());
+    recurringJobManager.AddOrUpdate<IRetentionCleanupService>(
+        "cleanup-expired-video-retention-assets",
+        "analysis",
+        service => service.CleanupExpiredRetainedAssetsAsync(),
+        Cron.Hourly());
 
-RecurringJob.AddOrUpdate<IScanReservationReconciliationService>(
-    "reconcile-scan-reservations",
-    "analysis",
-    service => service.ReconcileAsync(),
-    Cron.Hourly());
+    recurringJobManager.AddOrUpdate<IScanReservationReconciliationService>(
+        "reconcile-scan-reservations",
+        "analysis",
+        service => service.ReconcileAsync(),
+        Cron.Hourly());
+}
 
 app.Run();
 

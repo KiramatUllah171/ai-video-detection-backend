@@ -1,0 +1,13 @@
+**/bin/
+**/obj/
+.git/
+.vs/
+.vscode/
+storage/
+tmp/
+sample_data/
+*.user
+*.suo
+*.log
+secrets.json
+appsettings.Production.local.json

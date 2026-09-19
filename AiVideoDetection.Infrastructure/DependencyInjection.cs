@@ -23,6 +23,8 @@ using AiVideoDetection.Infrastructure.Videos.Processing;
 using AiVideoDetection.Infrastructure.Videos.Retention;
 using AiVideoDetection.Infrastructure.Videos.Reports;
 using AiVideoDetection.Infrastructure.Videos.StorageProtection;
+using Amazon.Runtime;
+using Amazon.S3;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -241,6 +243,13 @@ public static class DependencyInjection
         services.Configure<ScoringOptions>(configuration.GetSection(ScoringOptions.SectionName));
         services.Configure<InternalMatchingOptions>(configuration.GetSection(InternalMatchingOptions.SectionName));
         services.Configure<LocalStorageOptions>(configuration.GetSection(LocalStorageOptions.SectionName));
+        services.AddOptions<R2Options>()
+            .Bind(configuration.GetSection(R2Options.SectionName))
+            .Validate(options => !IsR2StorageSelected(configuration) || !string.IsNullOrWhiteSpace(ResolveR2ServiceUrl(options)), "R2:ServiceUrl or R2:AccountId is required when Storage:Provider is R2.")
+            .Validate(options => !IsR2StorageSelected(configuration) || !string.IsNullOrWhiteSpace(options.BucketName), "R2:BucketName is required when Storage:Provider is R2.")
+            .Validate(options => !IsR2StorageSelected(configuration) || !string.IsNullOrWhiteSpace(options.AccessKeyId), "R2:AccessKeyId is required when Storage:Provider is R2.")
+            .Validate(options => !IsR2StorageSelected(configuration) || !string.IsNullOrWhiteSpace(options.SecretAccessKey), "R2:SecretAccessKey is required when Storage:Provider is R2.")
+            .ValidateOnStart();
         services.PostConfigure<ApplicationEncryptionOptions>(options =>
         {
             var key = Environment.GetEnvironmentVariable("ENCRYPTION_MASTER_KEY_BASE64")
@@ -303,7 +312,27 @@ public static class DependencyInjection
         services.AddSingleton<IAuthThrottleService, InMemoryAuthThrottleService>();
         services.AddScoped<IPasswordResetEmailSender, SmtpAuthEmailSender>();
         services.AddScoped<IEmailConfirmationSender, SmtpAuthEmailSender>();
-        services.AddScoped<IObjectStorageService, LocalObjectStorageService>();
+        if (IsR2StorageSelected(configuration))
+        {
+            services.AddSingleton<IAmazonS3>(serviceProvider =>
+            {
+                var r2Options = serviceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<R2Options>>().Value;
+                var config = new AmazonS3Config
+                {
+                    ServiceURL = ResolveR2ServiceUrl(r2Options),
+                    ForcePathStyle = true,
+                    AuthenticationRegion = string.IsNullOrWhiteSpace(r2Options.Region) ? "auto" : r2Options.Region
+                };
+                return new AmazonS3Client(
+                    new BasicAWSCredentials(r2Options.AccessKeyId, r2Options.SecretAccessKey),
+                    config);
+            });
+            services.AddScoped<IObjectStorageService, R2ObjectStorageService>();
+        }
+        else
+        {
+            services.AddScoped<IObjectStorageService, LocalObjectStorageService>();
+        }
         services.AddScoped<IVideoService, VideoService>();
         services.AddScoped<IVideoStorageCapacityService, DiskVideoStorageCapacityService>();
         services.AddSingleton<IVideoWorkloadGate, VideoWorkloadGate>();
@@ -382,5 +411,23 @@ public static class DependencyInjection
         {
             return false;
         }
+    }
+
+    private static bool IsR2StorageSelected(IConfiguration configuration)
+    {
+        var provider = configuration.GetSection(LocalStorageOptions.SectionName).Get<LocalStorageOptions>()?.Provider;
+        return string.Equals(provider, "R2", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ResolveR2ServiceUrl(R2Options options)
+    {
+        if (!string.IsNullOrWhiteSpace(options.ServiceUrl))
+        {
+            return options.ServiceUrl.TrimEnd('/');
+        }
+
+        return string.IsNullOrWhiteSpace(options.AccountId)
+            ? string.Empty
+            : $"https://{options.AccountId}.r2.cloudflarestorage.com";
     }
 }

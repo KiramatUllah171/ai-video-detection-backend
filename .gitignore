@@ -15,15 +15,16 @@ obj/
 .idea/
 
 # Secrets
-appsettings.Production.json
 secrets.json
+appsettings.Production.local.json
 
 # Local generated files
-uploads/
-storage/
-temp/
-reports/
-frames/
-thumbnails/
-backups/
+/uploads/
+/storage/
+/AiVideoDetection.Api/storage/
+/temp/
+/reports/
+/frames/
+/thumbnails/
+/backups/
 /sample_data/

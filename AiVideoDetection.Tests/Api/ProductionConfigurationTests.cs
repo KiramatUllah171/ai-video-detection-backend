@@ -1,0 +1,49 @@
+using AiVideoDetection.Application.Videos.Options;
+using Microsoft.Extensions.Configuration;
+
+namespace AiVideoDetection.Tests.Api;
+
+public sealed class ProductionConfigurationTests
+{
+    [Fact]
+    public void ProductionConfigurationSelectsHybridBitMindProvider()
+    {
+        var configuration = LoadApiConfiguration();
+        var options = configuration.GetSection(AiServiceOptions.SectionName).Get<AiServiceOptions>()
+            ?? throw new InvalidOperationException("AiService configuration was not found.");
+
+        Assert.Equal("http://ai-service:8000", options.BaseUrl);
+        Assert.Equal("hybrid", options.ProviderMode);
+        Assert.True(options.BitMindEnabled);
+        Assert.Equal("OnUncertain", options.ExternalProviderPolicy);
+        Assert.True(options.LocalFallbackEnabled);
+    }
+
+    private static IConfigurationRoot LoadApiConfiguration()
+    {
+        var apiDirectory = FindApiDirectory();
+        return new ConfigurationBuilder()
+            .SetBasePath(apiDirectory)
+            .AddJsonFile("appsettings.json", optional: false)
+            .AddJsonFile("appsettings.Production.json", optional: false)
+            .Build();
+    }
+
+    private static string FindApiDirectory()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            var candidate = Path.Combine(directory.FullName, "AiVideoDetection.Api");
+            if (Directory.Exists(candidate)
+                && File.Exists(Path.Combine(candidate, "appsettings.Production.json")))
+            {
+                return candidate;
+            }
+
+            directory = directory.Parent;
+        }
+
+        throw new DirectoryNotFoundException("Could not locate AiVideoDetection.Api.");
+    }
+}
