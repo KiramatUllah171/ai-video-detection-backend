@@ -1,4 +1,5 @@
 using AiVideoDetection.Application.Videos.Options;
+using AiVideoDetection.Infrastructure.Auth;
 using Microsoft.Extensions.Configuration;
 
 namespace AiVideoDetection.Tests.Api;
@@ -17,6 +18,16 @@ public sealed class ProductionConfigurationTests
         Assert.True(options.BitMindEnabled);
         Assert.Equal("OnUncertain", options.ExternalProviderPolicy);
         Assert.True(options.LocalFallbackEnabled);
+    }
+
+    [Fact]
+    public void ProductionConfigurationUsesPublicFrontendForEmailLinks()
+    {
+        var configuration = LoadApiConfiguration();
+        var options = configuration.GetSection(PasswordResetOptions.SectionName).Get<PasswordResetOptions>()
+            ?? throw new InvalidOperationException("PasswordReset configuration was not found.");
+
+        Assert.Equal("https://sachaitech.com", options.FrontendBaseUrl);
     }
 
     private static IConfigurationRoot LoadApiConfiguration()
