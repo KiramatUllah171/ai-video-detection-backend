@@ -36,7 +36,9 @@ public sealed class R2ObjectStorageService(
                 Key = safeObjectKey,
                 InputStream = upload,
                 ContentType = contentType,
-                AutoCloseStream = false
+                AutoCloseStream = false,
+                DisablePayloadSigning = true,
+                DisableDefaultChecksumValidation = true
             }, cancellationToken);
 
             return safeObjectKey;
