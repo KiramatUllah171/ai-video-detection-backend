@@ -30,6 +30,31 @@ public sealed class ProductionConfigurationTests
         Assert.Equal("https://sachaitech.com", options.FrontendBaseUrl);
     }
 
+    [Fact]
+    public void ProductionConfigurationUsesOciEmailDelivery()
+    {
+        var configuration = LoadApiConfiguration();
+        var options = configuration.GetSection(PasswordResetOptions.SectionName).Get<PasswordResetOptions>()
+            ?? throw new InvalidOperationException("PasswordReset configuration was not found.");
+
+        Assert.Equal("Smtp", options.Provider);
+        Assert.Equal("smtp.email.me-dubai-1.oci.oraclecloud.com", options.Host);
+        Assert.Equal(587, options.Port);
+        Assert.True(options.UseStartTls);
+        Assert.False(options.UseSsl);
+        Assert.Equal(string.Empty, options.Username);
+        Assert.Equal(string.Empty, options.Password);
+        Assert.Equal("noreply@sachaitech.com", options.SenderEmail);
+        Assert.Equal("SachAI", options.SenderName);
+        Assert.Equal("smtp.email.me-dubai-1.oci.oraclecloud.com", options.SmtpHost);
+        Assert.Equal(587, options.SmtpPort);
+        Assert.True(options.SmtpEnableSsl);
+        Assert.Equal(string.Empty, options.SmtpUsername);
+        Assert.Equal(string.Empty, options.SmtpPassword);
+        Assert.Equal("noreply@sachaitech.com", options.FromEmail);
+        Assert.Equal("SachAI", options.FromName);
+    }
+
     private static IConfigurationRoot LoadApiConfiguration()
     {
         var apiDirectory = FindApiDirectory();

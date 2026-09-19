@@ -14,19 +14,19 @@ public class SmtpEmailSenderTests
             Options.Create(new PasswordResetOptions
             {
                 Provider = "Smtp",
-                Host = "smtp.gmail.com",
+                Host = "smtp.email.me-dubai-1.oci.oraclecloud.com",
                 Port = 587,
                 UseStartTls = true,
                 UseSsl = false,
-                Username = "kiramatullahcomputer@gmail.com",
+                Username = "ocid1.user.oc1..smtp-credential",
                 Password = "",
-                SenderEmail = "kiramatullahcomputer@gmail.com",
+                SenderEmail = "noreply@sachaitech.com",
                 SenderName = "SachAI"
             }),
             NullLogger<SmtpAuthEmailSender>.Instance);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            sender.SendPasswordResetAsync(TestUser(), "http://localhost:5173/reset-password?token=test"));
+            sender.SendPasswordResetAsync(TestUser(), "https://sachaitech.com/reset-password?token=test"));
     }
 
     [Fact]
@@ -36,18 +36,18 @@ public class SmtpEmailSenderTests
             Options.Create(new PasswordResetOptions
             {
                 Provider = "DevelopmentLog",
-                Host = "smtp.gmail.com",
+                Host = "smtp.email.me-dubai-1.oci.oraclecloud.com",
                 Port = 587,
                 UseStartTls = true,
-                Username = "kiramatullahcomputer@gmail.com",
+                Username = "ocid1.user.oc1..smtp-credential",
                 Password = "not-used",
-                SenderEmail = "kiramatullahcomputer@gmail.com",
+                SenderEmail = "noreply@sachaitech.com",
                 SenderName = "SachAI"
             }),
             NullLogger<SmtpAuthEmailSender>.Instance);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            sender.SendEmailConfirmationAsync(TestUser(), "http://localhost:5173/confirm-email?token=test"));
+            sender.SendEmailConfirmationAsync(TestUser(), "https://sachaitech.com/confirm-email?token=test"));
     }
 
     private static User TestUser()

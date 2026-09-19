@@ -426,11 +426,41 @@ static void ValidateProductionConfiguration(IConfiguration configuration, IWebHo
         throw new InvalidOperationException("Production AI service API key must be configured.");
     }
 
-    if (string.Equals(configuration["PasswordReset:Provider"], "Smtp", StringComparison.OrdinalIgnoreCase)
-        && string.IsNullOrWhiteSpace(configuration["PasswordReset:SmtpPassword"])
-        && string.IsNullOrWhiteSpace(configuration["PasswordReset:Password"]))
+    if (string.Equals(configuration["PasswordReset:Provider"], "Smtp", StringComparison.OrdinalIgnoreCase))
     {
-        throw new InvalidOperationException("Production SMTP password must be provided through secure configuration.");
+        var smtpHost = FirstConfigured(configuration["PasswordReset:Host"], configuration["PasswordReset:SmtpHost"]);
+        var smtpUsername = FirstConfigured(configuration["PasswordReset:Username"], configuration["PasswordReset:SmtpUsername"]);
+        var smtpPassword = FirstConfigured(
+            configuration["PasswordReset:Password"],
+            configuration["PasswordReset:SmtpPassword"],
+            Environment.GetEnvironmentVariable("GMAIL_APP_PASSWORD"),
+            Environment.GetEnvironmentVariable("SMTP_PASSWORD"));
+        var senderEmail = FirstConfigured(configuration["PasswordReset:SenderEmail"], configuration["PasswordReset:FromEmail"]);
+
+        if (string.IsNullOrWhiteSpace(smtpHost))
+        {
+            throw new InvalidOperationException("Production SMTP host must be configured.");
+        }
+
+        if (string.IsNullOrWhiteSpace(smtpUsername))
+        {
+            throw new InvalidOperationException("Production SMTP username must be provided through secure configuration.");
+        }
+
+        if (string.IsNullOrWhiteSpace(smtpPassword))
+        {
+            throw new InvalidOperationException("Production SMTP password must be provided through secure configuration.");
+        }
+
+        if (string.IsNullOrWhiteSpace(senderEmail))
+        {
+            throw new InvalidOperationException("Production SMTP sender email must be configured.");
+        }
+
+        static string? FirstConfigured(params string?[] values)
+        {
+            return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+        }
     }
 
     if (string.IsNullOrWhiteSpace(configuration["DataProtection:KeyRingPath"]))
