@@ -140,6 +140,51 @@ public class EntitlementServiceTests
     }
 
     [Fact]
+    public async Task GetGuestUploadStatusAsyncAllowsFreshGuestWhenFreePlanWasRemoved()
+    {
+        await using var dbContext = CreateDbContext();
+        var sharedDevice = CreateDevice();
+        dbContext.DeviceIdentities.Add(sharedDevice);
+        await dbContext.SaveChangesAsync();
+        var service = new EntitlementService(dbContext);
+
+        var response = await service.GetGuestUploadStatusAsync(new SubscriptionClientContext
+        {
+            DeviceIdentityId = sharedDevice.Id,
+            IpHash = "fresh-guest-ip"
+        });
+
+        Assert.True(response.Success);
+        Assert.True(response.Data!.CanUpload);
+        Assert.Equal(1, response.Data.RemainingUploads);
+        Assert.Null(response.Data.BlockReasonCode);
+        Assert.Equal(SubscriptionPlanCodes.Free, (await dbContext.SubscriptionPlans.SingleAsync()).Code);
+    }
+
+    [Fact]
+    public async Task ReserveScanAsyncAllowsFirstGuestUploadWhenFreePlanWasRemoved()
+    {
+        await using var dbContext = CreateDbContext();
+        var sharedDevice = CreateDevice();
+        dbContext.Users.Add(CreateUser(1));
+        dbContext.DeviceIdentities.Add(sharedDevice);
+        await dbContext.SaveChangesAsync();
+        var service = new EntitlementService(dbContext);
+        var context = new SubscriptionClientContext
+        {
+            DeviceIdentityId = sharedDevice.Id,
+            IpHash = "fresh-guest-ip"
+        };
+
+        var result = await service.ReserveScanAsync(CreateRequest(1, context, isGuestUpload: true));
+
+        Assert.True(result.Success);
+        Assert.Equal(ScanReservationKinds.FreeTrial, result.EntitlementType);
+        Assert.Equal(1, await dbContext.ScanReservations.CountAsync());
+        Assert.Equal(SubscriptionPlanCodes.Free, (await dbContext.SubscriptionPlans.SingleAsync()).Code);
+    }
+
+    [Fact]
     public async Task ReserveScanAsyncExhaustsFreeTrialForMultiAccountReuseOfSameDevice()
     {
         await using var dbContext = CreateDbContext();

@@ -78,13 +78,7 @@ public class EntitlementService(
         SubscriptionClientContext? clientContext = null,
         CancellationToken cancellationToken = default)
     {
-        var freePlan = await GetPlanAsync(SubscriptionPlanCodes.Free, cancellationToken);
-        if (freePlan is null)
-        {
-            return ApiResponse<GuestUploadStatusResponse>.ErrorResponse(
-                "Free guest upload is not available.",
-                errorCode: SubscriptionErrorCodes.SubscriptionRequired);
-        }
+        var freePlan = await EnsureGuestFreePlanAsync(cancellationToken);
 
         if (clientContext?.DeviceIdentityId is null)
         {
@@ -458,7 +452,9 @@ public class EntitlementService(
                 SubscriptionErrorCodes.ClientIpRequired);
         }
 
-        var freePlan = await GetPlanAsync(SubscriptionPlanCodes.Free, cancellationToken);
+        var freePlan = request.IsGuestUpload
+            ? await EnsureGuestFreePlanAsync(cancellationToken)
+            : await GetPlanAsync(SubscriptionPlanCodes.Free, cancellationToken);
         if (freePlan is null)
         {
             return ScanReservationResult.Failed(
@@ -644,6 +640,49 @@ public class EntitlementService(
     {
         return await dbContext.SubscriptionPlans
             .FirstOrDefaultAsync(plan => plan.Code == planCode && plan.IsActive, cancellationToken);
+    }
+
+    private async Task<SubscriptionPlan> EnsureGuestFreePlanAsync(CancellationToken cancellationToken)
+    {
+        var freePlan = await GetPlanAsync(SubscriptionPlanCodes.Free, cancellationToken);
+        if (freePlan is not null)
+        {
+            return freePlan;
+        }
+
+        freePlan = new SubscriptionPlan
+        {
+            Code = SubscriptionPlanCodes.Free,
+            Name = "Free",
+            PriceAmount = 0m,
+            Currency = "PKR",
+            ScanLimit = 2,
+            MaxVideoSizeBytes = VideoUploadSizeLimits.FreeMaxVideoSizeBytes,
+            AllowsSmartScan = true,
+            AllowsDetailedScan = false,
+            ValidityDays = null,
+            IsActive = true,
+            SortOrder = 1,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow
+        };
+
+        dbContext.SubscriptionPlans.Add(freePlan);
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException)
+        {
+            dbContext.Entry(freePlan).State = EntityState.Detached;
+            freePlan = await GetPlanAsync(SubscriptionPlanCodes.Free, cancellationToken);
+            if (freePlan is null)
+            {
+                throw;
+            }
+        }
+
+        return freePlan;
     }
 
     private async Task ExpireSubscriptionsAsync(CancellationToken cancellationToken)
