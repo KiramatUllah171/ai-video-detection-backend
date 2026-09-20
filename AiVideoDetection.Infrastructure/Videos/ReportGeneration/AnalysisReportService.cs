@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using AiVideoDetection.Application.Common;
@@ -16,7 +15,6 @@ namespace AiVideoDetection.Infrastructure.Videos.Reports;
 
 public class AnalysisReportService(AppDbContext dbContext, IOptions<VideoProcessingOptions> options) : IAnalysisReportService
 {
-    private const string ProductName = "SachAI";
     private const decimal PercentageScale = 100m;
     private readonly VideoProcessingOptions _options = options.Value;
 
@@ -184,49 +182,6 @@ public class AnalysisReportService(AppDbContext dbContext, IOptions<VideoProcess
         }
     }
 
-    private static void DrawCover(ReportPdfDocument document, AiResult result, string reportReference)
-    {
-        document.FillRect(0, 0, ReportPdfDocument.PageWidth, 118, ReportColor.Navy);
-        document.Text(ProductName, 48, 42, 24, ReportColor.White, bold: true);
-        document.Text("Video Authenticity Report", 48, 74, 13, ReportColor.Cyan);
-        document.TextRight("Generated " + FormatDate(DateTimeOffset.UtcNow), ReportPdfDocument.PageWidth - 48, 48, 9, ReportColor.White);
-        document.TextRight("Reference " + reportReference, ReportPdfDocument.PageWidth - 48, 66, 9, ReportColor.White);
-
-        document.Space(138);
-        document.Heading("Report owner");
-        document.KeyValueGrid([
-            ("Name", result.Video.User.Name),
-            ("Email", result.Video.User.Email),
-            ("Account status", result.Video.User.EmailConfirmed ? "Email confirmed" : "Email not confirmed")
-        ]);
-
-        document.Heading("Analyzed video");
-        document.KeyValueGrid([
-            ("File name", result.Video.OriginalName),
-            ("File type", result.Video.ContentType ?? "Not available"),
-            ("File size", FormatBytes(result.Video.FileSize)),
-            ("Uploaded", FormatDate(result.Video.CreatedAt)),
-            ("Analysis completed", FormatDate(result.CreatedAt))
-        ]);
-    }
-
-    private static void DrawExecutiveSummary(ReportPdfDocument document, AiResult result)
-    {
-        document.Heading("Executive summary");
-        document.InfoBox([
-            ("Final verdict", FormatLabel(result.Label)),
-            ("AI/manipulated probability", FormatPercent(result.FinalScore)),
-            ("Likely real probability", FormatPercent(1m - result.FinalScore)),
-            ("Result confidence", FormatPercent(result.Confidence)),
-            ("Recommended action", GetRecommendedAction(result))
-        ]);
-
-        if (!string.IsNullOrWhiteSpace(result.Summary))
-        {
-            document.Paragraph(SanitizeProviderText(result.Summary)!);
-        }
-    }
-
     private static void DrawProbabilityBalance(ReportPdfDocument document, AiResult result)
     {
         document.Heading("Probability balance");
@@ -258,70 +213,6 @@ public class AnalysisReportService(AppDbContext dbContext, IOptions<VideoProcess
         document.Text("Likely real: " + FormatPercent(realPercent), x, document.CursorY, 10, ReportColor.Green, bold: true);
         document.TextRight("AI/manipulated: " + FormatPercent(aiPercent), x + barWidth, document.CursorY, 10, ReportColor.Red, bold: true);
         document.CursorY += 24;
-    }
-
-    private static void DrawVideoInformation(ReportPdfDocument document, Video video)
-    {
-        document.Heading("Video information");
-        document.KeyValueGrid([
-            ("Original file name", video.OriginalName),
-            ("Duration", video.DurationSeconds is null ? "Not available" : FormatSeconds(video.DurationSeconds.Value)),
-            ("Format", video.FormatName ?? "Not available"),
-            ("Extension", video.FileExtension ?? "Not available"),
-            ("Processing status", video.Status.ToString())
-        ]);
-    }
-
-    private static void DrawDetectionBreakdown(ReportPdfDocument document, AiResult result)
-    {
-        document.Heading("Detection breakdown");
-        document.KeyValueGrid([
-            ("Visual model score", FormatPercent(result.VisualScore)),
-            ("Metadata score", result.MetadataScore is null ? "Not available" : FormatPercent(result.MetadataScore.Value)),
-            ("Temporal score", result.TemporalScore is null ? "Not available" : FormatPercent(result.TemporalScore.Value)),
-            ("Final weighted score", FormatPercent(result.FinalScore)),
-            ("Model version", SanitizeProviderText(result.ModelVersion?.Version) ?? "Internal"),
-            ("Detection mode", FormatWords(result.ProviderMode)),
-            ("Decision source", SanitizeProviderText(result.FinalDecisionSource) ?? "Internal"),
-            ("External verification", string.IsNullOrWhiteSpace(result.ExternalProviderName) ? "Not used" : "Used")
-        ]);
-
-        if (result.FallbackUsed)
-        {
-            document.WarningBox("Fallback used: " + (SanitizeProviderText(result.FallbackReason) ?? "The primary provider was not available."));
-        }
-    }
-
-    private static void DrawMetadata(ReportPdfDocument document, MetadataResult? metadata)
-    {
-        document.Heading("Metadata summary");
-        if (metadata is null)
-        {
-            document.Paragraph("Metadata was not available for this video.");
-            return;
-        }
-
-        document.KeyValueGrid([
-            ("Duration", metadata.DurationSeconds is null ? "Not available" : FormatSeconds(metadata.DurationSeconds.Value)),
-            ("Resolution", metadata.Resolution ?? "Not available"),
-            ("FPS", metadata.Fps?.ToString("0.###", CultureInfo.InvariantCulture) ?? "Not available"),
-            ("Video codec", metadata.Codec ?? "Not available"),
-            ("Audio codec", metadata.AudioCodec ?? "Not available"),
-            ("Bitrate", metadata.Bitrate?.ToString("N0", CultureInfo.InvariantCulture) ?? "Not available"),
-            ("Encoder", metadata.Encoder ?? "Not available"),
-            ("Creation time", metadata.CreationTime is null ? "Not available" : FormatDate(metadata.CreationTime.Value))
-        ]);
-
-        var warnings = ParseStringArray(metadata.WarningsJson);
-        if (metadata.HasMissingMetadata && warnings.Count == 0)
-        {
-            warnings.Add("Some expected metadata fields were missing.");
-        }
-
-        foreach (var warning in warnings)
-        {
-            document.WarningBox(warning);
-        }
     }
 
     private static void DrawEvidence(ReportPdfDocument document, IEnumerable<EvidenceItem> evidenceItems)
@@ -359,42 +250,6 @@ public class AnalysisReportService(AppDbContext dbContext, IOptions<VideoProcess
         }
     }
 
-    private static void DrawOriginTracking(ReportPdfDocument document, IEnumerable<SourceMatch> sourceMatches)
-    {
-        document.SetSection("Origin tracking");
-        document.Heading("Origin tracking");
-        document.Paragraph("Internal fingerprint and metadata matches");
-        var matches = sourceMatches
-            .OrderBy(match => match.Rank)
-            .Take(10)
-            .ToList();
-
-        if (matches.Count == 0)
-        {
-            document.Paragraph("No previous internal or external source matches were found.");
-            return;
-        }
-
-        foreach (var match in matches)
-        {
-            var title = match.Platform.Equals("Internal", StringComparison.OrdinalIgnoreCase)
-                ? "Previously analyzed internal video"
-                : match.Title ?? match.Platform;
-            var details = FormatWords(match.Platform)
-                + " | Similarity " + FormatPercent(match.SimilarityScore)
-                + " | Confidence " + FormatWords(match.Confidence.ToString());
-            if (match.UploadDatetime is not null)
-            {
-                details += " | Source date " + FormatDate(match.UploadDatetime.Value);
-            }
-
-            var body = match.Platform.Equals("Internal", StringComparison.OrdinalIgnoreCase)
-                ? "This video matches a previously analyzed internal video based on fingerprint and metadata comparison."
-                : "This video has a source match that should be reviewed alongside the authenticity result.";
-            document.SectionCard(title, body, details, ReportCardTone.Default, "Origin tracking continued");
-        }
-    }
-
     private static void DrawDisclaimer(ReportPdfDocument document)
     {
         const string body = "This report is probability-based and intended for review support. It should not be treated as absolute proof of authenticity, manipulation, authorship, or legal responsibility.";
@@ -416,13 +271,6 @@ public class AnalysisReportService(AppDbContext dbContext, IOptions<VideoProcess
         };
     }
 
-    private static string CreateReportReference(AiResult result)
-    {
-        var input = $"{result.Video.UserId}:{result.VideoId}:{result.Id}:{result.CreatedAt:O}";
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(input));
-        return "AVDR-" + Convert.ToHexString(hash)[..12];
-    }
-
     private static string CreateReportFileName(string originalName, DateTimeOffset createdAt)
     {
         var baseName = Path.GetFileNameWithoutExtension(originalName);
@@ -437,11 +285,6 @@ public class AnalysisReportService(AppDbContext dbContext, IOptions<VideoProcess
         }
 
         return $"ai-video-detection-report-{safeName}-{createdAt:yyyyMMddHHmm}.pdf";
-    }
-
-    private static string FormatDate(DateTimeOffset value)
-    {
-        return value.ToUniversalTime().ToString("MMM d, yyyy HH:mm 'UTC'", CultureInfo.InvariantCulture);
     }
 
     private static string FormatPercent(decimal value)
@@ -1345,11 +1188,6 @@ internal sealed class ReportPdfDocument
             .Append(F(left + r - c)).Append(' ').Append(F(bottom)).Append(' ')
             .Append(F(left + r)).Append(' ').Append(F(bottom)).Append(" c")
             .ToString();
-    }
-
-    private static string FormatHeaderDate(DateTimeOffset value)
-    {
-        return value.ToUniversalTime().ToString("MMM d, yyyy HH:mm 'UTC'", CultureInfo.InvariantCulture);
     }
 
     private static void DrawFooter(PdfPageContent page, int pageNumber, int pageCount)
