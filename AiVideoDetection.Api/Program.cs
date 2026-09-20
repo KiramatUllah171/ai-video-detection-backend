@@ -325,6 +325,7 @@ if (!app.Environment.IsDevelopment())
     app.UseHttpsRedirection();
 }
 
+app.UseCors("ReactFrontend");
 app.UseMiddleware<SecurityHeadersMiddleware>();
 app.UseMiddleware<CorrelationIdMiddleware>();
 app.UseSerilogRequestLogging(options =>
@@ -351,7 +352,6 @@ if (app.Environment.IsDevelopment())
     app.UseHangfireDashboard("/hangfire");
 }
 
-app.UseCors("ReactFrontend");
 app.UseAuthentication();
 app.UseRateLimiter();
 app.UseAuthorization();
