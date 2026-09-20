@@ -154,6 +154,8 @@ public sealed class AdminUpdateUserStatusRequest
 
 public sealed class AdminAssignUserRequestsRequest
 {
+    public string Email { get; init; } = string.Empty;
+
     public int ScanLimit { get; init; }
 
     public int ValidityDays { get; init; } = 30;
@@ -166,6 +168,8 @@ public sealed class AdminAssignUserRequestsRequest
 public sealed class AdminManualSubscriptionGrantDto
 {
     public bool Created { get; init; }
+
+    public bool HasManualGrant { get; init; }
 
     public long UserId { get; init; }
 

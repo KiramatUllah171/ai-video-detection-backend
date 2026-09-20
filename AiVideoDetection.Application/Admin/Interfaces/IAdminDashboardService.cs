@@ -20,8 +20,11 @@ public interface IAdminDashboardService
         bool isActive,
         CancellationToken cancellationToken = default);
 
+    Task<ApiResponse<AdminManualSubscriptionGrantDto>> GetUserRequestGrantAsync(
+        string email,
+        CancellationToken cancellationToken = default);
+
     Task<ApiResponse<AdminManualSubscriptionGrantDto>> AssignUserRequestsAsync(
-        long userId,
         long currentAdminId,
         AdminAssignUserRequestsRequest request,
         CancellationToken cancellationToken = default);

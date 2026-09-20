@@ -289,15 +289,37 @@ public sealed class AdminDashboardService(
         return ApiResponse<AdminUserListItemDto>.SuccessResponse(response, isActive ? "User account enabled." : "User account disabled.");
     }
 
+    public async Task<ApiResponse<AdminManualSubscriptionGrantDto>> GetUserRequestGrantAsync(
+        string email,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedEmail = NormalizeEmail(email);
+        if (string.IsNullOrWhiteSpace(normalizedEmail))
+        {
+            return ApiResponse<AdminManualSubscriptionGrantDto>.ErrorResponse("User email is required.");
+        }
+
+        var user = await dbContext.Users
+            .AsNoTracking()
+            .FirstOrDefaultAsync(existing => existing.Email != null && existing.Email.ToLower() == normalizedEmail, cancellationToken);
+        if (user is null)
+        {
+            return ApiResponse<AdminManualSubscriptionGrantDto>.ErrorResponse("User was not found.");
+        }
+
+        var snapshot = await LoadManualGrantSnapshotAsync(user, DateTimeOffset.UtcNow, cancellationToken);
+        return ApiResponse<AdminManualSubscriptionGrantDto>.SuccessResponse(snapshot, "User request status loaded.");
+    }
+
     public async Task<ApiResponse<AdminManualSubscriptionGrantDto>> AssignUserRequestsAsync(
-        long userId,
         long currentAdminId,
         AdminAssignUserRequestsRequest request,
         CancellationToken cancellationToken = default)
     {
-        if (userId <= 0)
+        var normalizedEmail = NormalizeEmail(request.Email);
+        if (string.IsNullOrWhiteSpace(normalizedEmail))
         {
-            return ApiResponse<AdminManualSubscriptionGrantDto>.ErrorResponse("User was not found.");
+            return ApiResponse<AdminManualSubscriptionGrantDto>.ErrorResponse("User email is required.");
         }
 
         if (request.ScanLimit is < 1 or > 1000)
@@ -315,7 +337,9 @@ public sealed class AdminDashboardService(
             return ApiResponse<AdminManualSubscriptionGrantDto>.ErrorResponse("Notes cannot be longer than 500 characters.");
         }
 
-        var user = await dbContext.Users.FirstOrDefaultAsync(existing => existing.Id == userId, cancellationToken);
+        var user = await dbContext.Users.FirstOrDefaultAsync(
+            existing => existing.Email != null && existing.Email.ToLower() == normalizedEmail,
+            cancellationToken);
         if (user is null)
         {
             return ApiResponse<AdminManualSubscriptionGrantDto>.ErrorResponse("User was not found.");
@@ -341,7 +365,7 @@ public sealed class AdminDashboardService(
             var activeSubscriptions = await dbContext.UserSubscriptions
                 .Include(subscription => subscription.SubscriptionPlan)
                 .Where(subscription =>
-                    subscription.UserId == userId &&
+                    subscription.UserId == user.Id &&
                     subscription.Status == SubscriptionStatuses.Active &&
                     subscription.StartsAt <= now &&
                     subscription.ExpiresAt > now &&
@@ -389,7 +413,7 @@ public sealed class AdminDashboardService(
             {
                 manualSubscription = new UserSubscription
                 {
-                    UserId = userId,
+                    UserId = user.Id,
                     SubscriptionPlan = plan,
                     Status = SubscriptionStatuses.Active,
                     StartsAt = now,
@@ -462,8 +486,9 @@ public sealed class AdminDashboardService(
             var dto = new AdminManualSubscriptionGrantDto
             {
                 Created = created,
+                HasManualGrant = true,
                 UserId = user.Id,
-                UserEmail = user.Email,
+                UserEmail = user.Email ?? string.Empty,
                 SubscriptionId = manualSubscription.Id,
                 PlanCode = plan.Code,
                 PlanName = plan.Name,
@@ -970,6 +995,86 @@ public sealed class AdminDashboardService(
     private static string GenerateManualPlanCode(DateTimeOffset now)
     {
         return $"{ManualPlanPrefix}-{now:yyyyMMddHHmmss}-{Guid.NewGuid():N}"[..29].ToUpperInvariant();
+    }
+
+    private async Task<AdminManualSubscriptionGrantDto> LoadManualGrantSnapshotAsync(
+        User user,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var manualPlanCodePrefix = ManualPlanPrefix + "-";
+        var activeSubscriptions = await dbContext.UserSubscriptions
+            .AsNoTracking()
+            .Include(subscription => subscription.SubscriptionPlan)
+            .Where(subscription =>
+                subscription.UserId == user.Id &&
+                subscription.Status == SubscriptionStatuses.Active &&
+                subscription.StartsAt <= now &&
+                subscription.ExpiresAt > now &&
+                subscription.SubscriptionPlan.Code != SubscriptionPlanCodes.Free)
+            .OrderByDescending(subscription => subscription.ExpiresAt)
+            .ThenByDescending(subscription => subscription.Id)
+            .ToListAsync(cancellationToken);
+
+        var manualSubscription = activeSubscriptions
+            .FirstOrDefault(subscription =>
+                subscription.SubscriptionPlan is not null &&
+                subscription.SubscriptionPlan.Code.StartsWith(manualPlanCodePrefix));
+        var subscription = manualSubscription ?? activeSubscriptions.FirstOrDefault();
+        if (subscription is null)
+        {
+            return new AdminManualSubscriptionGrantDto
+            {
+                Created = false,
+                HasManualGrant = false,
+                UserId = user.Id,
+                UserEmail = user.Email ?? string.Empty,
+                PlanCode = string.Empty,
+                PlanName = "No active paid or manual grant",
+                ScanLimit = 0,
+                UsedScans = 0,
+                ReservedScans = 0,
+                RemainingScans = 0,
+                AllowsDetailedScan = false,
+                StartsAt = now,
+                ExpiresAt = now
+            };
+        }
+
+        var usedScans = await dbContext.ScanUsages
+            .AsNoTracking()
+            .CountAsync(usage => usage.UserSubscriptionId == subscription.Id, cancellationToken);
+        var reservedScans = await dbContext.ScanReservations
+            .AsNoTracking()
+            .CountAsync(reservation =>
+                    reservation.UserSubscriptionId == subscription.Id &&
+                    reservation.Status == ScanReservationStatuses.Reserved,
+                cancellationToken);
+
+        var plan = subscription.SubscriptionPlan!;
+
+        return new AdminManualSubscriptionGrantDto
+        {
+            Created = false,
+            HasManualGrant = manualSubscription is not null,
+            UserId = user.Id,
+            UserEmail = user.Email ?? string.Empty,
+            SubscriptionId = subscription.Id,
+            PlanCode = plan.Code,
+            PlanName = plan.Name,
+            ScanLimit = plan.ScanLimit,
+            UsedScans = usedScans,
+            ReservedScans = reservedScans,
+            RemainingScans = Math.Max(0, plan.ScanLimit - usedScans - reservedScans),
+            AllowsDetailedScan = plan.AllowsDetailedScan,
+            StartsAt = subscription.StartsAt,
+            ExpiresAt = subscription.ExpiresAt
+        };
+    }
+
+    private static string NormalizeEmail(string? email)
+    {
+        return email?.Trim().ToLowerInvariant() ?? string.Empty;
     }
 
     private static AdminVideoListItemDto MapVideoListItem(Video video)

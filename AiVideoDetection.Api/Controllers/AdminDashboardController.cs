@@ -55,12 +55,22 @@ public sealed class AdminDashboardController(
         return response.Success ? Ok(response) : BadRequest(response);
     }
 
-    [HttpPost("users/{userId:long}/manual-requests")]
+    [HttpGet("users/manual-requests")]
+    [ProducesResponseType(typeof(ApiResponse<AdminManualSubscriptionGrantDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<AdminManualSubscriptionGrantDto>), StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<ApiResponse<AdminManualSubscriptionGrantDto>>> GetUserRequestGrant(
+        [FromQuery] string email,
+        CancellationToken cancellationToken)
+    {
+        var response = await adminDashboardService.GetUserRequestGrantAsync(email, cancellationToken);
+        return response.Success ? Ok(response) : BadRequest(response);
+    }
+
+    [HttpPost("users/manual-requests")]
     [ProducesResponseType(typeof(ApiResponse<AdminManualSubscriptionGrantDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<AdminManualSubscriptionGrantDto>), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ApiResponse<AdminManualSubscriptionGrantDto>), StatusCodes.Status401Unauthorized)]
     public async Task<ActionResult<ApiResponse<AdminManualSubscriptionGrantDto>>> AssignUserRequests(
-        long userId,
         [FromBody] AdminAssignUserRequestsRequest request,
         CancellationToken cancellationToken)
     {
@@ -69,7 +79,7 @@ public sealed class AdminDashboardController(
             return Unauthorized(ApiResponse<AdminManualSubscriptionGrantDto>.ErrorResponse("Unauthorized."));
         }
 
-        var response = await adminDashboardService.AssignUserRequestsAsync(userId, currentAdminId, request, cancellationToken);
+        var response = await adminDashboardService.AssignUserRequestsAsync(currentAdminId, request, cancellationToken);
         return response.Success ? Ok(response) : BadRequest(response);
     }
 
