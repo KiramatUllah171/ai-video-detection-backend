@@ -31,8 +31,6 @@ public class AnalysisReportService(AppDbContext dbContext, IOptions<VideoProcess
                 .ThenInclude(video => video.User)
             .Include(aiResult => aiResult.Video)
                 .ThenInclude(video => video.MetadataResult)
-            .Include(aiResult => aiResult.Video)
-                .ThenInclude(video => video.SourceMatches)
             .Include(aiResult => aiResult.ModelVersion)
             .Include(aiResult => aiResult.EvidenceItems)
             .Where(aiResult => aiResult.VideoId == videoId
@@ -53,9 +51,8 @@ public class AnalysisReportService(AppDbContext dbContext, IOptions<VideoProcess
                 $"This report is no longer available because the {FormatRetentionPeriod(_options.ReportRetention)} report retention period has ended.");
         }
 
-        var reportReference = CreateReportReference(result);
-        var document = new ReportPdfDocument(reportReference, DateTimeOffset.UtcNow);
-        BuildReport(document, result, reportReference);
+        var document = new ReportPdfDocument();
+        BuildReport(document, result);
 
         return ApiResponse<AnalysisReportFile>.SuccessResponse(new AnalysisReportFile
         {
@@ -79,20 +76,19 @@ public class AnalysisReportService(AppDbContext dbContext, IOptions<VideoProcess
         return $"{Math.Max(1, (int)Math.Ceiling(retention.TotalMinutes))}-minute";
     }
 
-    private static void BuildReport(ReportPdfDocument document, AiResult result, string reportReference)
+    private static void BuildReport(ReportPdfDocument document, AiResult result)
     {
-        document.SetSection("Result overview");
+        document.SetSection("Video result");
         document.AddPage();
         DrawResultOverview(document, result);
 
-        document.SetSection("Technical details");
+        document.SetSection("Video details");
         document.AddPage();
-        DrawTechnicalDetails(document, result);
+        DrawVideoDetails(document, result);
 
-        document.SetSection("Evidence");
+        document.SetSection("Important findings");
         document.AddPage();
         DrawEvidence(document, result.EvidenceItems);
-        DrawOriginTracking(document, result.Video.SourceMatches);
         DrawDisclaimer(document);
         document.FinalizePages();
     }
@@ -100,8 +96,8 @@ public class AnalysisReportService(AppDbContext dbContext, IOptions<VideoProcess
     private static void DrawResultOverview(ReportPdfDocument document, AiResult result)
     {
         document.SectionTitle(
-            "Result overview",
-            "A decision-focused summary with the most important findings first.");
+            "Video result",
+            "A short authenticity summary for the analyzed video.");
 
         document.ResultSummaryCards(
             FormatLabel(result.Label).ToUpperInvariant(),
@@ -113,25 +109,25 @@ public class AnalysisReportService(AppDbContext dbContext, IOptions<VideoProcess
         document.TwoColumnKeyValueCards(
             "Report owner",
             [
-                ("Name", result.Video.User.Name),
-                ("Email", result.Video.User.Email),
+                ("Name", result.Video.User.Name ?? "Not available"),
+                ("Email", result.Video.User.Email ?? "Not available"),
                 ("Account status", result.Video.User.EmailConfirmed ? "Email confirmed" : "Email not confirmed")
             ],
-            "Analyzed video",
+            "Video file",
             [
                 ("File name", result.Video.OriginalName),
                 ("File type", result.Video.ContentType ?? "Not available"),
                 ("File size", FormatBytes(result.Video.FileSize)),
-                ("Uploaded", FormatDate(result.Video.CreatedAt)),
-                ("Analysis completed", FormatDate(result.CreatedAt))
+                ("Duration", result.Video.DurationSeconds is null ? "Not available" : FormatSeconds(result.Video.DurationSeconds.Value)),
+                ("Resolution", result.Video.MetadataResult?.Resolution ?? "Not available")
             ]);
 
         document.InformationBox("Recommended action", GetRecommendedAction(result));
     }
 
-    private static void DrawTechnicalDetails(ReportPdfDocument document, AiResult result)
+    private static void DrawVideoDetails(ReportPdfDocument document, AiResult result)
     {
-        document.SectionTitle("Technical details", "Core file properties and detection outputs");
+        document.SectionTitle("Video details", "Core video properties and score details");
 
         document.TwoColumnKeyValueCards(
             "Video information",
@@ -140,27 +136,19 @@ public class AnalysisReportService(AppDbContext dbContext, IOptions<VideoProcess
                 ("Duration", result.Video.DurationSeconds is null ? "Not available" : FormatSeconds(result.Video.DurationSeconds.Value)),
                 ("Format", result.Video.FormatName ?? "Not available"),
                 ("Extension", result.Video.FileExtension ?? "Not available"),
-                ("Processing status", result.Video.Status.ToString())
+                ("Resolution", result.Video.MetadataResult?.Resolution ?? "Not available"),
+                ("FPS / Frame rate", result.Video.MetadataResult?.Fps?.ToString("0.###", CultureInfo.InvariantCulture) ?? "Not available")
             ],
-            "Detection breakdown",
+            "Detection scores",
             [
                 ("Visual model score", FormatPercent(result.VisualScore)),
                 ("Metadata score", result.MetadataScore is null ? "Not available" : FormatPercent(result.MetadataScore.Value)),
                 ("Temporal score", result.TemporalScore is null ? "Not available" : FormatPercent(result.TemporalScore.Value)),
                 ("Final weighted score", FormatPercent(result.FinalScore)),
-                ("Model version", SanitizeProviderText(result.ModelVersion?.Version) ?? "Internal"),
-                ("Detection mode", FormatWords(result.ProviderMode)),
-                ("Decision source", SanitizeProviderText(result.FinalDecisionSource) ?? "Internal"),
-                ("External verification", string.IsNullOrWhiteSpace(result.ExternalProviderName) ? "Not used" : "Used")
+                ("Confidence", FormatPercent(result.Confidence))
             ]);
 
-        if (result.FallbackUsed)
-        {
-            document.WarningBox("Fallback used: " + (SanitizeProviderText(result.FallbackReason) ?? "The primary provider was not available."));
-        }
-
         DrawMetadataTiles(document, result.Video.MetadataResult);
-        DrawAnalysisSourceAndScoreHandling(document, result);
     }
 
     private static void DrawMetadataTiles(ReportPdfDocument document, MetadataResult? metadata)
@@ -171,10 +159,7 @@ public class AnalysisReportService(AppDbContext dbContext, IOptions<VideoProcess
             ("Resolution", metadata?.Resolution ?? "Not available"),
             ("FPS / Frame rate", metadata?.Fps?.ToString("0.###", CultureInfo.InvariantCulture) ?? "Not available"),
             ("Video codec", metadata?.Codec ?? "Not available"),
-            ("Audio codec", metadata?.AudioCodec ?? "Not available"),
-            ("Bitrate", metadata?.Bitrate?.ToString("N0", CultureInfo.InvariantCulture) ?? "Not available"),
-            ("Encoder", metadata?.Encoder ?? "Not available"),
-            ("Creation time", metadata?.CreationTime is null ? "Not available" : FormatDate(metadata.CreationTime.Value))
+            ("Bitrate", metadata?.Bitrate?.ToString("N0", CultureInfo.InvariantCulture) ?? "Not available")
         };
 
         document.EnsureSpace(document.EstimateMetricTileBlockHeight(tiles.Count) + document.HeadingBlockHeight);
@@ -193,26 +178,10 @@ public class AnalysisReportService(AppDbContext dbContext, IOptions<VideoProcess
             warnings.Add("Some expected metadata fields were missing.");
         }
 
-        foreach (var warning in warnings)
+        foreach (var warning in warnings.Where(ShouldShowMetadataWarning))
         {
             document.WarningBox(FormatMetadataWarning(warning));
         }
-    }
-
-    private static void DrawAnalysisSourceAndScoreHandling(ReportPdfDocument document, AiResult result)
-    {
-        var source = SanitizeProviderText(result.FinalDecisionSource) ?? "Internal";
-        var providerMode = FormatWords(result.ProviderMode);
-        var externalStatus = string.IsNullOrWhiteSpace(result.ExternalProviderName)
-            ? "External verification was not used for this result."
-            : source.Equals("External verification", StringComparison.OrdinalIgnoreCase)
-                ? "That source was used for the final decision."
-                : "External verification was used for this result.";
-        var summary = string.IsNullOrWhiteSpace(result.Summary)
-            ? string.Empty
-            : "Analysis summary: " + SanitizeProviderText(result.Summary) + " ";
-        var text = $"{summary}Final decision source: {source}. Detection mode: {providerMode}. {externalStatus} Metadata is shown separately and was not used to overwrite the external verification score.";
-        document.InformationBox("Analysis source & score handling", text);
     }
 
     private static void DrawCover(ReportPdfDocument document, AiResult result, string reportReference)
@@ -357,7 +326,7 @@ public class AnalysisReportService(AppDbContext dbContext, IOptions<VideoProcess
 
     private static void DrawEvidence(ReportPdfDocument document, IEnumerable<EvidenceItem> evidenceItems)
     {
-        document.SectionTitle("Evidence", "Metadata findings that support reviewer context");
+        document.SectionTitle("Important findings", "Only the main findings recorded for this video");
         var items = evidenceItems
             .OrderByDescending(item => item.Severity)
             .ThenBy(item => item.CreatedAt)
@@ -516,6 +485,14 @@ public class AnalysisReportService(AppDbContext dbContext, IOptions<VideoProcess
         };
     }
 
+    private static bool ShouldShowMetadataWarning(string warning)
+    {
+        var normalized = warning.Trim().ToLowerInvariant();
+        return normalized is not "missing_creation_time"
+            and not "missing_encoder"
+            and not "missing_encoder_metadata";
+    }
+
     private static string FormatLabel(AnalysisLabel label)
     {
         return label switch
@@ -614,15 +591,7 @@ internal sealed class ReportPdfDocument
 
     private readonly List<PdfPageContent> _pages = [];
     private PdfPageContent _current = new();
-    private readonly string _reportReference;
-    private readonly DateTimeOffset _generatedAt;
-    private string _sectionName = "Result overview";
-
-    public ReportPdfDocument(string reportReference, DateTimeOffset generatedAt)
-    {
-        _reportReference = reportReference;
-        _generatedAt = generatedAt;
-    }
+    private string _sectionName = "Video result";
 
     public float Margin { get; } = 48;
 
@@ -1114,9 +1083,7 @@ internal sealed class ReportPdfDocument
         FillRect(0, HeaderHeight - 4, PageWidth, 4, ReportColor.Cyan);
         TextTop("AI VIDEO DETECTION", Margin, 20, 15, ReportColor.White, bold: true);
         TextTop("Video Authenticity Report", Margin, 42, 10, ReportColor.Cyan);
-        TextRight(_reportReference, PageWidth - Margin, 18, 10, ReportColor.White, bold: true);
-        TextRight("Generated " + FormatHeaderDate(_generatedAt), PageWidth - Margin, 36, 8.5f, ReportColor.White);
-        TextRight(_sectionName, PageWidth - Margin, 54, 8.5f, ReportColor.Cyan, bold: true);
+        TextRight(_sectionName, PageWidth - Margin, 32, 9.5f, ReportColor.Cyan, bold: true);
     }
 
     private void DrawFilledCard(float x, float y, float width, float height, ReportColor fill, ReportColor border)
