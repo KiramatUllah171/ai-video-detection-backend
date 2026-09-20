@@ -67,12 +67,6 @@ public class DeviceIdentityService(
         var device = await dbContext.DeviceIdentities
             .FirstOrDefaultAsync(identity => identity.DeviceTokenHash == deviceTokenHash, cancellationToken);
 
-        if (device is null && fingerprintHash is not null)
-        {
-            device = await dbContext.DeviceIdentities
-                .FirstOrDefaultAsync(identity => identity.DeviceFingerprintHash == fingerprintHash, cancellationToken);
-        }
-
         if (device is null)
         {
             device = new DeviceIdentity
