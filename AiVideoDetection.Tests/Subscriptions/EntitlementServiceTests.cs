@@ -1,4 +1,5 @@
 using AiVideoDetection.Application.Subscriptions;
+using AiVideoDetection.Application.Subscriptions.Options;
 using AiVideoDetection.Application.Videos.Options;
 using AiVideoDetection.Domain.Constants;
 using AiVideoDetection.Domain.Entities;
@@ -7,6 +8,7 @@ using AiVideoDetection.Infrastructure.Data;
 using AiVideoDetection.Infrastructure.Subscriptions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.Extensions.Options;
 
 namespace AiVideoDetection.Tests.Subscriptions;
 
@@ -65,6 +67,41 @@ public class EntitlementServiceTests
         Assert.NotNull(response.Data);
         Assert.Equal(SubscriptionPlanCodes.Free, response.Data.PlanCode);
         Assert.Equal(1, await dbContext.SubscriptionPlans.CountAsync(plan => plan.Code == SubscriptionPlanCodes.Free));
+    }
+
+    [Fact]
+    public async Task GetStatusAsyncReleasesExpiredUnlinkedFreeTrialReservations()
+    {
+        await using var dbContext = CreateDbContext();
+        var (service, userId, context) = await SeedFreeTrialAsync(
+            dbContext,
+            Options.Create(new ScanReservationOptions
+            {
+                UnlinkedReservationTtlMinutes = 5,
+                ReconciliationBatchSize = 100
+            }));
+        var firstReservation = await service.ReserveScanAsync(CreateRequest(userId, context));
+        var secondReservation = await service.ReserveScanAsync(CreateRequest(userId, context));
+        var expiredAt = DateTimeOffset.UtcNow.AddMinutes(-10);
+        var reservations = await dbContext.ScanReservations.ToListAsync();
+        foreach (var reservation in reservations)
+        {
+            reservation.ReservedAt = expiredAt;
+            reservation.ExpiresAt = expiredAt;
+        }
+        await dbContext.SaveChangesAsync();
+
+        var response = await service.GetStatusAsync(userId, context);
+
+        Assert.True(firstReservation.Success);
+        Assert.True(secondReservation.Success);
+        Assert.True(response.Success);
+        Assert.Equal(2, response.Data!.RemainingScans);
+        Assert.Equal(0, response.Data.ReservedScans);
+        Assert.All(await dbContext.ScanReservations.ToListAsync(), reservation => Assert.Equal(ScanReservationStatuses.Released, reservation.Status));
+        Assert.Equal(0, (await dbContext.FreeTrialAccountUsages.SingleAsync()).ReservedScans);
+        Assert.Equal(0, (await dbContext.FreeTrialDeviceUsages.SingleAsync()).ReservedScans);
+        Assert.Equal(0, (await dbContext.FreeTrialIpUsages.SingleAsync()).ReservedScans);
     }
 
     [Fact]
@@ -816,7 +853,8 @@ public class EntitlementServiceTests
     }
 
     private static async Task<(EntitlementService Service, long UserId, SubscriptionClientContext Context)> SeedFreeTrialAsync(
-        AppDbContext dbContext)
+        AppDbContext dbContext,
+        IOptions<ScanReservationOptions>? reservationOptions = null)
     {
         var user = CreateUser(1);
         var device = CreateDevice();
@@ -825,7 +863,7 @@ public class EntitlementServiceTests
         dbContext.SubscriptionPlans.Add(CreateFreePlan());
         await dbContext.SaveChangesAsync();
 
-        return (new EntitlementService(dbContext), user.Id, new SubscriptionClientContext
+        return (new EntitlementService(dbContext, reservationOptions), user.Id, new SubscriptionClientContext
         {
             DeviceIdentityId = device.Id,
             IpHash = "ip-hash-1"

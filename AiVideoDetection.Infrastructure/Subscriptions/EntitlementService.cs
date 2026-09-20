@@ -62,6 +62,8 @@ public class EntitlementService(
             return ApiResponse<SubscriptionStatusResponse>.SuccessResponse(status);
         }
 
+        await ReleaseExpiredFreeTrialReservationsForStatusAsync(userId, clientContext, cancellationToken);
+
         var freePlan = await EnsureGuestFreePlanAsync(cancellationToken);
         var freeStatus = await BuildFreeStatusAsync(userId, freePlan, clientContext, cancellationToken);
         return ApiResponse<SubscriptionStatusResponse>.SuccessResponse(freeStatus);
@@ -551,6 +553,40 @@ public class EntitlementService(
             AllowsSmartScan = plan.AllowsSmartScan,
             AllowsDetailedScan = plan.AllowsDetailedScan
         };
+    }
+
+    private async Task ReleaseExpiredFreeTrialReservationsForStatusAsync(
+        long userId,
+        SubscriptionClientContext? clientContext,
+        CancellationToken cancellationToken)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var unlinkedExpiryCutoff = now.Subtract(TimeSpan.FromMinutes(Math.Max(1, _reservationOptions.UnlinkedReservationTtlMinutes)));
+        var deviceIdentityId = clientContext?.DeviceIdentityId;
+        var ipHash = clientContext?.IpHash;
+
+        var reservationIds = await dbContext.ScanReservations
+            .AsNoTracking()
+            .Where(reservation =>
+                reservation.ReservationKind == ScanReservationKinds.FreeTrial &&
+                reservation.Status == ScanReservationStatuses.Reserved &&
+                reservation.AnalysisJobId == null &&
+                (reservation.ExpiresAt <= now || reservation.ReservedAt <= unlinkedExpiryCutoff) &&
+                (reservation.UserId == userId ||
+                    (deviceIdentityId.HasValue && reservation.DeviceIdentityId == deviceIdentityId.Value) ||
+                    (!string.IsNullOrWhiteSpace(ipHash) && reservation.FreeTrialIpHash == ipHash)))
+            .OrderBy(reservation => reservation.ReservedAt)
+            .Select(reservation => reservation.Id)
+            .Take(Math.Max(1, _reservationOptions.ReconciliationBatchSize))
+            .ToListAsync(cancellationToken);
+
+        foreach (var reservationId in reservationIds)
+        {
+            await ReleaseReservationAsync(
+                reservationId,
+                "Subscription status check released an expired free-trial reservation.",
+                cancellationToken);
+        }
     }
 
     private async Task<SubscriptionStatusResponse> BuildFreeStatusAsync(
