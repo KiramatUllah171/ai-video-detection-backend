@@ -62,14 +62,7 @@ public class EntitlementService(
             return ApiResponse<SubscriptionStatusResponse>.SuccessResponse(status);
         }
 
-        var freePlan = await GetPlanAsync(SubscriptionPlanCodes.Free, cancellationToken);
-        if (freePlan is null)
-        {
-            return ApiResponse<SubscriptionStatusResponse>.ErrorResponse(
-                "Subscription plan is not available.",
-                errorCode: SubscriptionErrorCodes.SubscriptionRequired);
-        }
-
+        var freePlan = await EnsureGuestFreePlanAsync(cancellationToken);
         var freeStatus = await BuildFreeStatusAsync(userId, freePlan, clientContext, cancellationToken);
         return ApiResponse<SubscriptionStatusResponse>.SuccessResponse(freeStatus);
     }

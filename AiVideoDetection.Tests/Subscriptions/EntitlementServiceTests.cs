@@ -52,6 +52,22 @@ public class EntitlementServiceTests
     }
 
     [Fact]
+    public async Task GetStatusAsyncCreatesFreePlanWhenSeedDataIsMissing()
+    {
+        await using var dbContext = CreateDbContext();
+        dbContext.Users.Add(CreateUser(1));
+        await dbContext.SaveChangesAsync();
+        var service = new EntitlementService(dbContext);
+
+        var response = await service.GetStatusAsync(1);
+
+        Assert.True(response.Success);
+        Assert.NotNull(response.Data);
+        Assert.Equal(SubscriptionPlanCodes.Free, response.Data.PlanCode);
+        Assert.Equal(1, await dbContext.SubscriptionPlans.CountAsync(plan => plan.Code == SubscriptionPlanCodes.Free));
+    }
+
+    [Fact]
     public async Task ReserveScanAsyncExhaustsFreeTrialAcrossAccountDeviceAndIp()
     {
         await using var dbContext = CreateDbContext();
