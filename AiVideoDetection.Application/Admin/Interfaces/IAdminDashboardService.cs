@@ -20,6 +20,12 @@ public interface IAdminDashboardService
         bool isActive,
         CancellationToken cancellationToken = default);
 
+    Task<ApiResponse<AdminManualSubscriptionGrantDto>> AssignUserRequestsAsync(
+        long userId,
+        long currentAdminId,
+        AdminAssignUserRequestsRequest request,
+        CancellationToken cancellationToken = default);
+
     Task<ApiResponse<PagedResponse<AdminVideoListItemDto>>> GetVideosAsync(
         int page,
         int pageSize,

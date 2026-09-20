@@ -152,6 +152,44 @@ public sealed class AdminUpdateUserStatusRequest
     public bool IsActive { get; init; }
 }
 
+public sealed class AdminAssignUserRequestsRequest
+{
+    public int ScanLimit { get; init; }
+
+    public int ValidityDays { get; init; } = 30;
+
+    public bool AllowsDetailedScan { get; init; }
+
+    public string? Notes { get; init; }
+}
+
+public sealed class AdminManualSubscriptionGrantDto
+{
+    public long UserId { get; init; }
+
+    public string UserEmail { get; init; } = string.Empty;
+
+    public long SubscriptionId { get; init; }
+
+    public string PlanCode { get; init; } = string.Empty;
+
+    public string PlanName { get; init; } = string.Empty;
+
+    public int ScanLimit { get; init; }
+
+    public int UsedScans { get; init; }
+
+    public int ReservedScans { get; init; }
+
+    public int RemainingScans { get; init; }
+
+    public bool AllowsDetailedScan { get; init; }
+
+    public DateTimeOffset StartsAt { get; init; }
+
+    public DateTimeOffset ExpiresAt { get; init; }
+}
+
 public sealed class AdminVideoListItemDto
 {
     public long VideoId { get; init; }

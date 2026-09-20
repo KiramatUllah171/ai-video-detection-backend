@@ -55,6 +55,24 @@ public sealed class AdminDashboardController(
         return response.Success ? Ok(response) : BadRequest(response);
     }
 
+    [HttpPost("users/{userId:long}/manual-requests")]
+    [ProducesResponseType(typeof(ApiResponse<AdminManualSubscriptionGrantDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<AdminManualSubscriptionGrantDto>), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ApiResponse<AdminManualSubscriptionGrantDto>), StatusCodes.Status401Unauthorized)]
+    public async Task<ActionResult<ApiResponse<AdminManualSubscriptionGrantDto>>> AssignUserRequests(
+        long userId,
+        [FromBody] AdminAssignUserRequestsRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetCurrentUserId(out var currentAdminId))
+        {
+            return Unauthorized(ApiResponse<AdminManualSubscriptionGrantDto>.ErrorResponse("Unauthorized."));
+        }
+
+        var response = await adminDashboardService.AssignUserRequestsAsync(userId, currentAdminId, request, cancellationToken);
+        return response.Success ? Ok(response) : BadRequest(response);
+    }
+
     [HttpGet("videos")]
     [ProducesResponseType(typeof(ApiResponse<PagedResponse<AdminVideoListItemDto>>), StatusCodes.Status200OK)]
     public async Task<ActionResult<ApiResponse<PagedResponse<AdminVideoListItemDto>>>> Videos(

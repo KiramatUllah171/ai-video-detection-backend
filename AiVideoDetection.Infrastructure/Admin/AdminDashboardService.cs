@@ -1,7 +1,9 @@
+using System.Text.Json;
 using AiVideoDetection.Application.Admin.DTOs;
 using AiVideoDetection.Application.Admin.Interfaces;
 using AiVideoDetection.Application.Common;
 using AiVideoDetection.Application.Videos.Options;
+using AiVideoDetection.Domain.Constants;
 using AiVideoDetection.Domain.Entities;
 using AiVideoDetection.Domain.Enums;
 using AiVideoDetection.Infrastructure.Videos.Ai;
@@ -16,11 +18,14 @@ public sealed class AdminDashboardService(
     AppDbContext dbContext,
     IMemoryCache memoryCache,
     IProviderCircuitBreaker providerCircuitBreaker,
+    IAuditLogService auditLogService,
     IOptions<VideoProcessingOptions> videoProcessingOptions) : IAdminDashboardService
 {
     private const string BitMindProviderName = "BitMind";
     private const string SummaryCacheKey = "admin-dashboard-summary:v1";
+    private const string ManualPlanPrefix = "ADMIN";
     private static readonly TimeSpan SummaryCacheDuration = TimeSpan.FromSeconds(30);
+    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private readonly VideoProcessingOptions _videoProcessingOptions = videoProcessingOptions.Value;
     private static readonly JobStatus[] PendingJobStatuses =
     [
@@ -282,6 +287,151 @@ public sealed class AdminDashboardService(
         };
 
         return ApiResponse<AdminUserListItemDto>.SuccessResponse(response, isActive ? "User account enabled." : "User account disabled.");
+    }
+
+    public async Task<ApiResponse<AdminManualSubscriptionGrantDto>> AssignUserRequestsAsync(
+        long userId,
+        long currentAdminId,
+        AdminAssignUserRequestsRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        if (userId <= 0)
+        {
+            return ApiResponse<AdminManualSubscriptionGrantDto>.ErrorResponse("User was not found.");
+        }
+
+        if (request.ScanLimit is < 1 or > 1000)
+        {
+            return ApiResponse<AdminManualSubscriptionGrantDto>.ErrorResponse("Manual request count must be between 1 and 1000.");
+        }
+
+        if (request.ValidityDays is < 1 or > 365)
+        {
+            return ApiResponse<AdminManualSubscriptionGrantDto>.ErrorResponse("Manual request validity must be between 1 and 365 days.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.Notes) && request.Notes.Length > 500)
+        {
+            return ApiResponse<AdminManualSubscriptionGrantDto>.ErrorResponse("Notes cannot be longer than 500 characters.");
+        }
+
+        var user = await dbContext.Users.FirstOrDefaultAsync(existing => existing.Id == userId, cancellationToken);
+        if (user is null)
+        {
+            return ApiResponse<AdminManualSubscriptionGrantDto>.ErrorResponse("User was not found.");
+        }
+
+        if (!user.IsActive)
+        {
+            return ApiResponse<AdminManualSubscriptionGrantDto>.ErrorResponse("Manual requests cannot be assigned to a disabled user.");
+        }
+
+        if (user.Role == UserRole.Admin)
+        {
+            return ApiResponse<AdminManualSubscriptionGrantDto>.ErrorResponse("Admin accounts already have internal unlimited scan access.");
+        }
+
+        var transaction = dbContext.Database.IsRelational()
+            ? await dbContext.Database.BeginTransactionAsync(cancellationToken)
+            : null;
+        await using (transaction)
+        {
+            var now = DateTimeOffset.UtcNow;
+            var activeSubscriptions = await dbContext.UserSubscriptions
+                .Include(subscription => subscription.SubscriptionPlan)
+                .Where(subscription =>
+                    subscription.UserId == userId &&
+                    subscription.Status == SubscriptionStatuses.Active &&
+                    subscription.StartsAt <= now &&
+                    subscription.ExpiresAt > now &&
+                    subscription.SubscriptionPlan.Code != SubscriptionPlanCodes.Free)
+                .ToListAsync(cancellationToken);
+
+            foreach (var subscription in activeSubscriptions)
+            {
+                subscription.Status = SubscriptionStatuses.Cancelled;
+                subscription.CancelledAt = now;
+            }
+
+            var plan = new SubscriptionPlan
+            {
+                Code = GenerateManualPlanCode(now),
+                Name = $"Manual Admin Grant - User {user.Id}",
+                PriceAmount = 0m,
+                Currency = "PKR",
+                ScanLimit = request.ScanLimit,
+                MaxVideoSizeBytes = request.AllowsDetailedScan
+                    ? VideoUploadSizeLimits.ProMaxVideoSizeBytes
+                    : VideoUploadSizeLimits.PlusMaxVideoSizeBytes,
+                AllowsSmartScan = true,
+                AllowsDetailedScan = request.AllowsDetailedScan,
+                ValidityDays = request.ValidityDays,
+                IsActive = true,
+                SortOrder = 1000
+            };
+
+            var manualSubscription = new UserSubscription
+            {
+                UserId = userId,
+                SubscriptionPlan = plan,
+                Status = SubscriptionStatuses.Active,
+                StartsAt = now,
+                ExpiresAt = now.AddDays(request.ValidityDays),
+                ActivatedAt = now
+            };
+
+            dbContext.SubscriptionPlans.Add(plan);
+            dbContext.UserSubscriptions.Add(manualSubscription);
+            await dbContext.SaveChangesAsync(cancellationToken);
+
+            await auditLogService.LogAsync(new AuditLogCreateDto
+            {
+                UserId = currentAdminId,
+                Category = "Admin",
+                Action = "ManualRequestsAssigned",
+                Severity = "Information",
+                Message = $"Admin assigned {request.ScanLimit} manual requests to {user.Email}.",
+                ResourceType = "User",
+                ResourceId = user.Id.ToString(),
+                DetailsJson = JsonSerializer.Serialize(new
+                {
+                    targetUserId = user.Id,
+                    targetEmail = user.Email,
+                    subscriptionId = manualSubscription.Id,
+                    planCode = plan.Code,
+                    scanLimit = plan.ScanLimit,
+                    validityDays = request.ValidityDays,
+                    allowsDetailedScan = request.AllowsDetailedScan,
+                    cancelledActiveSubscriptionIds = activeSubscriptions.Select(existing => existing.Id),
+                    notes = request.Notes
+                }, SerializerOptions)
+            }, cancellationToken);
+
+            if (transaction is not null)
+            {
+                await transaction.CommitAsync(cancellationToken);
+            }
+
+            memoryCache.Remove(SummaryCacheKey);
+
+            var dto = new AdminManualSubscriptionGrantDto
+            {
+                UserId = user.Id,
+                UserEmail = user.Email,
+                SubscriptionId = manualSubscription.Id,
+                PlanCode = plan.Code,
+                PlanName = plan.Name,
+                ScanLimit = plan.ScanLimit,
+                UsedScans = 0,
+                ReservedScans = 0,
+                RemainingScans = plan.ScanLimit,
+                AllowsDetailedScan = plan.AllowsDetailedScan,
+                StartsAt = manualSubscription.StartsAt,
+                ExpiresAt = manualSubscription.ExpiresAt
+            };
+
+            return ApiResponse<AdminManualSubscriptionGrantDto>.SuccessResponse(dto, "Manual requests assigned successfully.");
+        }
     }
 
     public async Task<ApiResponse<PagedResponse<AdminVideoListItemDto>>> GetVideosAsync(
@@ -767,6 +917,11 @@ public sealed class AdminDashboardService(
                 Count = byDate.TryGetValue(date, out var count) ? count : 0
             })
             .ToList();
+    }
+
+    private static string GenerateManualPlanCode(DateTimeOffset now)
+    {
+        return $"{ManualPlanPrefix}-{now:yyyyMMddHHmmss}-{Guid.NewGuid():N}"[..29].ToUpperInvariant();
     }
 
     private static AdminVideoListItemDto MapVideoListItem(Video video)
