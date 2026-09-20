@@ -165,6 +165,8 @@ public sealed class AdminAssignUserRequestsRequest
 
 public sealed class AdminManualSubscriptionGrantDto
 {
+    public bool Created { get; init; }
+
     public long UserId { get; init; }
 
     public string UserEmail { get; init; } = string.Empty;

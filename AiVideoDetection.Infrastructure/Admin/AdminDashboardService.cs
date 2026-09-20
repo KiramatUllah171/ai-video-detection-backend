@@ -337,6 +337,7 @@ public sealed class AdminDashboardService(
         await using (transaction)
         {
             var now = DateTimeOffset.UtcNow;
+            var manualPlanCodePrefix = ManualPlanPrefix + "-";
             var activeSubscriptions = await dbContext.UserSubscriptions
                 .Include(subscription => subscription.SubscriptionPlan)
                 .Where(subscription =>
@@ -346,63 +347,107 @@ public sealed class AdminDashboardService(
                     subscription.ExpiresAt > now &&
                     subscription.SubscriptionPlan.Code != SubscriptionPlanCodes.Free)
                 .ToListAsync(cancellationToken);
+            var manualSubscription = activeSubscriptions
+                .Where(subscription => subscription.SubscriptionPlan.Code.StartsWith(manualPlanCodePrefix))
+                .OrderByDescending(subscription => subscription.ExpiresAt)
+                .ThenByDescending(subscription => subscription.Id)
+                .FirstOrDefault();
+            var created = manualSubscription is null;
 
             foreach (var subscription in activeSubscriptions)
             {
+                if (manualSubscription is not null && subscription.Id == manualSubscription.Id)
+                {
+                    continue;
+                }
+
                 subscription.Status = SubscriptionStatuses.Cancelled;
                 subscription.CancelledAt = now;
             }
 
-            var plan = new SubscriptionPlan
+            var plan = manualSubscription?.SubscriptionPlan ?? new SubscriptionPlan
             {
                 Code = GenerateManualPlanCode(now),
                 Name = $"Manual Admin Grant - User {user.Id}",
                 PriceAmount = 0m,
                 Currency = "PKR",
-                ScanLimit = request.ScanLimit,
-                MaxVideoSizeBytes = request.AllowsDetailedScan
-                    ? VideoUploadSizeLimits.ProMaxVideoSizeBytes
-                    : VideoUploadSizeLimits.PlusMaxVideoSizeBytes,
-                AllowsSmartScan = true,
-                AllowsDetailedScan = request.AllowsDetailedScan,
-                ValidityDays = request.ValidityDays,
-                IsActive = true,
                 SortOrder = 1000
             };
+            var previousScanLimit = created ? (int?)null : plan.ScanLimit;
+            var previousExpiresAt = manualSubscription?.ExpiresAt;
 
-            var manualSubscription = new UserSubscription
+            plan.ScanLimit = request.ScanLimit;
+            plan.MaxVideoSizeBytes = request.AllowsDetailedScan
+                ? VideoUploadSizeLimits.ProMaxVideoSizeBytes
+                : VideoUploadSizeLimits.PlusMaxVideoSizeBytes;
+            plan.AllowsSmartScan = true;
+            plan.AllowsDetailedScan = request.AllowsDetailedScan;
+            plan.ValidityDays = request.ValidityDays;
+            plan.IsActive = true;
+
+            if (manualSubscription is null)
             {
-                UserId = userId,
-                SubscriptionPlan = plan,
-                Status = SubscriptionStatuses.Active,
-                StartsAt = now,
-                ExpiresAt = now.AddDays(request.ValidityDays),
-                ActivatedAt = now
-            };
+                manualSubscription = new UserSubscription
+                {
+                    UserId = userId,
+                    SubscriptionPlan = plan,
+                    Status = SubscriptionStatuses.Active,
+                    StartsAt = now,
+                    ExpiresAt = now.AddDays(request.ValidityDays),
+                    ActivatedAt = now
+                };
 
-            dbContext.SubscriptionPlans.Add(plan);
-            dbContext.UserSubscriptions.Add(manualSubscription);
+                dbContext.SubscriptionPlans.Add(plan);
+                dbContext.UserSubscriptions.Add(manualSubscription);
+            }
+            else
+            {
+                manualSubscription.Status = SubscriptionStatuses.Active;
+                manualSubscription.ExpiresAt = now.AddDays(request.ValidityDays);
+                manualSubscription.CancelledAt = null;
+                manualSubscription.ActivatedAt ??= now;
+            }
+
             await dbContext.SaveChangesAsync(cancellationToken);
+
+            var usedScans = await dbContext.ScanUsages
+                .CountAsync(usage => usage.UserSubscriptionId == manualSubscription.Id, cancellationToken);
+            var reservedScans = await dbContext.ScanReservations
+                .CountAsync(reservation =>
+                        reservation.UserSubscriptionId == manualSubscription.Id &&
+                        reservation.Status == ScanReservationStatuses.Reserved,
+                    cancellationToken);
+            var remainingScans = Math.Max(0, plan.ScanLimit - usedScans - reservedScans);
 
             await auditLogService.LogAsync(new AuditLogCreateDto
             {
                 UserId = currentAdminId,
                 Category = "Admin",
-                Action = "ManualRequestsAssigned",
+                Action = created ? "ManualRequestsAssigned" : "ManualRequestsUpdated",
                 Severity = "Information",
-                Message = $"Admin assigned {request.ScanLimit} manual requests to {user.Email}.",
+                Message = created
+                    ? $"Admin assigned {request.ScanLimit} manual requests to {user.Email}."
+                    : $"Admin updated manual requests for {user.Email} to {request.ScanLimit}.",
                 ResourceType = "User",
                 ResourceId = user.Id.ToString(),
                 DetailsJson = JsonSerializer.Serialize(new
                 {
+                    created,
                     targetUserId = user.Id,
                     targetEmail = user.Email,
                     subscriptionId = manualSubscription.Id,
                     planCode = plan.Code,
+                    previousScanLimit,
+                    previousExpiresAt,
                     scanLimit = plan.ScanLimit,
+                    usedScans,
+                    reservedScans,
+                    remainingScans,
                     validityDays = request.ValidityDays,
                     allowsDetailedScan = request.AllowsDetailedScan,
-                    cancelledActiveSubscriptionIds = activeSubscriptions.Select(existing => existing.Id),
+                    cancelledActiveSubscriptionIds = activeSubscriptions
+                        .Where(existing => existing.Id != manualSubscription.Id)
+                        .Select(existing => existing.Id),
                     notes = request.Notes
                 }, SerializerOptions)
             }, cancellationToken);
@@ -416,21 +461,24 @@ public sealed class AdminDashboardService(
 
             var dto = new AdminManualSubscriptionGrantDto
             {
+                Created = created,
                 UserId = user.Id,
                 UserEmail = user.Email,
                 SubscriptionId = manualSubscription.Id,
                 PlanCode = plan.Code,
                 PlanName = plan.Name,
                 ScanLimit = plan.ScanLimit,
-                UsedScans = 0,
-                ReservedScans = 0,
-                RemainingScans = plan.ScanLimit,
+                UsedScans = usedScans,
+                ReservedScans = reservedScans,
+                RemainingScans = remainingScans,
                 AllowsDetailedScan = plan.AllowsDetailedScan,
                 StartsAt = manualSubscription.StartsAt,
                 ExpiresAt = manualSubscription.ExpiresAt
             };
 
-            return ApiResponse<AdminManualSubscriptionGrantDto>.SuccessResponse(dto, "Manual requests assigned successfully.");
+            return ApiResponse<AdminManualSubscriptionGrantDto>.SuccessResponse(
+                dto,
+                created ? "Manual requests assigned successfully." : "Manual requests updated successfully.");
         }
     }
 
