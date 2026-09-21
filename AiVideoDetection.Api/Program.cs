@@ -426,6 +426,19 @@ static void ValidateProductionConfiguration(IConfiguration configuration, IWebHo
         throw new InvalidOperationException("Production AI service API key must be configured.");
     }
 
+    var googleClientId = FirstConfigured(
+        configuration["GoogleAuth:ClientId"],
+        Environment.GetEnvironmentVariable("GOOGLE_CLIENT_ID"),
+        Environment.GetEnvironmentVariable("GoogleAuth__ClientId"));
+    var googleClientSecret = FirstConfigured(
+        configuration["GoogleAuth:ClientSecret"],
+        Environment.GetEnvironmentVariable("GOOGLE_CLIENT_SECRET"),
+        Environment.GetEnvironmentVariable("GoogleAuth__ClientSecret"));
+    if (string.IsNullOrWhiteSpace(googleClientId) || string.IsNullOrWhiteSpace(googleClientSecret))
+    {
+        throw new InvalidOperationException("Production Google OAuth credentials must be provided through secure configuration.");
+    }
+
     if (string.Equals(configuration["PasswordReset:Provider"], "Smtp", StringComparison.OrdinalIgnoreCase))
     {
         var smtpHost = FirstConfigured(configuration["PasswordReset:Host"], configuration["PasswordReset:SmtpHost"]);
@@ -457,10 +470,6 @@ static void ValidateProductionConfiguration(IConfiguration configuration, IWebHo
             throw new InvalidOperationException("Production SMTP sender email must be configured.");
         }
 
-        static string? FirstConfigured(params string?[] values)
-        {
-            return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
-        }
     }
 
     if (string.IsNullOrWhiteSpace(configuration["DataProtection:KeyRingPath"]))
@@ -564,6 +573,11 @@ static void ValidateProductionConfiguration(IConfiguration configuration, IWebHo
     }
 }
 
+static string? FirstConfigured(params string?[] values)
+{
+    return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+}
+
 static bool IsValidEncryptionKey(string? value)
 {
     if (string.IsNullOrWhiteSpace(value))
@@ -596,6 +610,7 @@ static RateLimitProfile GetRateLimitProfile(HttpContext context, RateLimitingOpt
     }
 
     if (path.StartsWith("/api/auth/signup", StringComparison.OrdinalIgnoreCase) ||
+        path.StartsWith("/api/auth/google", StringComparison.OrdinalIgnoreCase) ||
         path.StartsWith("/api/auth/forgot-password", StringComparison.OrdinalIgnoreCase) ||
         path.StartsWith("/api/auth/reset-password", StringComparison.OrdinalIgnoreCase) ||
         path.StartsWith("/api/auth/confirm-email", StringComparison.OrdinalIgnoreCase) ||

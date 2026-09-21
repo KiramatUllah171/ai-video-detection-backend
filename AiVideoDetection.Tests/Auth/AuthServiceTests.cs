@@ -435,12 +435,14 @@ public class AuthServiceTests
             passwordHasher,
             new JwtTokenService(jwtOptions),
             jwtOptions,
+            Options.Create(new GoogleAuthOptions()),
             Options.Create(new PasswordResetOptions()),
             authSecurityOptions ?? Options.Create(new AuthSecurityOptions()),
             new InMemoryAuthThrottleService(),
             emailSender ?? new TestPasswordResetEmailSender(),
             emailSender ?? new TestPasswordResetEmailSender(),
             new NoopAuditLogService(),
+            new TestHttpClientFactory(),
             NullLogger<AuthService>.Instance);
     }
 
@@ -493,6 +495,14 @@ public class AuthServiceTests
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult(ApiResponse<PagedResponse<AdminAuditLogDto>>.SuccessResponse(new PagedResponse<AdminAuditLogDto>()));
+        }
+    }
+
+    private sealed class TestHttpClientFactory : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name)
+        {
+            return new HttpClient();
         }
     }
 

@@ -78,6 +78,16 @@ public static class DependencyInjection
                 }));
 
         services.Configure<JwtOptions>(configuration.GetSection(JwtOptions.SectionName));
+        services.Configure<GoogleAuthOptions>(configuration.GetSection(GoogleAuthOptions.SectionName));
+        services.PostConfigure<GoogleAuthOptions>(options =>
+        {
+            options.ClientId = Environment.GetEnvironmentVariable("GOOGLE_CLIENT_ID")
+                ?? Environment.GetEnvironmentVariable("GoogleAuth__ClientId")
+                ?? options.ClientId;
+            options.ClientSecret = Environment.GetEnvironmentVariable("GOOGLE_CLIENT_SECRET")
+                ?? Environment.GetEnvironmentVariable("GoogleAuth__ClientSecret")
+                ?? options.ClientSecret;
+        });
         services.Configure<PasswordResetOptions>(configuration.GetSection(PasswordResetOptions.SectionName));
         services.AddOptions<PaymentOptions>()
             .Bind(configuration.GetSection(PaymentOptions.SectionName))
@@ -291,6 +301,8 @@ public static class DependencyInjection
                     client.DefaultRequestHeaders.Add("X-AI-Service-Key", aiOptions.ApiKey);
                 }
             })
+            .SetHandlerLifetime(TimeSpan.FromMinutes(10));
+        services.AddHttpClient("GoogleOAuth")
             .SetHandlerLifetime(TimeSpan.FromMinutes(10));
 
         services.AddScoped<IAuthService, AuthService>();

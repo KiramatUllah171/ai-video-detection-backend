@@ -16,6 +16,7 @@ public class AuthController(
     IAuthService authService,
     IValidator<SignupRequest> signupValidator,
     IValidator<LoginRequest> loginValidator,
+    IValidator<GoogleLoginRequest> googleLoginValidator,
     IValidator<RefreshTokenRequest> refreshTokenValidator,
     IValidator<ForgotPasswordRequest> forgotPasswordValidator,
     IValidator<ResetPasswordRequest> resetPasswordValidator,
@@ -56,6 +57,23 @@ public class AuthController(
         }
 
         var response = await authService.LoginAsync(request, GetIpAddress(), cancellationToken);
+        AttachRefreshTokenCookie(response);
+        return ToActionResult(response);
+    }
+
+    [HttpPost("google")]
+    [AllowAnonymous]
+    [ProducesResponseType(typeof(ApiResponse<AuthResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<AuthResponse>), StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<ApiResponse<AuthResponse>>> GoogleLogin(GoogleLoginRequest request, CancellationToken cancellationToken)
+    {
+        var validationResponse = await ValidateAsync<GoogleLoginRequest, AuthResponse>(googleLoginValidator, request, cancellationToken);
+        if (validationResponse is not null)
+        {
+            return BadRequest(validationResponse);
+        }
+
+        var response = await authService.GoogleLoginAsync(request, GetIpAddress(), cancellationToken);
         AttachRefreshTokenCookie(response);
         return ToActionResult(response);
     }

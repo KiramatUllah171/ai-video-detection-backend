@@ -2,6 +2,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using AiVideoDetection.Application.Admin.DTOs;
 using AiVideoDetection.Application.Admin.Interfaces;
 using AiVideoDetection.Application.Auth.DTOs;
@@ -21,12 +22,14 @@ public class AuthService(
     IPasswordHasher passwordHasher,
     IJwtTokenService jwtTokenService,
     IOptions<JwtOptions> jwtOptions,
+    IOptions<GoogleAuthOptions> googleAuthOptions,
     IOptions<PasswordResetOptions> passwordResetOptions,
     IOptions<AuthSecurityOptions> authSecurityOptions,
     IAuthThrottleService authThrottleService,
     IPasswordResetEmailSender passwordResetEmailSender,
     IEmailConfirmationSender emailConfirmationSender,
     IAuditLogService auditLogService,
+    IHttpClientFactory httpClientFactory,
     ILogger<AuthService> logger) : IAuthService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -41,6 +44,7 @@ public class AuthService(
     private const string ConfirmationTokenAlreadyUsedMessage = "This email confirmation link has already been used.";
     private const string EmailNotConfirmedMessage = "Please confirm your email address before signing in.";
     private readonly JwtOptions _jwtOptions = jwtOptions.Value;
+    private readonly GoogleAuthOptions _googleAuthOptions = googleAuthOptions.Value;
     private readonly PasswordResetOptions _passwordResetOptions = passwordResetOptions.Value;
     private readonly AuthSecurityOptions _authSecurityOptions = authSecurityOptions.Value;
 
@@ -147,6 +151,75 @@ public class AuthService(
         var response = await CreateAuthResponseAsync(user, ipAddress, cancellationToken);
         await LogAuthAsync(user.Id, user.Name, user.Email, "LoginSucceeded", "Information", "User signed in successfully.", ipAddress, cancellationToken);
         return ApiResponse<AuthResponse>.SuccessResponse(response, "Signed in successfully.");
+    }
+
+    public async Task<ApiResponse<AuthResponse>> GoogleLoginAsync(
+        GoogleLoginRequest request,
+        string? ipAddress,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(_googleAuthOptions.ClientId) ||
+            string.IsNullOrWhiteSpace(_googleAuthOptions.ClientSecret))
+        {
+            logger.LogWarning("Google login rejected because OAuth credentials are not configured.");
+            return ApiResponse<AuthResponse>.ErrorResponse("Google sign-in is not configured.");
+        }
+
+        var googleProfile = await GetGoogleProfileAsync(request, cancellationToken);
+        if (googleProfile is null ||
+            string.IsNullOrWhiteSpace(googleProfile.Email) ||
+            !googleProfile.EmailVerified)
+        {
+            logger.LogInformation("Google login rejected because Google did not return a verified email address.");
+            await LogAuthAsync(null, googleProfile?.Name, googleProfile?.Email, "GoogleLoginRejected", "Warning", "Google sign-in did not return a verified email address.", ipAddress, cancellationToken);
+            return ApiResponse<AuthResponse>.ErrorResponse("Google sign-in failed. Please use a verified Google account.");
+        }
+
+        var normalizedEmail = NormalizeEmail(googleProfile.Email);
+        var user = await dbContext.Users
+            .FirstOrDefaultAsync(existingUser => existingUser.Email == normalizedEmail, cancellationToken);
+
+        if (user is null)
+        {
+            user = new User
+            {
+                Name = ResolveGoogleName(googleProfile, normalizedEmail),
+                Email = normalizedEmail,
+                NormalizedEmail = normalizedEmail.ToUpperInvariant(),
+                UserName = normalizedEmail,
+                NormalizedUserName = normalizedEmail.ToUpperInvariant(),
+                PasswordHash = passwordHasher.HashPassword(GenerateExternalLoginPassword()),
+                SecurityStamp = NewSecurityStamp(),
+                ConcurrencyStamp = Guid.NewGuid().ToString("N"),
+                Role = UserRole.User,
+                IsActive = true,
+                EmailConfirmed = true,
+                LockoutEnabled = true
+            };
+
+            dbContext.Users.Add(user);
+            await dbContext.SaveChangesAsync(cancellationToken);
+            logger.LogInformation("Google signup succeeded for user id {UserId}.", user.Id);
+            await LogAuthAsync(user.Id, user.Name, user.Email, "GoogleSignupSucceeded", "Information", "User account was created with Google sign-in.", ipAddress, cancellationToken);
+        }
+
+        if (!user.IsActive)
+        {
+            logger.LogInformation("Google login rejected for inactive user id {UserId}.", user.Id);
+            await LogAuthAsync(user.Id, user.Name, user.Email, "GoogleLoginRejected", "Warning", "Google login rejected because the user account is inactive.", ipAddress, cancellationToken);
+            return ApiResponse<AuthResponse>.ErrorResponse("User account is inactive.");
+        }
+
+        if (!user.EmailConfirmed)
+        {
+            user.EmailConfirmed = true;
+        }
+
+        ResetLockout(user);
+        var response = await CreateAuthResponseAsync(user, ipAddress, cancellationToken);
+        await LogAuthAsync(user.Id, user.Name, user.Email, "GoogleLoginSucceeded", "Information", "User signed in with Google successfully.", ipAddress, cancellationToken);
+
+        return ApiResponse<AuthResponse>.SuccessResponse(response, "Signed in with Google successfully.");
     }
 
     public async Task<ApiResponse<AuthResponse>> RefreshAsync(
@@ -522,6 +595,48 @@ public class AuthService(
         };
     }
 
+    private async Task<GoogleUserInfo?> GetGoogleProfileAsync(GoogleLoginRequest request, CancellationToken cancellationToken)
+    {
+        var httpClient = httpClientFactory.CreateClient("GoogleOAuth");
+        using var tokenResponseMessage = await httpClient.PostAsync(
+            _googleAuthOptions.TokenEndpoint,
+            new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["client_id"] = _googleAuthOptions.ClientId,
+                ["client_secret"] = _googleAuthOptions.ClientSecret,
+                ["code"] = request.Code,
+                ["grant_type"] = "authorization_code",
+                ["redirect_uri"] = request.RedirectUri
+            }),
+            cancellationToken);
+
+        if (!tokenResponseMessage.IsSuccessStatusCode)
+        {
+            logger.LogInformation("Google token exchange failed with status code {StatusCode}.", tokenResponseMessage.StatusCode);
+            return null;
+        }
+
+        await using var tokenStream = await tokenResponseMessage.Content.ReadAsStreamAsync(cancellationToken);
+        var tokenResponse = await JsonSerializer.DeserializeAsync<GoogleTokenResponse>(tokenStream, JsonOptions, cancellationToken);
+        if (string.IsNullOrWhiteSpace(tokenResponse?.AccessToken))
+        {
+            logger.LogInformation("Google token exchange did not return an access token.");
+            return null;
+        }
+
+        using var userInfoRequest = new HttpRequestMessage(HttpMethod.Get, _googleAuthOptions.UserInfoEndpoint);
+        userInfoRequest.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", tokenResponse.AccessToken);
+        using var userInfoResponse = await httpClient.SendAsync(userInfoRequest, cancellationToken);
+        if (!userInfoResponse.IsSuccessStatusCode)
+        {
+            logger.LogInformation("Google userinfo request failed with status code {StatusCode}.", userInfoResponse.StatusCode);
+            return null;
+        }
+
+        await using var userInfoStream = await userInfoResponse.Content.ReadAsStreamAsync(cancellationToken);
+        return await JsonSerializer.DeserializeAsync<GoogleUserInfo>(userInfoStream, JsonOptions, cancellationToken);
+    }
+
     private static string GenerateRefreshToken()
     {
         return Convert.ToBase64String(RandomNumberGenerator.GetBytes(64));
@@ -589,6 +704,22 @@ public class AuthService(
     private static string NormalizeEmail(string email)
     {
         return email.Trim().ToLowerInvariant();
+    }
+
+    private static string ResolveGoogleName(GoogleUserInfo profile, string normalizedEmail)
+    {
+        var name = !string.IsNullOrWhiteSpace(profile.Name)
+            ? profile.Name
+            : !string.IsNullOrWhiteSpace(profile.GivenName)
+                ? profile.GivenName
+                : normalizedEmail.Split('@')[0];
+
+        return name.Trim();
+    }
+
+    private static string GenerateExternalLoginPassword()
+    {
+        return Convert.ToBase64String(RandomNumberGenerator.GetBytes(48));
     }
 
     private ThrottleCheckResult CheckEmailThrottle(string scope, string normalizedEmail, int permitLimit)
@@ -667,5 +798,29 @@ public class AuthService(
             IsActive = user.IsActive,
             EmailConfirmed = user.EmailConfirmed
         };
+    }
+
+    private sealed class GoogleTokenResponse
+    {
+        [JsonPropertyName("access_token")]
+        public string AccessToken { get; set; } = string.Empty;
+    }
+
+    private sealed class GoogleUserInfo
+    {
+        [JsonPropertyName("sub")]
+        public string Subject { get; set; } = string.Empty;
+
+        [JsonPropertyName("email")]
+        public string Email { get; set; } = string.Empty;
+
+        [JsonPropertyName("email_verified")]
+        public bool EmailVerified { get; set; }
+
+        [JsonPropertyName("name")]
+        public string Name { get; set; } = string.Empty;
+
+        [JsonPropertyName("given_name")]
+        public string GivenName { get; set; } = string.Empty;
     }
 }
