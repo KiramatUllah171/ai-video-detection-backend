@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.Text;
-using System.Text.Json;
 using AiVideoDetection.Application.Common;
 using AiVideoDetection.Application.Videos.DTOs;
 using AiVideoDetection.Application.Videos.Interfaces;
@@ -76,6 +75,8 @@ public class AnalysisReportService(AppDbContext dbContext, IOptions<VideoProcess
 
     private static void BuildReport(ReportPdfDocument document, AiResult result)
     {
+        var evidenceItems = GetReportEvidenceItems(result.EvidenceItems);
+
         document.SetSection("Video result");
         document.AddPage();
         DrawResultOverview(document, result);
@@ -84,10 +85,13 @@ public class AnalysisReportService(AppDbContext dbContext, IOptions<VideoProcess
         document.AddPage();
         DrawVideoDetails(document, result);
 
-        document.SetSection("Important findings");
-        document.AddPage();
-        DrawEvidence(document, result.EvidenceItems);
-        DrawDisclaimer(document);
+        if (evidenceItems.Count > 0)
+        {
+            document.SetSection("Important findings");
+            document.AddPage();
+            DrawEvidence(document, evidenceItems);
+        }
+
         document.FinalizePages();
     }
 
@@ -170,16 +174,6 @@ public class AnalysisReportService(AppDbContext dbContext, IOptions<VideoProcess
             return;
         }
 
-        var warnings = ParseStringArray(metadata.WarningsJson);
-        if (metadata.HasMissingMetadata && warnings.Count == 0)
-        {
-            warnings.Add("Some expected metadata fields were missing.");
-        }
-
-        foreach (var warning in warnings.Where(ShouldShowMetadataWarning))
-        {
-            document.WarningBox(FormatMetadataWarning(warning));
-        }
     }
 
     private static void DrawProbabilityBalance(ReportPdfDocument document, AiResult result)
@@ -246,17 +240,17 @@ public class AnalysisReportService(AppDbContext dbContext, IOptions<VideoProcess
                 details.Add("Score impact " + item.ScoreImpact.Value.ToString("0.###", CultureInfo.InvariantCulture));
             }
 
-            document.SectionCard(SanitizeProviderText(item.Title) ?? item.Title, SanitizeProviderText(item.Description) ?? item.Description, string.Join(" | ", details), item.Type == EvidenceType.MetadataWarning ? ReportCardTone.Warning : ReportCardTone.Default);
+            document.SectionCard(SanitizeProviderText(item.Title) ?? item.Title, SanitizeProviderText(item.Description) ?? item.Description, string.Join(" | ", details), ReportCardTone.Default);
         }
     }
 
-    private static void DrawDisclaimer(ReportPdfDocument document)
+    private static List<EvidenceItem> GetReportEvidenceItems(IEnumerable<EvidenceItem> evidenceItems)
     {
-        const string body = "This report is probability-based and intended for review support. It should not be treated as absolute proof of authenticity, manipulation, authorship, or legal responsibility.";
-        document.SetSection("Important note");
-        document.EnsureSpace(document.HeadingBlockHeight + document.EstimateWarningPanelHeight(body) + 12);
-        document.Heading("Important note");
-        document.WarningPanel("Probability-based decision support", body);
+        return evidenceItems
+            .Where(item => item.Type != EvidenceType.MetadataWarning)
+            .OrderByDescending(item => item.Severity)
+            .ThenBy(item => item.CreatedAt)
+            .ToList();
     }
 
     private static string GetRecommendedAction(AiResult result)
@@ -316,26 +310,6 @@ public class AnalysisReportService(AppDbContext dbContext, IOptions<VideoProcess
         return seconds.ToString("0.##", CultureInfo.InvariantCulture) + " sec";
     }
 
-    private static string FormatMetadataWarning(string warning)
-    {
-        var normalized = warning.Trim();
-        return normalized.ToLowerInvariant() switch
-        {
-            "missing_creation_time" => "The video metadata does not include a creation timestamp.",
-            "missing_encoder" => "The video metadata does not identify the encoder.",
-            "missing_encoder_metadata" => "The video metadata does not identify the encoder.",
-            _ => FormatWords(normalized.Replace('_', ' '))
-        };
-    }
-
-    private static bool ShouldShowMetadataWarning(string warning)
-    {
-        var normalized = warning.Trim().ToLowerInvariant();
-        return normalized is not "missing_creation_time"
-            and not "missing_encoder"
-            and not "missing_encoder_metadata";
-    }
-
     private static string FormatLabel(AnalysisLabel label)
     {
         return label switch
@@ -374,35 +348,6 @@ public class AnalysisReportService(AppDbContext dbContext, IOptions<VideoProcess
         }
 
         return CultureInfo.InvariantCulture.TextInfo.ToTitleCase(builder.ToString().Trim().ToLowerInvariant());
-    }
-
-    private static List<string> ParseStringArray(string? json)
-    {
-        if (string.IsNullOrWhiteSpace(json))
-        {
-            return [];
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(json);
-            if (document.RootElement.ValueKind != JsonValueKind.Array)
-            {
-                return [];
-            }
-
-            return document.RootElement
-                .EnumerateArray()
-                .Where(item => item.ValueKind == JsonValueKind.String)
-                .Select(item => item.GetString())
-                .Where(item => !string.IsNullOrWhiteSpace(item))
-                .Select(item => SanitizeProviderText(item!)!)
-                .ToList();
-        }
-        catch
-        {
-            return [];
-        }
     }
 
     private static string? SanitizeProviderText(string? value)
