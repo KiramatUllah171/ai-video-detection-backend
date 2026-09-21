@@ -11,6 +11,8 @@ public interface IAuthService
 
     Task<ApiResponse<AuthResponse>> GoogleLoginAsync(GoogleLoginRequest request, string? ipAddress, CancellationToken cancellationToken = default);
 
+    Task<ApiResponse<AuthResponse>> FacebookLoginAsync(FacebookLoginRequest request, string? ipAddress, CancellationToken cancellationToken = default);
+
     Task<ApiResponse<AuthResponse>> RefreshAsync(RefreshTokenRequest request, string? ipAddress, CancellationToken cancellationToken = default);
 
     Task<ApiResponse<bool>> LogoutAsync(RefreshTokenRequest request, CancellationToken cancellationToken = default);

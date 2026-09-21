@@ -17,6 +17,7 @@ public class AuthController(
     IValidator<SignupRequest> signupValidator,
     IValidator<LoginRequest> loginValidator,
     IValidator<GoogleLoginRequest> googleLoginValidator,
+    IValidator<FacebookLoginRequest> facebookLoginValidator,
     IValidator<RefreshTokenRequest> refreshTokenValidator,
     IValidator<ForgotPasswordRequest> forgotPasswordValidator,
     IValidator<ResetPasswordRequest> resetPasswordValidator,
@@ -74,6 +75,23 @@ public class AuthController(
         }
 
         var response = await authService.GoogleLoginAsync(request, GetIpAddress(), cancellationToken);
+        AttachRefreshTokenCookie(response);
+        return ToActionResult(response);
+    }
+
+    [HttpPost("facebook")]
+    [AllowAnonymous]
+    [ProducesResponseType(typeof(ApiResponse<AuthResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<AuthResponse>), StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<ApiResponse<AuthResponse>>> FacebookLogin(FacebookLoginRequest request, CancellationToken cancellationToken)
+    {
+        var validationResponse = await ValidateAsync<FacebookLoginRequest, AuthResponse>(facebookLoginValidator, request, cancellationToken);
+        if (validationResponse is not null)
+        {
+            return BadRequest(validationResponse);
+        }
+
+        var response = await authService.FacebookLoginAsync(request, GetIpAddress(), cancellationToken);
         AttachRefreshTokenCookie(response);
         return ToActionResult(response);
     }

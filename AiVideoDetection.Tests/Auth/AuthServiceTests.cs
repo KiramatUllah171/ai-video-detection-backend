@@ -436,6 +436,7 @@ public class AuthServiceTests
             new JwtTokenService(jwtOptions),
             jwtOptions,
             Options.Create(new GoogleAuthOptions()),
+            Options.Create(new FacebookAuthOptions()),
             Options.Create(new PasswordResetOptions()),
             authSecurityOptions ?? Options.Create(new AuthSecurityOptions()),
             new InMemoryAuthThrottleService(),

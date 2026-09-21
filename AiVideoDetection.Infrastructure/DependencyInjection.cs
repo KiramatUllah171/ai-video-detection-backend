@@ -79,6 +79,7 @@ public static class DependencyInjection
 
         services.Configure<JwtOptions>(configuration.GetSection(JwtOptions.SectionName));
         services.Configure<GoogleAuthOptions>(configuration.GetSection(GoogleAuthOptions.SectionName));
+        services.Configure<FacebookAuthOptions>(configuration.GetSection(FacebookAuthOptions.SectionName));
         services.PostConfigure<GoogleAuthOptions>(options =>
         {
             options.ClientId = Environment.GetEnvironmentVariable("GOOGLE_CLIENT_ID")
@@ -87,6 +88,15 @@ public static class DependencyInjection
             options.ClientSecret = Environment.GetEnvironmentVariable("GOOGLE_CLIENT_SECRET")
                 ?? Environment.GetEnvironmentVariable("GoogleAuth__ClientSecret")
                 ?? options.ClientSecret;
+        });
+        services.PostConfigure<FacebookAuthOptions>(options =>
+        {
+            options.AppId = Environment.GetEnvironmentVariable("FACEBOOK_APP_ID")
+                ?? Environment.GetEnvironmentVariable("FacebookAuth__AppId")
+                ?? options.AppId;
+            options.AppSecret = Environment.GetEnvironmentVariable("FACEBOOK_APP_SECRET")
+                ?? Environment.GetEnvironmentVariable("FacebookAuth__AppSecret")
+                ?? options.AppSecret;
         });
         services.Configure<PasswordResetOptions>(configuration.GetSection(PasswordResetOptions.SectionName));
         services.AddOptions<PaymentOptions>()
@@ -303,6 +313,8 @@ public static class DependencyInjection
             })
             .SetHandlerLifetime(TimeSpan.FromMinutes(10));
         services.AddHttpClient("GoogleOAuth")
+            .SetHandlerLifetime(TimeSpan.FromMinutes(10));
+        services.AddHttpClient("FacebookOAuth")
             .SetHandlerLifetime(TimeSpan.FromMinutes(10));
 
         services.AddScoped<IAuthService, AuthService>();

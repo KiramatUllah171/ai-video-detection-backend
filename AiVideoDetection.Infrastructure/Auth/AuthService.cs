@@ -23,6 +23,7 @@ public class AuthService(
     IJwtTokenService jwtTokenService,
     IOptions<JwtOptions> jwtOptions,
     IOptions<GoogleAuthOptions> googleAuthOptions,
+    IOptions<FacebookAuthOptions> facebookAuthOptions,
     IOptions<PasswordResetOptions> passwordResetOptions,
     IOptions<AuthSecurityOptions> authSecurityOptions,
     IAuthThrottleService authThrottleService,
@@ -45,6 +46,7 @@ public class AuthService(
     private const string EmailNotConfirmedMessage = "Please confirm your email address before signing in.";
     private readonly JwtOptions _jwtOptions = jwtOptions.Value;
     private readonly GoogleAuthOptions _googleAuthOptions = googleAuthOptions.Value;
+    private readonly FacebookAuthOptions _facebookAuthOptions = facebookAuthOptions.Value;
     private readonly PasswordResetOptions _passwordResetOptions = passwordResetOptions.Value;
     private readonly AuthSecurityOptions _authSecurityOptions = authSecurityOptions.Value;
 
@@ -220,6 +222,73 @@ public class AuthService(
         await LogAuthAsync(user.Id, user.Name, user.Email, "GoogleLoginSucceeded", "Information", "User signed in with Google successfully.", ipAddress, cancellationToken);
 
         return ApiResponse<AuthResponse>.SuccessResponse(response, "Signed in with Google successfully.");
+    }
+
+    public async Task<ApiResponse<AuthResponse>> FacebookLoginAsync(
+        FacebookLoginRequest request,
+        string? ipAddress,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(_facebookAuthOptions.AppId) ||
+            string.IsNullOrWhiteSpace(_facebookAuthOptions.AppSecret))
+        {
+            logger.LogWarning("Facebook login rejected because OAuth credentials are not configured.");
+            return ApiResponse<AuthResponse>.ErrorResponse("Facebook sign-in is not configured.");
+        }
+
+        var facebookProfile = await GetFacebookProfileAsync(request, cancellationToken);
+        if (facebookProfile is null || string.IsNullOrWhiteSpace(facebookProfile.Email))
+        {
+            logger.LogInformation("Facebook login rejected because Facebook did not return an email address.");
+            await LogAuthAsync(null, facebookProfile?.Name, facebookProfile?.Email, "FacebookLoginRejected", "Warning", "Facebook sign-in did not return an email address.", ipAddress, cancellationToken);
+            return ApiResponse<AuthResponse>.ErrorResponse("Facebook sign-in failed. Please allow email access on your Facebook account.");
+        }
+
+        var normalizedEmail = NormalizeEmail(facebookProfile.Email);
+        var user = await dbContext.Users
+            .FirstOrDefaultAsync(existingUser => existingUser.Email == normalizedEmail, cancellationToken);
+
+        if (user is null)
+        {
+            user = new User
+            {
+                Name = ResolveFacebookName(facebookProfile, normalizedEmail),
+                Email = normalizedEmail,
+                NormalizedEmail = normalizedEmail.ToUpperInvariant(),
+                UserName = normalizedEmail,
+                NormalizedUserName = normalizedEmail.ToUpperInvariant(),
+                PasswordHash = passwordHasher.HashPassword(GenerateExternalLoginPassword()),
+                SecurityStamp = NewSecurityStamp(),
+                ConcurrencyStamp = Guid.NewGuid().ToString("N"),
+                Role = UserRole.User,
+                IsActive = true,
+                EmailConfirmed = true,
+                LockoutEnabled = true
+            };
+
+            dbContext.Users.Add(user);
+            await dbContext.SaveChangesAsync(cancellationToken);
+            logger.LogInformation("Facebook signup succeeded for user id {UserId}.", user.Id);
+            await LogAuthAsync(user.Id, user.Name, user.Email, "FacebookSignupSucceeded", "Information", "User account was created with Facebook sign-in.", ipAddress, cancellationToken);
+        }
+
+        if (!user.IsActive)
+        {
+            logger.LogInformation("Facebook login rejected for inactive user id {UserId}.", user.Id);
+            await LogAuthAsync(user.Id, user.Name, user.Email, "FacebookLoginRejected", "Warning", "Facebook login rejected because the user account is inactive.", ipAddress, cancellationToken);
+            return ApiResponse<AuthResponse>.ErrorResponse("User account is inactive.");
+        }
+
+        if (!user.EmailConfirmed)
+        {
+            user.EmailConfirmed = true;
+        }
+
+        ResetLockout(user);
+        var response = await CreateAuthResponseAsync(user, ipAddress, cancellationToken);
+        await LogAuthAsync(user.Id, user.Name, user.Email, "FacebookLoginSucceeded", "Information", "User signed in with Facebook successfully.", ipAddress, cancellationToken);
+
+        return ApiResponse<AuthResponse>.SuccessResponse(response, "Signed in with Facebook successfully.");
     }
 
     public async Task<ApiResponse<AuthResponse>> RefreshAsync(
@@ -637,6 +706,43 @@ public class AuthService(
         return await JsonSerializer.DeserializeAsync<GoogleUserInfo>(userInfoStream, JsonOptions, cancellationToken);
     }
 
+    private async Task<FacebookUserInfo?> GetFacebookProfileAsync(FacebookLoginRequest request, CancellationToken cancellationToken)
+    {
+        var httpClient = httpClientFactory.CreateClient("FacebookOAuth");
+        var tokenRequestUrl =
+            $"{_facebookAuthOptions.TokenEndpoint}?client_id={Uri.EscapeDataString(_facebookAuthOptions.AppId)}" +
+            $"&redirect_uri={Uri.EscapeDataString(request.RedirectUri)}" +
+            $"&client_secret={Uri.EscapeDataString(_facebookAuthOptions.AppSecret)}" +
+            $"&code={Uri.EscapeDataString(request.Code)}";
+        using var tokenResponseMessage = await httpClient.GetAsync(tokenRequestUrl, cancellationToken);
+        if (!tokenResponseMessage.IsSuccessStatusCode)
+        {
+            logger.LogInformation("Facebook token exchange failed with status code {StatusCode}.", tokenResponseMessage.StatusCode);
+            return null;
+        }
+
+        await using var tokenStream = await tokenResponseMessage.Content.ReadAsStreamAsync(cancellationToken);
+        var tokenResponse = await JsonSerializer.DeserializeAsync<FacebookTokenResponse>(tokenStream, JsonOptions, cancellationToken);
+        if (string.IsNullOrWhiteSpace(tokenResponse?.AccessToken))
+        {
+            logger.LogInformation("Facebook token exchange did not return an access token.");
+            return null;
+        }
+
+        var userInfoRequestUrl =
+            $"{_facebookAuthOptions.UserInfoEndpoint}?fields=id,name,email" +
+            $"&access_token={Uri.EscapeDataString(tokenResponse.AccessToken)}";
+        using var userInfoResponse = await httpClient.GetAsync(userInfoRequestUrl, cancellationToken);
+        if (!userInfoResponse.IsSuccessStatusCode)
+        {
+            logger.LogInformation("Facebook userinfo request failed with status code {StatusCode}.", userInfoResponse.StatusCode);
+            return null;
+        }
+
+        await using var userInfoStream = await userInfoResponse.Content.ReadAsStreamAsync(cancellationToken);
+        return await JsonSerializer.DeserializeAsync<FacebookUserInfo>(userInfoStream, JsonOptions, cancellationToken);
+    }
+
     private static string GenerateRefreshToken()
     {
         return Convert.ToBase64String(RandomNumberGenerator.GetBytes(64));
@@ -713,6 +819,15 @@ public class AuthService(
             : !string.IsNullOrWhiteSpace(profile.GivenName)
                 ? profile.GivenName
                 : normalizedEmail.Split('@')[0];
+
+        return name.Trim();
+    }
+
+    private static string ResolveFacebookName(FacebookUserInfo profile, string normalizedEmail)
+    {
+        var name = !string.IsNullOrWhiteSpace(profile.Name)
+            ? profile.Name
+            : normalizedEmail.Split('@')[0];
 
         return name.Trim();
     }
@@ -822,5 +937,23 @@ public class AuthService(
 
         [JsonPropertyName("given_name")]
         public string GivenName { get; set; } = string.Empty;
+    }
+
+    private sealed class FacebookTokenResponse
+    {
+        [JsonPropertyName("access_token")]
+        public string AccessToken { get; set; } = string.Empty;
+    }
+
+    private sealed class FacebookUserInfo
+    {
+        [JsonPropertyName("id")]
+        public string Id { get; set; } = string.Empty;
+
+        [JsonPropertyName("name")]
+        public string Name { get; set; } = string.Empty;
+
+        [JsonPropertyName("email")]
+        public string Email { get; set; } = string.Empty;
     }
 }

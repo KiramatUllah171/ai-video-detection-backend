@@ -439,6 +439,19 @@ static void ValidateProductionConfiguration(IConfiguration configuration, IWebHo
         throw new InvalidOperationException("Production Google OAuth credentials must be provided through secure configuration.");
     }
 
+    var facebookAppId = FirstConfigured(
+        configuration["FacebookAuth:AppId"],
+        Environment.GetEnvironmentVariable("FACEBOOK_APP_ID"),
+        Environment.GetEnvironmentVariable("FacebookAuth__AppId"));
+    var facebookAppSecret = FirstConfigured(
+        configuration["FacebookAuth:AppSecret"],
+        Environment.GetEnvironmentVariable("FACEBOOK_APP_SECRET"),
+        Environment.GetEnvironmentVariable("FacebookAuth__AppSecret"));
+    if (string.IsNullOrWhiteSpace(facebookAppId) || string.IsNullOrWhiteSpace(facebookAppSecret))
+    {
+        throw new InvalidOperationException("Production Facebook OAuth credentials must be provided through secure configuration.");
+    }
+
     if (string.Equals(configuration["PasswordReset:Provider"], "Smtp", StringComparison.OrdinalIgnoreCase))
     {
         var smtpHost = FirstConfigured(configuration["PasswordReset:Host"], configuration["PasswordReset:SmtpHost"]);
@@ -611,6 +624,7 @@ static RateLimitProfile GetRateLimitProfile(HttpContext context, RateLimitingOpt
 
     if (path.StartsWith("/api/auth/signup", StringComparison.OrdinalIgnoreCase) ||
         path.StartsWith("/api/auth/google", StringComparison.OrdinalIgnoreCase) ||
+        path.StartsWith("/api/auth/facebook", StringComparison.OrdinalIgnoreCase) ||
         path.StartsWith("/api/auth/forgot-password", StringComparison.OrdinalIgnoreCase) ||
         path.StartsWith("/api/auth/reset-password", StringComparison.OrdinalIgnoreCase) ||
         path.StartsWith("/api/auth/confirm-email", StringComparison.OrdinalIgnoreCase) ||
